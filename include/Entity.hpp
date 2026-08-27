@@ -25,6 +25,12 @@ public:
     float getVelocityY() const;
     Rect getBounds() const;
 
+    // Collision helpers. Implemented in Collision.cpp so that Entity stays free
+    // of any dependency on the collision system while games can still ask the
+    // question in the natural place: player.collidesWith(wall).
+    bool collidesWith(const Entity& other) const;
+    bool containsPoint(float x, float y) const;
+
 private:
     float x_;
     float y_;
