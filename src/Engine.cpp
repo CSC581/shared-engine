@@ -69,7 +69,7 @@ void Engine::run(Game& game)
 
         game.update(deltaTime, *this);
 
-        SDL_SetRenderDrawColor(renderer_, clearRed_, clearGreen_, clearBlue_, 255);
+        SDL_SetRenderDrawColor(renderer_, clearColor_.red, clearColor_.green, clearColor_.blue, 255);
         SDL_RenderClear(renderer_);
         applyScaleMode();
         game.render(renderer_);
@@ -97,11 +97,14 @@ int Engine::getHeight() const
     return height_;
 }
 
+void Engine::setClearColor(Color color)
+{
+    clearColor_ = color;
+}
+
 void Engine::setClearColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue)
 {
-    clearRed_ = red;
-    clearGreen_ = green;
-    clearBlue_ = blue;
+    clearColor_ = Color{red, green, blue};
 }
 
 Engine::ScaleMode Engine::getScaleMode() const

@@ -13,6 +13,16 @@ class Game;
 // is supplied to run() as a Game.
 class Engine {
 public:
+    // An RGB colour, used for the screen clear.
+    struct Color {
+        std::uint8_t red;
+        std::uint8_t green;
+        std::uint8_t blue;
+    };
+
+    // Task 1 asks the loop to clear to blue; a game may pick its own.
+    static constexpr Color defaultClearColor{30, 60, 140};
+
     // How entity coordinates and sizes are mapped onto the window.
     enum class ScaleMode {
         // Pixel-based: one design unit is one pixel, whatever the window size.
@@ -44,7 +54,8 @@ public:
     int getWidth() const;
     int getHeight() const;
 
-    // Colour the screen is cleared to each frame. Defaults to blue.
+    // Colour the screen is cleared to each frame.
+    void setClearColor(Color color);
     void setClearColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue);
 
     ScaleMode getScaleMode() const;
@@ -66,9 +77,7 @@ private:
     int width_;
     int height_;
 
-    std::uint8_t clearRed_ = 30;
-    std::uint8_t clearGreen_ = 60;
-    std::uint8_t clearBlue_ = 140;
+    Color clearColor_ = defaultClearColor;
 
     ScaleMode scaleMode_ = ScaleMode::Proportional;
     SDL_Scancode scaleToggleKey_ = SDL_SCANCODE_F1;
