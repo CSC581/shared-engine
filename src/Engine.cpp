@@ -1,24 +1,25 @@
 #include "Engine.hpp"
 
+#include "Game.hpp"
+#include "Input.hpp"
+
 #include <SDL3/SDL.h>
 
 #include <stdexcept>
 #include <string>
 
-namespace {
-constexpr char windowTitle[] = "Shared Engine";
-}
-
-Engine::Engine()
+Engine::Engine(const char* title, int width, int height)
+    : width_(width),
+      height_(height)
 {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         throw std::runtime_error(std::string("Failed to initialize SDL: ") + SDL_GetError());
     }
 
     if (!SDL_CreateWindowAndRenderer(
-            windowTitle,
-            windowWidth,
-            windowHeight,
+            title,
+            width_,
+            height_,
             SDL_WINDOW_RESIZABLE,
             &window_,
             &renderer_)) {
@@ -34,11 +35,13 @@ Engine::~Engine()
     SDL_Quit();
 }
 
-void Engine::run()
+void Engine::run(Game& game)
 {
     Uint64 previousFrameTime = SDL_GetTicks();
 
     while (isRunning_) {
+        // The only SDL events the engine reads are window-close ones; all
+        // gameplay input goes through the polling Input system.
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT ||
@@ -47,24 +50,97 @@ void Engine::run()
             }
         }
 
+        Input::update();
+
+        if (scaleToggleKey_ != SDL_SCANCODE_UNKNOWN && Input::isKeyJustPressed(scaleToggleKey_)) {
+            toggleScaleMode();
+        }
+
+        game.handleInput(*this);
+
         const Uint64 currentFrameTime = SDL_GetTicks();
-        const float deltaTime = static_cast<float>(currentFrameTime - previousFrameTime) / 1000.0F;
+        float deltaTime = static_cast<float>(currentFrameTime - previousFrameTime) / 1000.0F;
         previousFrameTime = currentFrameTime;
 
-        update(deltaTime);
+        // Keep physics stable if the window stalls for a moment.
+        if (deltaTime > maxDeltaTime) {
+            deltaTime = maxDeltaTime;
+        }
 
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 255, 255);
+        game.update(deltaTime, *this);
+
+        SDL_SetRenderDrawColor(renderer_, clearColor_.red, clearColor_.green, clearColor_.blue, 255);
         SDL_RenderClear(renderer_);
-        render();
+        applyScaleMode();
+        game.render(renderer_);
         SDL_RenderPresent(renderer_);
     }
 }
 
-void Engine::update(float deltaTime)
+void Engine::quit()
 {
-    (void)deltaTime;
+    isRunning_ = false;
 }
 
-void Engine::render()
+SDL_Renderer* Engine::getRenderer() const
 {
+    return renderer_;
+}
+
+int Engine::getWidth() const
+{
+    return width_;
+}
+
+int Engine::getHeight() const
+{
+    return height_;
+}
+
+void Engine::setClearColor(Color color)
+{
+    clearColor_ = color;
+}
+
+void Engine::setClearColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue)
+{
+    clearColor_ = Color{red, green, blue};
+}
+
+Engine::ScaleMode Engine::getScaleMode() const
+{
+    return scaleMode_;
+}
+
+void Engine::setScaleMode(ScaleMode mode)
+{
+    scaleMode_ = mode;
+}
+
+void Engine::toggleScaleMode()
+{
+    scaleMode_ = (scaleMode_ == ScaleMode::Constant) ? ScaleMode::Proportional : ScaleMode::Constant;
+}
+
+// Games always draw in design-resolution coordinates; this is the one place
+// that decides how those coordinates become pixels.
+void Engine::applyScaleMode()
+{
+    if (scaleMode_ == ScaleMode::Constant) {
+        SDL_SetRenderScale(renderer_, 1.0F, 1.0F);
+        return;
+    }
+
+    int outputWidth = width_;
+    int outputHeight = height_;
+    SDL_GetRenderOutputSize(renderer_, &outputWidth, &outputHeight);
+
+    const float scaleX = static_cast<float>(outputWidth) / static_cast<float>(width_);
+    const float scaleY = static_cast<float>(outputHeight) / static_cast<float>(height_);
+    SDL_SetRenderScale(renderer_, scaleX, scaleY);
+}
+
+void Engine::setScaleToggleKey(SDL_Scancode key)
+{
+    scaleToggleKey_ = key;
 }

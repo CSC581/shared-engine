@@ -5,11 +5,14 @@
 
 int main()
 {
-    try {
+    try
+    {
         Engine engine;
         engine.run();
         return 0;
-    } catch (const std::exception& error) {
+    }
+    catch (const std::exception &error)
+    {
         std::cerr << "Engine failed to start: " << error.what() << '\n';
         return 1;
     }
