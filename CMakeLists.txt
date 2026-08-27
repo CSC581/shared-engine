@@ -49,6 +49,45 @@ add_executable(catch-game
 target_include_directories(catch-game PRIVATE include)
 target_link_libraries(catch-game PRIVATE SDL3::SDL3)
 
+# Fruit-Ninja-style slicer: keyboard-steered blade cuts tossed fruit, avoids bombs.
+add_executable(slice-game
+    tests/SliceGame.cpp
+    src/Engine.cpp
+    src/Input.cpp
+    src/Collision.cpp
+    src/Entity.cpp
+    src/Physics.cpp
+)
+
+target_include_directories(slice-game PRIVATE include)
+target_link_libraries(slice-game PRIVATE SDL3::SDL3)
+
+# Dung beetle's journey: jump the rocks, roll over the dung to grow the ball.
+add_executable(beetle-game
+    tests/BeetleGame.cpp
+    src/Engine.cpp
+    src/Input.cpp
+    src/Collision.cpp
+    src/Entity.cpp
+    src/Physics.cpp
+)
+
+target_include_directories(beetle-game PRIVATE include)
+target_link_libraries(beetle-game PRIVATE SDL3::SDL3)
+
+# Side-on golf on a course several screens wide, with a scrolling camera.
+add_executable(golf-game
+    tests/GolfGame.cpp
+    src/Engine.cpp
+    src/Input.cpp
+    src/Collision.cpp
+    src/Entity.cpp
+    src/Physics.cpp
+)
+
+target_include_directories(golf-game PRIVATE include)
+target_link_libraries(golf-game PRIVATE SDL3::SDL3)
+
 enable_testing()
 
 add_executable(entity-physics-tests
