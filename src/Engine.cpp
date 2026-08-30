@@ -26,6 +26,8 @@ Engine::Engine(const char* title, int width, int height)
         SDL_Quit();
         throw std::runtime_error(std::string("Failed to create SDL window and renderer: ") + SDL_GetError());
     }
+
+    applyScaleMode();
 }
 
 Engine::~Engine()
@@ -69,9 +71,9 @@ void Engine::run(Game& game)
 
         game.update(deltaTime, *this);
 
+        applyScaleMode();
         SDL_SetRenderDrawColor(renderer_, clearColor_.red, clearColor_.green, clearColor_.blue, 255);
         SDL_RenderClear(renderer_);
-        applyScaleMode();
         game.render(renderer_);
         SDL_RenderPresent(renderer_);
     }
@@ -126,18 +128,16 @@ void Engine::toggleScaleMode()
 // that decides how those coordinates become pixels.
 void Engine::applyScaleMode()
 {
+    SDL_SetRenderScale(renderer_, 1.0F, 1.0F);
+
     if (scaleMode_ == ScaleMode::Constant) {
-        SDL_SetRenderScale(renderer_, 1.0F, 1.0F);
+        SDL_SetRenderLogicalPresentation(
+            renderer_, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
         return;
     }
 
-    int outputWidth = width_;
-    int outputHeight = height_;
-    SDL_GetRenderOutputSize(renderer_, &outputWidth, &outputHeight);
-
-    const float scaleX = static_cast<float>(outputWidth) / static_cast<float>(width_);
-    const float scaleY = static_cast<float>(outputHeight) / static_cast<float>(height_);
-    SDL_SetRenderScale(renderer_, scaleX, scaleY);
+    SDL_SetRenderLogicalPresentation(
+        renderer_, width_, height_, SDL_LOGICAL_PRESENTATION_LETTERBOX);
 }
 
 void Engine::setScaleToggleKey(SDL_Scancode key)
