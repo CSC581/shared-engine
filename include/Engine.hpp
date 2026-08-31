@@ -28,8 +28,8 @@ public:
         // Pixel-based: one design unit is one pixel, whatever the window size.
         // Resizing the window reveals more (or less) of the world.
         Constant,
-        // Percentage-based: the design resolution is stretched to fill the
-        // window, so everything keeps its proportion of the screen.
+        // Aspect-preserving: the design resolution is uniformly scaled to
+        // fit the window, with letterboxing where its aspect ratio differs.
         Proportional,
     };
 
