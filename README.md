@@ -2,13 +2,51 @@
 
 A small C++17 game-engine foundation built with SDL3.
 
-`Engine` owns the window, renderer, main loop and render scaling; it holds no
-gameplay state of its own. A game is a class that implements the `Game`
+`Engine` owns the SDL window, renderer, main loop and render scaling; it holds
+no gameplay state of its own. A game is a class that implements the `Game`
 interface (`handleInput` / `update` / `render`) and is handed to
 `Engine::run()`. `Entity`, `Physics`, `Collision` and `Input` are the shared
-toolkit every game is built from. See
-[docs/OPTIMIZATION_GUIDE.md](docs/OPTIMIZATION_GUIDE.md) for a fuller
-architecture walkthrough.
+toolkit every game is built from.
+
+## Milestone 1 Coverage
+
+| Milestone task | Shared-engine implementation | Where to find it |
+| --- | --- | --- |
+| 1. Core graphics setup | Initializes SDL3, creates a window and renderer, runs the event/update/render loop, clears to blue, presents each frame, and cleans up SDL resources. Windows are resizable. | `include/Engine.hpp`, `src/Engine.cpp` |
+| 2. Entity system | A generic `Entity` stores position, width, height, and velocity. It can update its position from velocity and expose a bounding rectangle. | `include/Entity.hpp`, `src/Entity.cpp` |
+| 3. Physics | `Physics::setGravity()` configures gravity and `Physics::applyGravity()` adds downward velocity only to entities selected by the game. | `include/Physics.hpp`, `src/Physics.cpp` |
+| 4. Input | Uses `SDL_GetKeyboardState` once per frame and provides held, just-pressed, and just-released key queries. | `include/Input.hpp`, `src/Input.cpp` |
+| 5. Collision | Generic axis-aligned bounding-box (AABB) overlap detection works on `Entity` or `Rect` values and returns whether objects overlap. Additional helpers support game-specific responses. | `include/Collision.hpp`, `src/Collision.cpp` |
+| 6. Scaling (CSC 581) | Provides constant/pixel scaling and proportional scaling, with `F1` toggling between them while a game runs. | `include/Engine.hpp`, `src/Engine.cpp` |
+
+`games/CoinRunner.cpp` constructs a `1920 x 1080` window, which demonstrates
+the required window size. The engine also accepts a title and dimensions in
+its constructor so individual games can choose their own settings without
+editing shared-engine files.
+
+## Architecture
+
+The engine and games have separate responsibilities:
+
+```text
+Engine     -> SDL setup, window, renderer, loop, timing, clear, present, scaling
+Game       -> game-specific input handling, rules, objects, rendering, responses
+Entity     -> position, size, velocity, and movement from velocity
+Physics    -> configurable gravity
+Input      -> keyboard state queries
+Collision  -> geometry and overlap/separation calculations
+```
+
+The intended frame order is:
+
+```text
+input -> gravity (selected entities) -> entity update -> collision -> render
+```
+
+The engine detects only the window-close event. Games use `Input` to read
+keyboard state and decide their own gameplay behavior. Similarly, `Collision`
+reports geometry facts; each game decides whether an overlap means landing,
+losing a life, collecting an item, or something else.
 
 ## Build And Run
 
@@ -27,9 +65,7 @@ cmake --build build
 ```
 
 The first configure also builds the vendored SDL, so it takes a few minutes;
-rebuilds after that are quick. See
-[docs/SETUP.md](docs/SETUP.md) for prerequisites, troubleshooting and a more
-detailed walkthrough.
+rebuilds after that are quick.
 
 Each example game is its own executable in `build/`:
 
@@ -45,6 +81,19 @@ Each example game is its own executable in `build/`:
 All six link the same engine sources (`src/Engine.cpp`, `src/Input.cpp`,
 `src/Collision.cpp`, `src/Entity.cpp`, `src/Physics.cpp`) and exist to
 exercise the shared engine, not as separate products.
+
+## Scaling Demonstration
+
+Run Coin Runner and press `F1` to switch between the two required modes. Resize
+the window after switching so the difference is visible.
+
+| Mode | Behavior |
+| --- | --- |
+| Constant / pixel scaling | One game unit is one screen pixel. Resizing the window shows more or less of the game world. |
+| Proportional scaling | The game's design resolution scales by one uniform factor. The image keeps its aspect ratio; unused space may appear at the sides or top and bottom. |
+
+The scaling key can also be changed per game with
+`Engine::setScaleToggleKey()` if an individual game needs a different control.
 
 ## Run Tests
 
@@ -67,13 +116,10 @@ The two collision helpers are declared on `Entity` but implemented in
 `Collision.cpp`, so `Entity` itself carries no dependency on the collision
 system.
 
-`Physics` provides configurable gravity. Call `Physics::applyGravity(entity, deltaTime)` only for objects that should fall.
-
-The shared update order is:
-
-```text
-input -> gravity -> entity update -> collision -> render
-```
+`Physics` provides configurable gravity. Call
+`Physics::applyGravity(entity, deltaTime)` only for objects that should fall.
+This makes gravity opt-in: platforms, flying enemies, and UI objects do not
+fall unless the game explicitly applies it to them.
 
 ## Collision
 
@@ -162,3 +208,30 @@ The other five games (`catch-game`, `siege-game`, `slice-game`,
 `beetle-game`, `golf-game`) are further, more advanced exercises of the same
 engine — they are not separate submissions, just proof that the shared code
 is reusable across different kinds of games.
+
+## Submission Checklist
+
+### Team Shared-Engine Submission
+
+- Include the reusable engine source and headers for Tasks 1 through 6.
+- Include this README as the engine design documentation and task-to-code map.
+- Verify a clean clone can initialize the SDL submodule, configure with CMake,
+  build, and run the test suite using the commands above.
+- Demonstrate the blue render loop, input, entity updates, gravity, collision,
+  and both scaling modes with an example game.
+
+### Individual Game Submission
+
+Each person creates a separate game project that uses this shared engine. That
+project should have its own `main.cpp`: it creates an `Engine`, creates that
+person's `Game` class, and calls `engine.run(game)`.
+
+- Include at least one static object, one player-controlled object, and one
+  automatically moving object.
+- Decide which objects receive `Physics::applyGravity()`.
+- Use the shared `Input` interface for controls.
+- Implement game-specific collision responses using the shared `Collision`
+  results.
+- Demonstrate the required scaling behavior if it is part of the course level.
+- Submit the required individual writeup/reflection separately; this README
+  documents the team engine and does not replace that writeup.
