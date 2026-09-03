@@ -29,32 +29,6 @@ add_library(engine STATIC
 target_include_directories(engine PUBLIC include)
 target_link_libraries(engine PUBLIC SDL3::SDL3 engine-geometry)
 
-# Test games: extra games on the same engine sources, as reusability checks.
-# They are not part of the individual game submission.
-#
-# Exercises every engine system, including Physics.
-add_executable(siege-game games/SiegeGame.cpp)
-target_link_libraries(siege-game PRIVATE engine)
-
-# Player dodges falling obstacles and catches falling coins.
-add_executable(catch-game games/CatchGame.cpp)
-target_link_libraries(catch-game PRIVATE engine)
-
-# Fruit-Ninja-style slicer: keyboard-steered blade cuts tossed fruit, avoids bombs.
-add_executable(coin-game games/CoinRunner.cpp)
-target_link_libraries(coin-game PRIVATE engine)
-
-add_executable(slice-game games/SliceGame.cpp)
-target_link_libraries(slice-game PRIVATE engine)
-
-# Dung beetle's journey: jump the rocks, roll over the dung to grow the ball.
-add_executable(beetle-game games/BeetleGame.cpp)
-target_link_libraries(beetle-game PRIVATE engine)
-
-# Side-on golf on a course several screens wide, with a scrolling camera.
-add_executable(golf-game games/GolfGame.cpp)
-target_link_libraries(golf-game PRIVATE engine)
-
 enable_testing()
 
 add_executable(entity-physics-tests tests/EntityPhysicsTests.cpp)
