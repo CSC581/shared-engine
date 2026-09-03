@@ -125,6 +125,32 @@ int main()
     passed &= expect(nearlyEqual(player.getX(), 0.0F) && nearlyEqual(player.getY(), 0.0F),
                      "opposite keys held together should cancel out");
 
+    // Three-key chord plus the multi-key query helpers.
+    release(SDL_SCANCODE_A);
+    release(SDL_SCANCODE_W);
+    press(SDL_SCANCODE_LSHIFT);
+    Input::update();
+    passed &= expect(Input::areAllKeysPressed({SDL_SCANCODE_LSHIFT, SDL_SCANCODE_D, SDL_SCANCODE_S}),
+                     "areAllKeysPressed should see a three-key chord");
+    passed &= expect(!Input::areAllKeysPressed({SDL_SCANCODE_LSHIFT, SDL_SCANCODE_A}),
+                     "areAllKeysPressed should fail when one key is up");
+    passed &= expect(Input::isAnyKeyPressed({SDL_SCANCODE_A, SDL_SCANCODE_S}),
+                     "isAnyKeyPressed should see one held key of several");
+    passed &= expect(Input::pressedKeyCount() == 3, "pressedKeyCount should count every held key");
+    passed &= expect(Input::getPressedKeys().size() == 3, "getPressedKeys should list every held key");
+    passed &= expect(nearlyEqual(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D), 1.0F),
+                     "getAxis should report the held direction");
+    press(SDL_SCANCODE_A);
+    Input::update();
+    passed &= expect(nearlyEqual(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D), 0.0F),
+                     "getAxis should cancel opposing keys");
+
+    release(SDL_SCANCODE_A);
+    release(SDL_SCANCODE_D);
+    release(SDL_SCANCODE_S);
+    release(SDL_SCANCODE_LSHIFT);
+    Input::update();
+
     Input::setKeyboardStateSource(nullptr, 0);
 
     if (passed)

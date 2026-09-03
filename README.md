@@ -40,9 +40,10 @@ Each example game is its own executable in `build/`:
 ./build/slice-game   # Fruit-Ninja-style blade slicer
 ./build/beetle-game  # dung beetle rolling and jumping
 ./build/golf-game    # side-on golf with a scrolling camera
+./build/chord-game   # two-player multi-key input demo
 ```
 
-All six link the same engine sources (`src/Engine.cpp`, `src/Input.cpp`,
+All seven link the same engine sources (`src/Engine.cpp`, `src/Input.cpp`,
 `src/Collision.cpp`, `src/Entity.cpp`, `src/Physics.cpp`) and exist to
 exercise the shared engine, not as separate products.
 
@@ -105,8 +106,8 @@ if (player.collidesWith(hazard)) {
 ## Input
 
 `Input` is a keyboard state system. The engine calls `Input::update()` once per
-frame; a game only ever asks whether a key is down. Nothing goes through the SDL
-event queue, which is used only for the window-close event.
+frame; a game only ever asks whether a key is down, never handling SDL events
+itself.
 
 ```cpp
 if (Input::isKeyPressed(SDL_SCANCODE_W)) {
@@ -120,8 +121,39 @@ if (Input::isKeyPressed(SDL_SCANCODE_W)) {
 - `setKeyboardStateSource(state, count)` — test hook that swaps in a fake
   keyboard array; pass `nullptr` to return to the real hardware.
 
-Multiple keys read independently, so diagonal movement and opposing keys that
-cancel out both work.
+### Multiple Keys At Once
+
+`Input::update()` copies the whole keyboard every frame (`src/Input.cpp`), so
+every key is an independent slot and any number of them can read as held in the
+same frame. Diagonal movement, run-while-jumping, modifier combos and two
+players sharing one keyboard all work without special handling.
+
+Helpers for reading several keys together:
+
+- `areAllKeysPressed({a, b, c})` — every listed key is held right now, for
+  chords and modifier combos.
+- `isAnyKeyPressed({a, b})` — at least one of them is held.
+- `getAxis(negativeKey, positiveKey)` — `-1` / `0` / `+1` for an opposed pair;
+  holding both cancels out. Two calls give a full 8-way direction.
+- `pressedKeyCount()` and `getPressedKeys()` — how many, and which, keys are
+  held this frame. Useful for debug readouts.
+
+```cpp
+// 8-way movement plus a sprint modifier: up to three keys at once.
+const float speed = Input::isKeyPressed(SDL_SCANCODE_LSHIFT) ? sprintSpeed : walkSpeed;
+player.setVelocity(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D) * speed,
+                   Input::getAxis(SDL_SCANCODE_W, SDL_SCANCODE_S) * speed);
+```
+
+Polling alone would miss a key that is pressed *and* released between two
+frames, which makes fast combos feel dropped. To close that gap the engine's
+main loop forwards key events to `Input::handleEvent()` (`src/Engine.cpp`), and
+`update()` merges those latched presses into the frame's state — so a tap that
+brief is still reported for one frame and still fires `isKeyJustPressed`.
+
+If a specific physical combination never appears in `getPressedKeys()`, that is
+keyboard ghosting in the hardware rather than an engine limitation; most
+non-gaming keyboards drop the third simultaneous key in some rows.
 
 ## Sample Game: Coin Runner
 
@@ -157,8 +189,3 @@ engine's `Collision` system only answers "do these overlap?":
 It exercises every engine system: `Input` for movement and edge-triggered
 jumping, `Physics` for gravity, `Entity` for every object in the level, and
 `Collision` for all three responses above.
-
-The other five games (`catch-game`, `siege-game`, `slice-game`,
-`beetle-game`, `golf-game`) are further, more advanced exercises of the same
-engine — they are not separate submissions, just proof that the shared code
-is reusable across different kinds of games.
