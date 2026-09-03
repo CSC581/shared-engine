@@ -119,3 +119,37 @@ Press `F1` while a game is running, then resize the window to compare modes.
 | Proportional scaling | The design resolution scales uniformly and keeps its aspect ratio. Unused space may appear at the sides or top and bottom. |
 
 Use `Engine::setScaleToggleKey()` to change or disable the default `F1` key.
+
+### Multiple Keys At Once
+
+`Input::update()` copies the whole keyboard every frame (`src/Input.cpp`), so
+every key is an independent slot and any number of them can read as held in the
+same frame. Diagonal movement, run-while-jumping, modifier combos and two
+players sharing one keyboard all work without special handling.
+
+Helpers for reading several keys together:
+
+- `areAllKeysPressed({a, b, c})` — every listed key is held right now, for
+  chords and modifier combos.
+- `isAnyKeyPressed({a, b})` — at least one of them is held.
+- `getAxis(negativeKey, positiveKey)` — `-1` / `0` / `+1` for an opposed pair;
+  holding both cancels out. Two calls give a full 8-way direction.
+- `pressedKeyCount()` and `getPressedKeys()` — how many, and which, keys are
+  held this frame. Useful for debug readouts.
+
+```cpp
+// 8-way movement plus a sprint modifier: up to three keys at once.
+const float speed = Input::isKeyPressed(SDL_SCANCODE_LSHIFT) ? sprintSpeed : walkSpeed;
+player.setVelocity(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D) * speed,
+                   Input::getAxis(SDL_SCANCODE_W, SDL_SCANCODE_S) * speed);
+```
+
+Polling alone would miss a key that is pressed *and* released between two
+frames, which makes fast combos feel dropped. To close that gap the engine's
+main loop forwards key events to `Input::handleEvent()` (`src/Engine.cpp`), and
+`update()` merges those latched presses into the frame's state — so a tap that
+brief is still reported for one frame and still fires `isKeyJustPressed`.
+
+If a specific physical combination never appears in `getPressedKeys()`, that is
+keyboard ghosting in the hardware rather than an engine limitation; most
+non-gaming keyboards drop the third simultaneous key in some rows.
