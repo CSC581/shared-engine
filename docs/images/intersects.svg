@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 732 240" width="732" height="240" role="img" aria-label="Three cases for intersects: overlapping boxes return true, edge-touching boxes return false, separated boxes return false.">
+  <defs>
+    <style>
+      .t    { font-family: ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; font-size:13px; fill:#000000; }
+      .m    { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; fill:#000000; }
+      .lbl  { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px; }
+      .yes  { font-family: ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; font-size:13.5px; font-weight:600; fill:#02b54f; }
+      .no   { font-family: ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; font-size:13.5px; font-weight:600; fill:#e02209; }
+      .ra   { fill:#0000FF; fill-opacity:.12; stroke:#0000FF; stroke-width:2; }
+      .rb   { fill:#fc8803; fill-opacity:.12; stroke:#fc8803; stroke-width:2; }
+      .ov   { fill:#7700ff; fill-opacity:.38; stroke:none; }
+      .sep  { stroke:#000000; stroke-width:1; opacity:.3; }
+    </style>
+  </defs>
+
+  <line class="sep" x1="240" y1="30" x2="240" y2="230"/>
+  <line class="sep" x1="480" y1="30" x2="480" y2="230"/>
+
+  <!-- 1: overlapping -->
+  <text class="yes" x="120" y="44" text-anchor="middle">overlapping &#8594; true</text>
+  <rect class="ra" x="40"  y="72"  width="110" height="85"/>
+  <rect class="rb" x="105" y="118" width="110" height="85"/>
+  <rect class="ov" x="105" y="118" width="45"  height="39"/>
+  <text class="lbl" x="62"  y="94"  fill="#0000FF">a</text>
+  <text class="lbl" x="196" y="194" fill="#fc8803">b</text>
+
+  <!-- 2: touching -->
+  <text class="no" x="360" y="44" text-anchor="middle">touching &#8594; false</text>
+  <rect class="ra" x="272" y="86" width="88" height="90"/>
+  <rect class="rb" x="360" y="86" width="88" height="90"/>
+  <text class="lbl" x="312" y="137" fill="#0000FF" text-anchor="middle">a</text>
+  <text class="lbl" x="404" y="137" fill="#fc8803" text-anchor="middle">b</text>
+  <line x1="360" y1="176" x2="360" y2="196" stroke="#000000" stroke-width="1" opacity=".6"/>
+  <text class="m" x="360" y="212" text-anchor="middle">right(a) == left(b)</text>
+
+  <!-- 3: apart -->
+  <text class="no" x="600" y="44" text-anchor="middle">apart &#8594; false</text>
+  <rect class="ra" x="508" y="86" width="82" height="90"/>
+  <rect class="rb" x="614" y="86" width="82" height="90"/>
+  <text class="lbl" x="549" y="137" fill="#0000FF" text-anchor="middle">a</text>
+  <text class="lbl" x="655" y="137" fill="#fc8803" text-anchor="middle">b</text>
+</svg>
