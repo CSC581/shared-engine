@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 630 300" width="630" height="300" role="img" aria-label="contains uses inclusive comparisons: points inside, on an edge, or on a corner all return true; only points outside return false.">
+  <defs>
+    <style>
+      .t   { font-family: ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; font-size:13px; fill:#000000; }
+      .m   { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; fill:#000000; }
+      .lbl { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; fill:#000000; }
+      .yes { font-family: ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; font-size:13px; font-weight:600; fill:#02b54f; }
+      .no  { font-family: ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; font-size:13px; font-weight:600; fill:#e02209; }
+    </style>
+  </defs>
+
+  <rect x="70" y="70" width="290" height="160" fill="#0000FF" fill-opacity=".12" stroke="#0000FF" stroke-width="2"/>
+  <text class="lbl" x="92" y="94" fill="#0000FF">box</text>
+
+  <!-- 1: strictly inside -->
+  <circle cx="240" cy="160" r="5" fill="#02b54f"/>
+  <text class="lbl" x="252" y="164">1</text>
+
+  <!-- 2: outside -->
+  <circle cx="180" cy="34" r="5" fill="#e02209"/>
+  <text class="lbl" x="192" y="38">2</text>
+
+  <!-- 3: on the top edge -->
+  <circle cx="180" cy="70" r="5" fill="#02b54f"/>
+  <text class="lbl" x="192" y="62">3</text>
+
+  <!-- 4: on the corner -->
+  <circle cx="70" cy="230" r="5" fill="#02b54f"/>
+  <text class="lbl" x="52" y="250" text-anchor="middle">4</text>
+
+  <!-- legend -->
+  <text class="m"   x="410" y="86">1</text>
+  <text class="t"   x="432" y="86">strictly inside</text>
+  <text class="yes" x="530" y="86">&#8594; true</text>
+
+  <text class="m"   x="410" y="122">2</text>
+  <text class="t"   x="432" y="122">outside</text>
+  <text class="no"  x="530" y="122">&#8594; false</text>
+
+  <text class="m"   x="410" y="158">3</text>
+  <text class="t"   x="432" y="158">on an edge</text>
+  <text class="yes" x="530" y="158">&#8594; true</text>
+
+  <text class="m"   x="410" y="194">4</text>
+  <text class="t"   x="432" y="194">on a corner</text>
+  <text class="yes" x="530" y="194">&#8594; true</text>
+</svg>

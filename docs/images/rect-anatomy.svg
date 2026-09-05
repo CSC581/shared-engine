@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-label="Anatomy of a Rect: x and y are the left and top edges, width extends right, height extends down.">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#000000"/>
+    </marker>
+    <style>
+      .t   { font-family: ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; font-size:13px; fill:#000000; }
+      .m   { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; fill:#000000; }
+      .mb  { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px; fill:#0000FF; }
+      .gd  { stroke:#000000; stroke-width:1; stroke-dasharray:4 4; opacity:.55; }
+      .dim { stroke:#000000; stroke-width:1.2; }
+    </style>
+  </defs>
+
+  <!-- guides down to the box corners -->
+  <line class="gd" x1="190" y1="60" x2="190" y2="98"/>
+  <line class="gd" x1="450" y1="60" x2="450" y2="98"/>
+
+  <!-- the rect -->
+  <rect x="190" y="100" width="260" height="120" fill="#0000FF" fill-opacity="0.12" stroke="#0000FF" stroke-width="2"/>
+  <text class="mb" x="320" y="166" text-anchor="middle">r</text>
+
+  <!-- corner dots -->
+  <circle cx="190" cy="100" r="3.5" fill="#0000FF"/>
+  <circle cx="450" cy="220" r="3.5" fill="#0000FF"/>
+
+  <!-- top edge labels -->
+  <text class="m" x="190" y="34" text-anchor="middle">left(r) = r.x</text>
+  <text class="m" x="450" y="34" text-anchor="middle">right(r) = r.x + r.width</text>
+  <text class="t" x="190" y="52" text-anchor="middle">&#9660;</text>
+  <text class="t" x="450" y="52" text-anchor="middle">&#9660;</text>
+
+  <!-- side labels -->
+  <text class="m" x="178" y="97" text-anchor="end">top(r) = r.y</text>
+  <text class="m" x="178" y="217" text-anchor="end">bottom(r)</text>
+  <text class="m" x="178" y="233" text-anchor="end">= r.y + r.height</text>
+
+  <!-- width dimension -->
+  <line class="dim" x1="190" y1="252" x2="450" y2="252" marker-start="url(#ar)" marker-end="url(#ar)"/>
+  <line class="gd" x1="190" y1="222" x2="190" y2="252"/>
+  <line class="gd" x1="450" y1="222" x2="450" y2="252"/>
+  <text class="m" x="320" y="272" text-anchor="middle">r.width</text>
+
+  <!-- height dimension -->
+  <line class="dim" x1="482" y1="100" x2="482" y2="220" marker-start="url(#ar)" marker-end="url(#ar)"/>
+  <line class="gd" x1="450" y1="100" x2="482" y2="100"/>
+  <line class="gd" x1="450" y1="220" x2="482" y2="220"/>
+  <text class="m" x="494" y="164" text-anchor="start">r.height</text>
+</svg>
