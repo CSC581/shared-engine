@@ -101,20 +101,19 @@ diagram is code a game chooses to use; the engine does not require it.
 until the window is closed or `Engine::quit()` is called:
 
 ```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 16, "rankSpacing": 26, "padding": 8}, "themeVariables": {"fontSize": "17px"}}}%%
 flowchart TD
-    pollEvents["Poll SDL events<br/>(quit/close -> stop loop)"]
-    forwardEvents["Forward key-down events<br/>to Input::handleEvent"]
-    inputUpdate["Input::update()<br/>(snapshot keyboard state)"]
-    scaleToggle["Check scale-toggle key<br/>(default F1)"]
-    handleInput["game.handleInput(engine)"]
-    computeDt["Compute deltaTime, clamp<br/>to maxDeltaTime (0.05s)"]
-    update["game.update(dt, engine)"]
-    applyScale["applyScaleMode()"]
-    clear["Clear screen to clearColor_"]
-    render["game.render(renderer)"]
+    events["Drain SDL event queue<br/><i>quit/close stops the loop</i>"]
+    input["Input::update()"]
+    game_in["game.handleInput(engine)"]
+    dt["deltaTime, <br/>clamped to 0.05s"]
+    game_up["game.update(dt, engine)"]
+    scale["applyScaleMode() <br/>+ clear screen"]
+    game_dr["game.render(renderer)"]
     present["SDL_RenderPresent"]
 
-    pollEvents --> forwardEvents --> inputUpdate --> scaleToggle --> handleInput --> computeDt --> update --> applyScale --> clear --> render --> present --> pollEvents
+    events --> input --> game_in --> dt --> game_up --> scale --> game_dr --> present
+    present -->|"next frame"| events
 ```
 
 Why the order is what it is:
