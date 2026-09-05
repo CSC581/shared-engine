@@ -292,9 +292,9 @@ coordinates onto window pixels.
 
 `applyScaleMode()` resets render scale to `(1, 1)` first so the two mechanisms
 can never compound — any prior mode's or game's leftover scale is wiped before
-the new presentation is set. **Do not** introduce independent
-horizontal/vertical scaling for `Proportional`: that breaks aspect
-preservation.
+the new presentation is set. `Proportional` relies on letterboxing rather than
+separate horizontal and vertical scale factors, which would stretch the image
+and distort the design aspect ratio.
 
 #### Private state
 
@@ -331,14 +331,18 @@ frame, in this order:
 | `render` | After clear and scale apply | Draw only. The engine calls `SDL_RenderPresent` when this returns, so `render()` must not clear or present. It is `const`, so it should not mutate game state. |
 
 `deltaTime` is in **seconds** and already clamped by the loop; games should
-not re-clamp it. `Game` has a virtual destructor and no other state — a game
+not re-clamp it. `Game` has a virtual destructor and no other state, a game
 need not store an `Engine` reference beyond what's passed into each call.
 
 A typical per-frame order inside a game's own code (not enforced by the
 engine):
 
-```text
-input -> gravity (selected entities) -> entity update -> collision -> render
+```mermaid
+flowchart LR
+    input["read input"] --> gravity["Physics::applyGravity<br/>(selected entities)"]
+    gravity --> move["Entity::update"]
+    move --> collide["Collision::resolve"]
+    collide --> draw["render"]
 ```
 
 
@@ -360,7 +364,7 @@ player.update(deltaTime);
 
 Each Entity starts with zero velocity, so it stays still until a setter or
 gravity changes it. For falling entities, call `Physics::applyGravity(player,
-deltaTime)` before `player.update(deltaTime)`. Both calls are explicit — the
+deltaTime)` before `player.update(deltaTime)`. Both calls are explicit, the
 engine never applies gravity or moves Entities on its own, so a stationary
 platform can skip both and a flying object can move without gravity.
 
@@ -368,7 +372,7 @@ platform can skip both and a flying object can move without gravity.
 
 A plain axis-aligned rectangle: `x`/`y` is the top-left corner, `width`/
 `height` extend right and down from it. `Rect` is a value type with no
-behavior of its own — the Collision section supplies the geometry
+behavior of its own, the Collision section supplies the geometry
 operations on it.
 
 ### Construction and state
@@ -391,6 +395,8 @@ created entity is stationary until a velocity setter is called.
 All state is private. Each Entity owns its own copy, so changing one Entity's
 velocity never affects another.
 
+<img src="images/entity-state.svg" alt="An Entity's position, size and velocity; update(deltaTime) advances each axis of position by that axis's velocity times deltaTime, leaving size and velocity unchanged." width="100%">
+
 ### Motion
 
 ```cpp
@@ -398,7 +404,13 @@ void update(float deltaTime);
 ```
 
 `update()` performs simple explicit (forward) Euler integration of velocity
-into position — each axis advances by that axis's velocity times `deltaTime`.
+into position, each axis advances by that axis's velocity times `deltaTime`:
+
+```
+x += velocityX * deltaTime
+y += velocityY * deltaTime
+```
+
 It does not touch velocity itself: anything that changes velocity over time
 (gravity, acceleration, drag) is a separate step the game performs before
 calling `update()`, most commonly via `Physics::applyGravity`. There is no
@@ -426,9 +438,9 @@ Rect getBounds() const;
 - `setPosition`/`setSize` overwrite both axes/dimensions at once.
   `setPosition` leaves velocity intact, so a moving Entity keeps moving from
   its new position on the next `update()`; use it to place, teleport, or
-  reset. No setter moves the Entity — position changes only in `update()`.
-- `setVelocityX`/`setVelocityY` change one axis without disturbing the other —
-  used, for example, when `Collision::resolve` zeroes velocity on only the
+  reset. No setter moves the Entity, position changes only in `update()`.
+- `setVelocityX`/`setVelocityY` change one axis without disturbing the other,
+  used for example, when `Collision::resolve` zeroes velocity on only the
   axis it pushed along.
 - `getBounds()` returns a fresh `Rect{x_, y_, width_, height_}` **by value**,
   computed on every call rather than cached. It always reflects current
@@ -457,7 +469,7 @@ This split is intentional: it lets a game write the natural
 
 ## Physics
 
-`Physics.hpp`/`Physics.cpp` — a single configurable value (gravity) and one
+`Physics.hpp`/`Physics.cpp`: a single configurable value (gravity) and one
 function that applies it to an entity. It depends only on `Entity`, not on
 `Engine` or SDL.
 
@@ -469,7 +481,7 @@ static float getGravity();
 static void applyGravity(Entity& entity, float deltaTime);
 ```
 
-Everything on `Physics` is static — the class is effectively a namespace
+Everything on `Physics` is static: the class is effectively a namespace
 holding one piece of shared, global data: `gravity_`.
 
 | Variable | Type | Purpose |
@@ -489,13 +501,13 @@ holding one piece of shared, global data: `gravity_`.
   velocity; horizontal velocity and position are unchanged.
 - Positive gravity accelerates in the positive Y direction; negative gravity
   pushes entities upward instead.
-- Setting gravity to `0.0F` — or skipping `applyGravity` for a frame — stops
+- Setting gravity to `0.0F` or skipping `applyGravity` for a frame stops
   it *adding* velocity but does **not** clear velocity an Entity already has;
   an entity already falling keeps falling at its current speed.
 
 ### Usage pattern
 
-Gravity is opt-in per entity and per frame — nothing calls it automatically.
+Gravity is opt-in per entity and per frame: nothing calls it automatically.
 A game decides which entities should fall and calls it from its own
 `update()`:
 
@@ -513,14 +525,14 @@ previous frame's velocity.
 
 Because `gravity_` is a single static value, giving different entities
 different gravity simultaneously (e.g. a slow-motion pickup affecting only one
-entity) requires scaling the effect manually — by calling `setGravity` with a
+entity) requires scaling the effect manually by calling `setGravity` with a
 different value before applying it and restoring it afterward, or by skipping
 `applyGravity` for that entity and adding vertical velocity by hand.
 
 
 ## Input
 
-`Input.hpp`/`Input.cpp` — keyboard state for games built on the engine.
+`Input.hpp`/`Input.cpp`: keyboard state for games built on the engine.
 
 `Input` is part of `engine` (SDL-dependent), not `engine-geometry`, because
 it reads `SDL_GetKeyboardState` and consumes `SDL_Event`s. Everything on it
@@ -634,18 +646,18 @@ static std::vector<SDL_Scancode> getPressedKeys();
 static float getAxis(SDL_Scancode negativeKey, SDL_Scancode positiveKey);
 ```
 
-- `areAllKeysPressed({...})` — every listed key is held; useful for chords and
+- `areAllKeysPressed({...})`: every listed key is held; useful for chords and
   modifier combos. An **empty** list returns `false`, not vacuously `true`: an
   explicit check is needed because `std::all_of` over an empty range is
   `true`, which would make an empty chord fire every frame.
   `isAnyKeyPressed({...})` needs no such guard, since `std::any_of` already
   returns `false` for an empty range.
-- `pressedKeyCount()` — count of scancodes currently pressed, across the whole
+- `pressedKeyCount()`: count of scancodes currently pressed, across the whole
   keyboard.
-- `getPressedKeys()` — currently-pressed scancodes, ascending order. Allocates
+- `getPressedKeys()`: currently-pressed scancodes, ascending order. Allocates
   a `std::vector` per call, so it belongs in rebinding screens, debug
   overlays, and logging rather than a hot per-frame path.
-- `getAxis(negativeKey, positiveKey)` — `-1.0F` if only `negativeKey` is held,
+- `getAxis(negativeKey, positiveKey)`: `-1.0F` if only `negativeKey` is held,
   `+1.0F` if only `positiveKey` is held, `0.0F` if neither or **both** are.
   Uses two independent `if` statements rather than `if`/`else`, so opposing
   keys cancel instead of one silently winning. Calling it twice with two axis
@@ -703,8 +715,8 @@ if (Collision::contains(button, mouseX, mouseY)) {
 ```
 
 `Entity` also exposes two conveniences that read more naturally at the call
-site — `player.collidesWith(wall)` and `player.containsPoint(mouseX, mouseY)`
-— declared in `Entity.hpp` but implemented here; see the Entity section for
+site `player.collidesWith(wall)` and `player.containsPoint(mouseX, mouseY)`
+ declared in `Entity.hpp` but implemented here; see the Entity section for
 why.
 
 #### Where it goes in the frame
@@ -740,7 +752,7 @@ origin at the box's **top-left**:
 | `width` | `float` | Extent to the right of `x`. |
 | `height` | `float` | Extent below `y`. |
 
-Because y increases downward, moving "up" — climbing or jumping — means
+Because y increases downward, moving "up" climbing or jumping means
 *decreasing* `y` and a *negative* `velocityY`. `Entity::getBounds()` builds a
 `Rect` from an entity's position and size.
 
@@ -753,12 +765,12 @@ static bool intersects(const Rect& a, const Rect& b);
 static bool intersects(const Entity& a, const Entity& b);
 ```
 
-- **Touching edges do not count as a collision** — the comparisons are
+- **Touching edges do not count as a collision**: the comparisons are
   strict (`<`/`>`, not `<=`/`>=`), so two boxes that share exactly one edge
   (e.g. one ends at `x=100` and the other starts at `x=100`) are reported as
   not intersecting. That is what lets a game slide an entity flush against a
   wall without the wall reporting a hit every frame.
-- **A zero-size box never collides with anything**, including itself —
+- **A zero-size box never collides with anything**, including itself, 
   guarded explicitly before the geometric check.
 - **An entity does overlap itself** (same box, positive size), and detection
   is symmetric: `intersects(a, b) == intersects(b, a)`.
@@ -776,11 +788,11 @@ static Rect getIntersection(const Entity& a, const Entity& b);
 ```
 
 Returns the overlapping rectangle: `{0, 0, 0, 0}` if the boxes do not
-intersect per `intersects()` above — which also means touching-only boxes
+intersect per `intersects()` above, which also means touching-only boxes
 report a zero-size intersection, not a zero-width sliver at the shared edge.
 When they do overlap, the result spans the larger left/top edges
 (`x = max(left(a), left(b))`, `y = max(top(a), top(b))`) to the smaller
-right/bottom ones (`width = min(right) - x`, `height = min(bottom) - y`) —
+right/bottom ones (`width = min(right) - x`, `height = min(bottom) - y`),
 useful for a game that wants to react to *how deep* an overlap is, not just
 whether one exists.
 
@@ -796,7 +808,7 @@ intersection", and depth-based reactions need no separate check.
 static bool contains(const Rect& box, float x, float y);
 ```
 
-Inclusive on all four edges, unlike `intersects`, which is exclusive — a
+Inclusive on all four edges, unlike `intersects`, which is exclusive, a
 point exactly on the boundary or a corner counts as contained. A click on a
 button's border should press it.
 
@@ -830,7 +842,7 @@ Only one axis is ever pushed — this is a single-axis minimum-translation
 resolution, not a full 2D minimum-translation-vector solve. When the overlap
 is exactly square (`width == height`), the `<` comparison means the
 **vertical** axis is chosen (ties go to Y/height). The center comparison uses
-`left(a) + right(a)` — a doubled midpoint — since the factor of two cancels
+`left(a) + right(a)`: a doubled midpoint, since the factor of two cancels
 and no division is needed.
 
 `getSeparation()` reports the push instead of applying it, so a game can
