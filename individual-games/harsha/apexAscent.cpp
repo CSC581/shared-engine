@@ -1,12 +1,5 @@
 // Apex Ascent: climb a tower of platforms one charged jump at a time.
-//
-// Hold SPACE to charge a jump, aim with A/D while charging, release to leap.
-// Momentum from a jump is not overwritten by input until you land again, so
-// once you commit to a jump you ride it out.
-//
-// This is the individual game -- everything here is this game's own choice and
-// the engine has no idea any of it exists. Self-contained: class, game logic
-// and main() in one file, following the pattern of the other games/ examples.
+
 #include "Collision.hpp"
 #include "Engine.hpp"
 #include "Entity.hpp"
@@ -14,7 +7,7 @@
 #include "Input.hpp"
 #include "Physics.hpp"
 
-#include <SDL3/SDL.h>  // only using for specific graphics related stuff
+#include <SDL3/SDL.h>
 
 #include <cmath>
 #include <cstdio>
@@ -24,12 +17,6 @@
 
 namespace {
 
-// An individual game built on the shared engine.
-//
-// The world is several screens tall ("rooms"), stacked with room 0 at the
-// bottom and room (roomCount - 1) at the top. The player climbs upward
-// (decreasing y); a vertical camera follows them so only one room's worth of
-// the world is visible at a time.
 class ApexAscent : public Game {
 public:
     explicit ApexAscent(const Engine& engine);
@@ -41,24 +28,15 @@ public:
 private:
     static constexpr float gravity = 2200.0F;
 
-    // Jump charging: hold SPACE longer for a bigger leap, aim with A/D.
     static constexpr float baseJumpSpeed = 480.0F;
     static constexpr float maxChargePower = 1500.0F;
     static constexpr float chargeSpeed = 1100.0F;
-    // How much of the jump's power goes sideways when a direction is held.
     static constexpr float horizontalJumpRatio = 0.55F;
 
-    // Decays horizontal speed while grounded, so a jump's leftover sideways
-    // momentum doesn't leave the player sliding across (and off) a platform
-    // forever after landing. Multiplicative per-second decay factor.
-
     static constexpr float walkSpeed = 300.0F;
-
+    // Multiplicative per-second decay of horizontal speed while grounded.
     static constexpr float groundFriction = 0.00002F;
-
-    // Tolerance (in pixels) for the direction-aware landing check below, to
-    // absorb floating point drift when the player is resting exactly on a
-    // platform's surface.
+    // Slop for the direction-aware landing check (float drift on the surface).
     static constexpr float landingTolerance = 4.0F;
 
     static constexpr float playerWidth = 50.0F;
@@ -66,12 +44,28 @@ private:
 
     static constexpr int roomCount = 6;
 
+    // Straight-line ping-pong path for one entry in platforms_.
+    struct MovingPlatformPath {
+        std::size_t platformIndex;
+        float pointAX;
+        float pointAY;
+        float pointBX;
+        float pointBY;
+        float speed;
+        bool movingToB = true;
+    };
+
     void buildLevel();
     void handleCollisions();
     void updateCamera(float deltaTime);
+    void updateMovingPlatforms(float deltaTime);
+    bool isMovingPlatform(const Entity& platform) const;
 
     Entity player_;
     std::vector<Entity> platforms_;
+    std::vector<MovingPlatformPath> movingPlatformPaths_;
+    // Last platform stood on; used to carry the player next frame.
+    Entity* groundedMovingPlatform_ = nullptr;
 
     float viewWidth_;
     float viewHeight_;
@@ -81,21 +75,21 @@ private:
     float startX_;
     float startY_;
 
-    // Vertical scroll offset: world y minus camera_ is screen y.
+    // Vertical scroll: world Y minus camera_ is screen Y.
     float camera_ = 0.0F;
 
     float chargePower_ = 0.0F;
     float aimDirection_ = 0.0F;
-
-    // The player's bottom edge before the current frame's movement, used to
-    // detect a platform landing by direction of travel rather than by
-    // comparing overlap depths (see handleCollisions()).
+    // Foot Y before this frame's move; used for landing detection.
     float previousPlayerBottom_ = 0.0F;
 
     bool isCharging_ = false;
     bool isOnGround_ = false;
 
     int highestRoomReached_ = 0;
+
+    // Mirrored from the engine for the HUD scale-mode label.
+    Engine::ScaleMode currentScaleMode_;
 };
 
 ApexAscent::ApexAscent(const Engine& engine)
@@ -105,14 +99,14 @@ ApexAscent::ApexAscent(const Engine& engine)
       worldWidth_(viewWidth_),
       worldHeight_(viewHeight_ * static_cast<float>(roomCount)),
       startX_(worldWidth_ * 0.5F - playerWidth * 0.5F),
-      startY_(worldHeight_ - 140.0F - playerHeight)
+      startY_(worldHeight_ - 140.0F - playerHeight),
+      currentScaleMode_(engine.getScaleMode())
 {
     player_.setPosition(startX_, startY_);
     previousPlayerBottom_ = startY_ + playerHeight;
 
     buildLevel();
 
-    // This game's choice of gravity, not a value baked into the engine.
     Physics::setGravity(gravity);
 
     camera_ = worldHeight_ - viewHeight_;
@@ -121,33 +115,40 @@ ApexAscent::ApexAscent(const Engine& engine)
                  "release to leap. F1 to toggle scaling, Esc to quit.\n";
 }
 
-// Static level geometry: ground, side walls to keep the climb in bounds, and
-// a simple staircase of platforms up through every room. Replace this with
-// your own level design -- it exists to give you something to jump on.
 void ApexAscent::buildLevel()
 {
     constexpr float groundThickness = 140.0F;
     constexpr float wallThickness = 40.0F;
-    // Thicker than a bare visual minimum: gives the landing check in
-    // handleCollisions() more margin against a fast fall skipping clean
-    // through the platform within a single frame.
     constexpr float platformThickness = 60.0F;
 
-    // Ground, at the very bottom of the world.
+    // Ground at the bottom of the world.
     platforms_.emplace_back(0.0F, worldHeight_ - groundThickness, worldWidth_, groundThickness);
 
-    // Side walls, just outside the playable width, for the whole climb.
+    // Side walls for the whole climb.
     platforms_.emplace_back(-wallThickness, 0.0F, wallThickness, worldHeight_);
     platforms_.emplace_back(worldWidth_, 0.0F, wallThickness, worldHeight_);
 
-    // A hand-placed first room, easy jumps to learn the charge mechanic.
+    // Hand-placed first room (easy jumps to learn charging).
     const float room0Top = worldHeight_ - viewHeight_;
     platforms_.emplace_back(160.0F, room0Top + 620.0F, 220.0F, platformThickness);
     platforms_.emplace_back(560.0F, room0Top + 460.0F, 220.0F, platformThickness);
     platforms_.emplace_back(220.0F, room0Top + 280.0F, 220.0F, platformThickness);
 
-    // TODO: replace this generated staircase with hand-designed rooms once
-    // the core feel (charge, jump, land) works the way you want.
+    // Demo auto-moving platform; carries the player if they stand on it.
+    {
+        constexpr float movingPlatformWidth = 150.0F;
+        const float movingPlatformY = room0Top + 150.0F;
+        constexpr float pointAX = 300.0F;
+        constexpr float pointBX = 550.0F;
+        constexpr float movingPlatformSpeed = 150.0F;
+
+        const std::size_t movingIndex = platforms_.size();
+        platforms_.emplace_back(pointAX, movingPlatformY, movingPlatformWidth, platformThickness);
+        movingPlatformPaths_.push_back({movingIndex, pointAX, movingPlatformY,
+                                         pointBX, movingPlatformY, movingPlatformSpeed, true});
+    }
+
+    // TODO: replace generated staircase with hand-designed rooms later.
     for (int room = 1; room < roomCount; ++room) {
         const float roomTop = worldHeight_ - viewHeight_ * static_cast<float>(room + 1);
         const bool startLeft = room % 2 == 0;
@@ -163,8 +164,7 @@ void ApexAscent::buildLevel()
 
 void ApexAscent::handleInput(Engine& engine)
 {
-    // Aim while charging. Once airborne, momentum is locked in -- no air
-    // control -- so this only matters while isOnGround_ is true.
+    // Aim/charge only while grounded — no air control once jumping.
     float aim = 0.0F;
     if (Input::isKeyPressed(SDL_SCANCODE_A) || Input::isKeyPressed(SDL_SCANCODE_LEFT)){
         aim -= 1.0F;
@@ -197,7 +197,7 @@ void ApexAscent::handleInput(Engine& engine)
 
 void ApexAscent::update(float deltaTime, Engine& engine)
 {
-    (void)engine;
+    currentScaleMode_ = engine.getScaleMode();
 
     if (isCharging_) {
         chargePower_ += chargeSpeed * deltaTime;
@@ -206,15 +206,14 @@ void ApexAscent::update(float deltaTime, Engine& engine)
         }
     }
 
-    // Kill leftover jump momentum once grounded, so landings don't turn into
-    // an indefinite slide across (and off) the platform.
+    // Kill leftover horizontal slide after landing.
     if (isOnGround_) {
         player_.setVelocityX(player_.getVelocityX() * std::pow(groundFriction, deltaTime));
     }
 
-    // Captured before this frame's movement so handleCollisions() can tell
-    // whether the player's foot crossed a platform's surface this frame,
-    // regardless of how deep the resulting overlap ends up being.
+    updateMovingPlatforms(deltaTime);
+
+    // Capture before this frame's movement for the landing check.
     previousPlayerBottom_ = player_.getY() + playerHeight;
 
     if (!isOnGround_) {
@@ -231,26 +230,26 @@ void ApexAscent::update(float deltaTime, Engine& engine)
     }
 }
 
-// Everything the game decides to do once the engine reports an overlap.
+bool ApexAscent::isMovingPlatform(const Entity& platform) const
+{
+    for (const MovingPlatformPath& path : movingPlatformPaths_) {
+        if (&platform == &platforms_[path.platformIndex]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ApexAscent::handleCollisions()
 {
     isOnGround_ = false;
+    groundedMovingPlatform_ = nullptr;
 
-    for (const Entity& platform : platforms_) {
+    for (Entity& platform : platforms_) {
         const Rect playerBounds = player_.getBounds();
         const Rect platformBounds = platform.getBounds();
 
-        // Direction-aware landing check, tried first: if the player was
-        // falling and its foot crossed the platform's top surface this
-        // frame, treat it as a landing no matter how deep the resulting
-        // overlap is. Collision::getSeparation() instead resolves whichever
-        // overlap (x or y) is smaller, which picks the *horizontal* axis when
-        // a jump lands near a platform's edge -- small horizontal overlap
-        // but a deep vertical one from a fast fall -- shoving the player off
-        // sideways instead of landing them. Checking direction of travel
-        // avoids that ambiguity entirely, and also closes the tunneling gap
-        // where a fast fall could otherwise skip clean through a thin
-        // platform within a single frame.
+        // Land when the foot crosses the top (avoids wrong-axis MTV near edges).
         const bool overlapsHorizontally =
             playerBounds.x < platformBounds.x + platformBounds.width &&
             playerBounds.x + playerBounds.width > platformBounds.x;
@@ -261,6 +260,9 @@ void ApexAscent::handleCollisions()
             player_.setPosition(player_.getX(), platformBounds.y - playerHeight);
             player_.setVelocityY(0.0F);
             isOnGround_ = true;
+            if (isMovingPlatform(platform)) {
+                groundedMovingPlatform_ = &platform;
+            }
             continue;
         }
 
@@ -272,21 +274,18 @@ void ApexAscent::handleCollisions()
         }
 
         if (pushY < 0.0F) {
-            // Landed on top of something: footing regained, jump consumed.
+            // Landed on top.
             isOnGround_ = true;
-        } else if (pushY > 0.0F) {
-            // Bonked head-first into a platform from below.
-            // TODO: add a knockback/"bonk" reaction here if you want one --
-            // resolve() below just stops the upward motion.
+            if (isMovingPlatform(platform)) {
+                groundedMovingPlatform_ = &platform;
+            }
         }
 
         Collision::resolve(player_, platform);
     }
 }
 
-// Smoothly scrolls the camera to follow the player vertically. Rooms are not
-// snapped to discrete screens yet -- this just keeps the player roughly
-// centred -- so treat it as a starting point for your own camera behaviour.
+// Smooth vertical follow, clamped to the world.
 void ApexAscent::updateCamera(float deltaTime)
 {
     const float target = player_.getY() + playerHeight * 0.5F - viewHeight_ * 0.5F;
@@ -300,9 +299,38 @@ void ApexAscent::updateCamera(float deltaTime)
     }
 }
 
+void ApexAscent::updateMovingPlatforms(float deltaTime)
+{
+    for (MovingPlatformPath& path : movingPlatformPaths_) {
+        Entity& platform = platforms_[path.platformIndex];
+        const float prevX = platform.getX();
+        const float prevY = platform.getY();
+
+        const float targetX = path.movingToB ? path.pointBX : path.pointAX;
+        const float targetY = path.movingToB ? path.pointBY : path.pointAY;
+        const float dx = targetX - prevX;
+        const float dy = targetY - prevY;
+        const float distance = std::sqrt(dx * dx + dy * dy);
+        const float step = path.speed * deltaTime;
+
+        if (distance <= step || distance <= 0.0001F) {
+            platform.setPosition(targetX, targetY);
+            path.movingToB = !path.movingToB;
+        } else {
+            platform.setPosition(prevX + dx / distance * step, prevY + dy / distance * step);
+        }
+
+        // Carry the player with the platform they were standing on.
+        if (&platform == groundedMovingPlatform_) {
+            player_.setPosition(player_.getX() + (platform.getX() - prevX),
+                                 player_.getY() + (platform.getY() - prevY));
+        }
+    }
+}
+
 void ApexAscent::render(SDL_Renderer* renderer) const
 {
-    // Everything below draws in world space, shifted by the camera.
+    // World draw shifted by camera.
     const auto drawRect = [this, renderer](const Rect& bounds, Uint8 red, Uint8 green, Uint8 blue) {
         SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
         const SDL_FRect rect{bounds.x, bounds.y - camera_, bounds.width, bounds.height};
@@ -310,12 +338,17 @@ void ApexAscent::render(SDL_Renderer* renderer) const
     };
 
     for (const Entity& platform : platforms_) {
-        drawRect(platform.getBounds(), 90, 100, 130);
+        // Amber tint so moving platforms read as intentional.
+        if (isMovingPlatform(platform)) {
+            drawRect(platform.getBounds(), 200, 150, 60);
+        } else {
+            drawRect(platform.getBounds(), 90, 100, 130);
+        }
     }
 
     drawRect(player_.getBounds(), 240, 240, 255);
 
-    // Charge meter, drawn in screen space rather than world space.
+    // Charge meter in screen space (not world space).
     const float meterWidth = 220.0F;
     const float filled = meterWidth * chargePower_ / maxChargePower;
     SDL_SetRenderDrawColor(renderer, 20, 20, 24, 255);
@@ -332,6 +365,12 @@ void ApexAscent::render(SDL_Renderer* renderer) const
                   roomCount, highestRoomReached_ + 1);
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     SDL_RenderDebugText(renderer, 20.0F, 20.0F, hud);
+
+    const char* modeLabel =
+        currentScaleMode_ == Engine::ScaleMode::Constant ? "Constant" : "Proportional";
+    char scaleHud[64];
+    std::snprintf(scaleHud, sizeof(scaleHud), "Scale: %s (F1 to toggle)", modeLabel);
+    SDL_RenderDebugText(renderer, 20.0F, 40.0F, scaleHud);
 }
 
 } // namespace
@@ -339,7 +378,8 @@ void ApexAscent::render(SDL_Renderer* renderer) const
 int main()
 {
     try {
-        Engine engine("Apex Ascent", 900, 1200);
+        // 900x900 design resolution (fits ordinary screens in Constant mode).
+        Engine engine("Apex Ascent", 900, 900);
         engine.setClearColor(18, 20, 32);
 
         ApexAscent game(engine);
