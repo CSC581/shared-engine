@@ -45,3 +45,8 @@ add_executable(collision-tests tests/CollisionTests.cpp)
 target_link_libraries(collision-tests PRIVATE engine-geometry)
 
 add_test(NAME collision-tests COMMAND collision-tests)
+
+# Apex Ascent executable
+add_executable(apex-ascent individual-games/harsha/apexAscent.cpp)
+target_link_libraries(apex-ascent PRIVATE engine)
+
