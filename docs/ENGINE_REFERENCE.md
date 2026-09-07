@@ -1,27 +1,16 @@
-# Engine Reference
+# Milestone 1: Team Engine Design
 
-A single consolidated reference for the shared engine: the reusable
-C++17/SDL3 code in `include/` and `src/`.
+CSC 581 Game Engine Foundation
 
-Contents:
+Team 17: Vanaja Binay Agarwal, Harsha Puvvadi, Seojin Kim
 
-- Overview & Architecture
-- Engine & Game
-- Entity
-- Physics
-- Input
-- Collision
 
 ## Overview & Architecture
-
-This is a reference for the shared engine itself: the reusable C++17/SDL3
-code in `include/` and `src/`. It intentionally does not cover any specific
-game built on top of the engine (those live under `individual-games/<name>/`).
 
 ### What the engine is
 
 The engine is a small foundation for building 2D games with SDL3. It is
-split into two CMake libraries (see `CMakeLists.txt`):
+split into two CMake libraries :
 
 - **`engine-geometry`** — SDL-free: `Entity`, `Physics`, `Collision`. Pure
   geometry and math, so it needs no window or renderer.
