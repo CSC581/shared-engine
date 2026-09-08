@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 280" width="900" role="img" aria-label="A key pressed and released between two polls is invisible to polling alone; handleEvent() latches the key-down so the next update() reports it for exactly one frame.">
+  <style>
+    @media (prefers-color-scheme: dark) {
+      .bg    { fill: #14161a; }
+      .panel { fill: #1c2026; }
+      .ink   { fill: #e6e8eb; }
+      .inks  { stroke: #e6e8eb; }
+      .muted { fill: #98a1ad; }
+      .muteds{ stroke: #98a1ad; }
+      .line  { stroke: #39404a; }
+      .wash  { fill: #ffffff; fill-opacity: 0.07; }
+      .hollow{ fill: #14161a; }
+    }
+  </style>
+  <rect width="900" height="280" rx="10" fill="#fbfbfa" class="bg"/>
+  <rect x="275" y="46" width="75" height="216" fill="#f2f3f5" class="wash"/>
+  <line x1="200" y1="46" x2="200" y2="262" stroke="#c9ced6" stroke-width="1" stroke-dasharray="3 4" class="line"/>
+  <text x="200" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="normal" text-anchor="middle" fill="#6b7280" class="muted">poll N</text>
+  <line x1="415" y1="46" x2="415" y2="262" stroke="#c9ced6" stroke-width="1" stroke-dasharray="3 4" class="line"/>
+  <text x="415" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="normal" text-anchor="middle" fill="#6b7280" class="muted">poll N+1</text>
+  <line x1="630" y1="46" x2="630" y2="262" stroke="#c9ced6" stroke-width="1" stroke-dasharray="3 4" class="line"/>
+  <text x="630" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="normal" text-anchor="middle" fill="#6b7280" class="muted">poll N+2</text>
+  <line x1="845" y1="46" x2="845" y2="262" stroke="#c9ced6" stroke-width="1" stroke-dasharray="3 4" class="line"/>
+  <text x="845" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="normal" text-anchor="middle" fill="#6b7280" class="muted">poll N+3</text>
+  <text x="150" y="116" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="normal" text-anchor="end" fill="#1f2328" class="ink">physical key</text>
+  <path d="M200,110 H275 V74 H350 V110 H880" fill="none" stroke="#1f2328" stroke-width="3.2" stroke-linejoin="round" class="inks"/>
+  <text x="150" y="186" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="normal" text-anchor="end" fill="#1f2328" class="ink">poll only</text>
+  <path d="M200,180 H880" fill="none" stroke="#1f2328" stroke-width="3.2" stroke-linejoin="round" class="inks"/>
+  <circle cx="200" cy="180" r="7" fill="#fbfbfa" stroke="#c9ced6" stroke-width="1.8" class="hollow line"/>
+  <circle cx="415" cy="180" r="7" fill="#fbfbfa" stroke="#c9ced6" stroke-width="1.8" class="hollow line"/>
+  <circle cx="630" cy="180" r="7" fill="#fbfbfa" stroke="#c9ced6" stroke-width="1.8" class="hollow line"/>
+  <circle cx="845" cy="180" r="7" fill="#fbfbfa" stroke="#c9ced6" stroke-width="1.8" class="hollow line"/>
+  <text x="150" y="256" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="normal" text-anchor="end" fill="#1f2328" class="ink">with latch</text>
+  <path d="M200,250 H415 V214 H630 V250 H880" fill="none" stroke="#f59e0b" stroke-width="3.2" stroke-linejoin="round" class=""/>
+  <circle cx="200" cy="250" r="7" fill="#fbfbfa" stroke="#c9ced6" stroke-width="1.8" class="hollow line"/>
+  <circle cx="630" cy="250" r="7" fill="#fbfbfa" stroke="#c9ced6" stroke-width="1.8" class="hollow line"/>
+  <circle cx="845" cy="250" r="7" fill="#fbfbfa" stroke="#c9ced6" stroke-width="1.8" class="hollow line"/>
+  <circle cx="275" cy="250" r="7.5" fill="#f59e0b"/>
+  <circle cx="415" cy="214" r="7.5" fill="#f59e0b"/>
+</svg>
