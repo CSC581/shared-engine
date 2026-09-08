@@ -50,3 +50,14 @@ add_test(NAME collision-tests COMMAND collision-tests)
 add_executable(apex-ascent individual-games/harsha/apexAscent.cpp)
 target_link_libraries(apex-ascent PRIVATE engine)
 
+# Starfall Salvage executable
+add_executable(starfall-salvage
+    individual-games/vanaja/starfall-salvage/src/main.cpp
+    individual-games/vanaja/starfall-salvage/src/StarfallSalvageGame.cpp
+)
+
+target_include_directories(starfall-salvage PRIVATE
+    individual-games/vanaja/starfall-salvage/include
+)
+
+target_link_libraries(starfall-salvage PRIVATE engine)
