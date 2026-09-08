@@ -13,9 +13,9 @@ Source Code: https://github.com/CSC581/shared-engine/tree/main
 The engine is a small foundation for building 2D games with SDL3. It is
 split into two CMake libraries:
 
-- **`engine-geometry`** — SDL-free: `Entity`, `Physics`, `Collision`. Pure
+- **`engine-geometry`**, SDL-free: `Entity`, `Physics`, `Collision`. Pure
   geometry and math, so it needs no window or renderer.
-- **`engine`** — SDL-dependent: `Engine`, `Input`. Publicly links
+- **`engine`**, SDL-dependent: `Engine`, `Input`. Publicly links
   `engine-geometry` and `SDL3::SDL3`, so any game that links `engine` gets
   everything transitively.
 
@@ -41,12 +41,23 @@ The engine takes an **object-oriented** approach, in three specific senses:
   are deleted, so ownership of those raw handles is unique and cleanup
   happens exactly once.
 
+**Tradeoff:** this is a deliberate choice of inheritance over callbacks:
+`Engine::run(Game&)` could instead take three `std::function`s or free
+functions and avoid a class entirely. Inheritance wins here because the
+three functions are never called independently, they share `Game`'s
+implicit state (a game's own entities, score, flags) for free, where a
+callback signature would need to smuggle that state through captures or an
+opaque pointer. The cost is real: every game writes a class, overrides three
+pure virtuals, and a contributor new to C++ needs to understand virtual
+dispatch before touching gameplay code, more ceremony than a free-function
+or single-`main.cpp` version would need for a small game.
+
 Not everything is modelled as an object, deliberately. `Physics`, `Collision`,
 and `Input` are all-`static` classes used as namespaces: they hold either no
 state (`Collision` is pure functions) or a single global (`Physics::gravity_`,
 `Input`'s key arrays), so there is nothing per-instance worth constructing.
 `Entity` is a concrete class with no virtuals rather than a base for a
-`Player`/`Enemy` hierarchy — games compose it as a member instead of
+`Player`/`Enemy` hierarchy, games compose it as a member instead of
 inheriting from it.
 
 ### Subsystems
@@ -91,9 +102,24 @@ flowchart TB
     Collision --> Entity
 ```
 
-`Engine` never references `Entity`, `Physics`, or `Collision` directly — it
+`Engine` never references `Entity`, `Physics`, or `Collision` directly, it
 only knows about `Game` and SDL. Everything below the `Game` line in the
 diagram is code a game chooses to use; the engine does not require it.
+
+**Tradeoff:** keeping `engine-geometry` free of SDL is a deliberate split,
+not just a file layout. `Entity`, `Physics`, and `Collision` never include
+an SDL header, so they compile and run headless, `tests/CollisionTests.cpp`
+and the Entity/Physics tests check "do these rectangles overlap?" from the
+terminal, with no window, renderer, or `SDL_Init` involved. It also means
+this geometry survives a later switch from colored rectangles to sprites,
+since none of it depended on how anything is drawn; and it lines up with
+"Physics owns velocity, Collision owns bounds, Engine owns the window" as
+three independent concerns. The cost is two CMake targets instead of one:
+anything that genuinely needs both concerns (e.g. turning a mouse click's
+window-pixel coordinates into world-space geometry) has to live in `engine`
+and call down into `engine-geometry`, never the reverse, and a contributor
+adding a new file has to know which library it belongs in before an
+`#include <SDL3/SDL.h>` accidentally leaks into the SDL-free side.
 
 ### Per-frame lifecycle
 
@@ -119,7 +145,7 @@ flowchart TD
 Why the order is what it is:
 
 - The full event queue is drained even though the engine acts only on
-  quit/close — that drain is what refreshes the array `SDL_GetKeyboardState()`
+  quit/close, that drain is what refreshes the array `SDL_GetKeyboardState()`
   reads. Other events go to `Input::handleEvent()`, latching keys tapped and
   released within one frame.
 - `Input::update()` precedes both the scale-toggle check and
@@ -148,13 +174,13 @@ add_executable(my-game individual-games/<name>/myGame.cpp)
 target_link_libraries(my-game PRIVATE engine)
 ```
 
-Code that needs only geometry can link `engine-geometry` alone — it is
+Code that needs only geometry can link `engine-geometry` alone, it is
 SDL-free and runs headless, with no window and no `SDL_Init`.
 
 ## Engine & Game
 
-`Engine.hpp`/`Engine.cpp` — window, renderer, main loop, timing, and render
-scaling. `Game.hpp` — the interface a game implements to plug into the engine.
+`Engine.hpp`/`Engine.cpp`, window, renderer, main loop, timing, and render
+scaling. `Game.hpp`, the interface a game implements to plug into the engine.
 
 ### Using it from a game
 
@@ -188,7 +214,7 @@ Engine(const char* title, int width, int height);
 ~Engine();
 ```
 
-- `width`/`height` are the **design resolution** — the coordinate space a
+- `width`/`height` are the **design resolution**, the coordinate space a
   game lays its entities out in, not necessarily the window's pixel size (see
   Scale modes below).
 - `SDL_Init(SDL_INIT_VIDEO)` runs first; on failure it throws
@@ -218,11 +244,11 @@ void quit();
   becomes `false`.
 - `isRunning_` is cleared on `SDL_EVENT_QUIT`,
   `SDL_EVENT_WINDOW_CLOSE_REQUESTED`, or `engine.quit()`. `quit()` only flips
-  the flag — the current frame still finishes before the loop exits.
+  the flag, the current frame still finishes before the loop exits.
 - `deltaTime` is `(currentFrameTime - previousFrameTime) / 1000.0F` seconds
   from `SDL_GetTicks()`, capped at `0.05`. The cap keeps a stalled frame
   (window drag, breakpoint) from causing a large physics jump. There is no
-  minimum clamp or fixed-timestep accumulator — the timestep is variable.
+  minimum clamp or fixed-timestep accumulator, the timestep is variable.
   `previousFrameTime` advances to the raw timestamp even when the delta is
   clamped, so time never accumulates a debt.
 
@@ -283,14 +309,14 @@ coordinates onto window pixels.
   takes effect on the next presented frame regardless of caller.
 - `scaleToggleKey_` defaults to `SDL_SCANCODE_F1`. Each frame, if the key
   isn't `SDL_SCANCODE_UNKNOWN` and `Input::isKeyJustPressed(scaleToggleKey_)`
-  is true, `run()` calls `toggleScaleMode()` itself — no wiring needed. This
+  is true, `run()` calls `toggleScaleMode()` itself, no wiring needed. This
   check runs before `handleInput`, so a game reading the same key sees the
   mode already in effect for the frame.
   `setScaleToggleKey(SDL_SCANCODE_UNKNOWN)` disables the built-in toggle; any
   other scancode rebinds it.
 
 `applyScaleMode()` resets render scale to `(1, 1)` first so the two mechanisms
-can never compound — any prior mode's or game's leftover scale is wiped before
+can never compound, any prior mode's or game's leftover scale is wiped before
 the new presentation is set. `Proportional` relies on letterboxing rather than
 separate horizontal and vertical scale factors, which would stretch the image
 and distort the design aspect ratio.
@@ -347,7 +373,7 @@ flowchart LR
 
 ## Entity
 
-`Entity.hpp`/`Entity.cpp` — the generic game object: position, size, and
+`Entity.hpp`/`Entity.cpp`, the generic game object: position, size, and
 velocity, plus a bounding rectangle. It has no knowledge of rendering,
 input, or any specific game; it is pure state and simple motion.
 
@@ -462,7 +488,7 @@ y)`.
 
 This split is intentional: it lets a game write the natural
 `player.collidesWith(wall)` call on `Entity` itself, while keeping
-`Entity.cpp`/`Entity.hpp` free of any dependency on the collision system —
+`Entity.cpp`/`Entity.hpp` free of any dependency on the collision system.
 `Entity` depends only on its own header; `Collision.cpp` depends on both.
 
 
@@ -491,7 +517,7 @@ holding one piece of shared, global data: `gravity_`.
   as a centimeter (or as an arbitrary "pixels per second squared" value a game
   is free to reinterpret).
 - `setGravity()` overwrites `gravity_` for all subsequent `applyGravity`
-  calls, on any entity — there is no per-entity gravity scale.
+  calls, on any entity, there is no per-entity gravity scale.
 - `applyGravity(entity, deltaTime)` only **adds to vertical velocity**; it
   does not move the entity. Gravity accumulates onto whatever `velocityY`
   already is, so calling it every frame produces an accelerating fall;
@@ -609,14 +635,14 @@ source array cannot overrun `currentKeys_`; clearing first keeps a key that
 disappears from the source from sticking. 3. ORs in any scancode latched by
 `handleEvent()` since the last `update()`, so a key tapped and released
 between two polls still reads as pressed for exactly one frame. The latch only
-ever forces a key *on* — it can extend a press by one frame, never suppress
+ever forces a key *on*, it can extend a press by one frame, never suppress
 one. 4. Clears `eventPressedKeys_` for the next frame.
 
 #### `Input::handleEvent(const SDL_Event& event)`
 
 Only fresh key-down events are latched (`event.key.repeat` is ignored, so OS
-key-repeat does not re-trigger anything); key-up events are not handled here —
-releases are detected only through the polling path in `update()`.
+key-repeat does not re-trigger anything); key-up events are not handled here.
+Releases are detected only through the polling path in `update()`.
 
 ### Query API
 
@@ -626,12 +652,12 @@ static bool isKeyJustPressed(SDL_Scancode key);
 static bool isKeyJustReleased(SDL_Scancode key);
 ```
 
-- `isKeyPressed(key)` — `currentKeys_[key]` is true this frame (held,
+- `isKeyPressed(key)`, `currentKeys_[key]` is true this frame (held,
   regardless of how long).
-- `isKeyJustPressed(key)` — true this frame, false last frame. Fires for
+- `isKeyJustPressed(key)`, true this frame, false last frame. Fires for
   exactly one frame per press, including presses latched via
   `handleEvent()`.
-- `isKeyJustReleased(key)` — false this frame, true last frame. Fires for
+- `isKeyJustReleased(key)`, false this frame, true last frame. Fires for
   exactly one frame per release.
 - All three return `false` for an out-of-range scancode.
 
@@ -675,21 +701,37 @@ arbitrary `bool` array, so a caller can supply keyboard state without any
 real SDL event loop or window. Passing `nullptr` restores real hardware
 reads. This is the only supported way to feed `Input` a synthetic state.
 
-The injected array is **not copied** — only the pointer and length are
-stored — so it must outlive every `update()` call that reads it. The length
+The injected array is **not copied**, only the pointer and length are
+stored, so it must outlive every `update()` call that reads it. The length
 is reset to `0` whenever the pointer is null, so a stale length can never be
 paired with a null pointer.
 
 
 ## Collision
 
-`Collision.hpp`/`Collision.cpp` — axis-aligned bounding-box (AABB)
+`Collision.hpp`/`Collision.cpp`, axis-aligned bounding-box (AABB)
 collision geometry.
 
-`Collision` only answers geometric questions — "are these two boxes
-overlapping, and by how much?" — and never decides what a game should do in
+`Collision` only answers geometric questions, "are these two boxes
+overlapping, and by how much?", and never decides what a game should do in
 response. Deciding what a collision *means* (stop the player, take damage,
 trigger a checkpoint) is entirely up to the game.
+
+**Tradeoff:** this division is deliberate, but the boundary isn't perfectly
+clean. `getSeparation`/`resolve` do make one decision on the game's behalf:
+which axis to push along. They compare the overlap's width against its
+height and push along whichever is **smaller**, the shallower penetration,
+on the theory that it is the minimal correction (see Separation and
+resolution below). That is a purely geometric heuristic, though, not a
+game-aware one: `Collision` still doesn't know that a push along Y means
+"the player landed on a platform" or that a push along X means "a bullet
+grazed a wall." The same `intersects`/`resolve` calls work whether a hit
+should stop a player, cost a life, award a coin, or destroy a block, but the
+engine has no vocabulary for any of those outcomes, there is no
+`isGameOver`, `isCollectible`, or `isGrounded` anywhere in `Collision` or
+`Entity`. Every game reads the resolved push axis/direction (or the raw AABB
+overlap) and re-derives those concepts itself in its own collision-response
+code.
 
 All methods are `static` and `Collision` holds no state. Because every entry
 point is a pure function of its arguments, the same inputs always give the
@@ -697,7 +739,7 @@ same answer, and nothing has to be initialised or reset between frames.
 
 ### Using it from a game
 
-Include `Collision.hpp` and call the static functions — there is no
+Include `Collision.hpp` and call the static functions, there is no
 `Collision` instance to construct. This excerpt assumes `player` and `coin`
 are Entities and `button` is a Rect:
 
@@ -736,7 +778,7 @@ collision logic for thin surfaces.
 
 ### Geometry conventions
 
-`Collision.cpp` defines four unexported helpers — `left(rect)` (`rect.x`),
+`Collision.cpp` defines four unexported helpers, `left(rect)` (`rect.x`),
 `right(rect)` (`rect.x + rect.width`), `top(rect)` (`rect.y`), and
 `bottom(rect)` (`rect.y + rect.height`). Everything else in the file is
 written in terms of these, so the edge convention lives in exactly one place.
@@ -828,7 +870,7 @@ Computes the smallest push, along a single axis, that would separate
 1. Compute the overlap rectangle between `moving` and `blocker` via
    `getIntersection`. If either dimension is `<= 0`, there is no collision:
    return `false` and leave `outX`/`outY` untouched.
-2. Pick the axis with the **smaller overlap dimension** — that is the
+2. Pick the axis with the **smaller overlap dimension**, that is the
    shallowest penetration, and pushing along it is the minimal correction:
    - If `overlap.width < overlap.height`: push along X. Direction is `-1` if
      `moving`'s horizontal center is left of `blocker`'s center, else `+1`.
@@ -837,7 +879,7 @@ Computes the smallest push, along a single axis, that would separate
      vertical axis, with `outY = overlap.height * direction`, `outX = 0`.
 3. Return `true` and write `outX`/`outY`.
 
-Only one axis is ever pushed — this is a single-axis minimum-translation
+Only one axis is ever pushed, this is a single-axis minimum-translation
 resolution, not a full 2D minimum-translation-vector solve. When the overlap
 is exactly square (`width == height`), the `<` comparison means the
 **vertical** axis is chosen (ties go to Y/height). The center comparison uses
@@ -866,7 +908,7 @@ static bool resolve(Entity& moving, const Entity& blocker);
 
 Convenience response built directly on `getSeparation`. It moves `moving` out
 of `blocker` by the separation vector and zeroes velocity **only on the axis
-that was pushed** — resolving a vertical landing zeroes `velocityY` (stops
+that was pushed**, resolving a vertical landing zeroes `velocityY` (stops
 the fall) but leaves `velocityX` untouched (horizontal movement survives
 landing on the ground), and vice versa for a horizontal wall push. It returns
 `false` and leaves `moving` unmodified if the two were not overlapping.
