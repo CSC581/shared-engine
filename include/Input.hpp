@@ -1,6 +1,5 @@
 #pragma once
 
-#include <SDL3/SDL_events.h>
 #include <SDL3/SDL_scancode.h>
 
 #include <array>
@@ -16,10 +15,6 @@
 class Input {
 public:
     static void update();
-
-    // Optional: the engine forwards key events here so that a press which
-    // starts and ends inside a single frame is not lost between polls.
-    static void handleEvent(const SDL_Event& event);
 
     static bool isKeyPressed(SDL_Scancode key);
     static bool isKeyJustPressed(SDL_Scancode key);
@@ -45,8 +40,6 @@ private:
 
     static std::array<bool, keyCount> currentKeys_;
     static std::array<bool, keyCount> previousKeys_;
-    // Edges seen through the event queue since the last update().
-    static std::array<bool, keyCount> eventPressedKeys_;
     static const bool* stateSource_;
     static int stateSourceKeyCount_;
 };

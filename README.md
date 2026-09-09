@@ -144,12 +144,8 @@ player.setVelocity(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D) * speed,
                    Input::getAxis(SDL_SCANCODE_W, SDL_SCANCODE_S) * speed);
 ```
 
-Polling alone would miss a key that is pressed *and* released between two
-frames, which makes fast combos feel dropped. To close that gap the engine's
-main loop forwards key events to `Input::handleEvent()` (`src/Engine.cpp`), and
-`update()` merges those latched presses into the frame's state — so a tap that
-brief is still reported for one frame and still fires `isKeyJustPressed`.
-
-If a specific physical combination never appears in `getPressedKeys()`, that is
-keyboard ghosting in the hardware rather than an engine limitation; most
-non-gaming keyboards drop the third simultaneous key in some rows.
+A very brief press and release that happens entirely between two frames may not
+be visible to a polling input system. If a specific physical combination never
+appears in `getPressedKeys()`, that is keyboard ghosting in the hardware rather
+than an engine limitation; most non-gaming keyboards drop the third
+simultaneous key in some rows.
