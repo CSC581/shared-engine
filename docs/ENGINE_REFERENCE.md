@@ -90,7 +90,6 @@ called:
 ```mermaid
 flowchart TD
     pollEvents["Poll SDL events\n(quit/close -> stop loop)"]
-    forwardEvents["Forward key-down events\nto Input::handleEvent"]
     inputUpdate["Input::update()\n(snapshot keyboard state)"]
     scaleToggle["Check scale-toggle key\n(default F1)"]
     handleInput["game.handleInput(engine)"]
@@ -101,7 +100,7 @@ flowchart TD
     render["game.render(renderer)"]
     present["SDL_RenderPresent"]
 
-    pollEvents --> forwardEvents --> inputUpdate --> scaleToggle --> handleInput --> computeDt --> update --> applyScale --> clear --> render --> present --> pollEvents
+    pollEvents --> inputUpdate --> scaleToggle --> handleInput --> computeDt --> update --> applyScale --> clear --> render --> present --> pollEvents
 ```
 
 This is the exact loop body from `Engine::run()`:
@@ -112,17 +111,14 @@ void Engine::run(Game& game)
     Uint64 previousFrameTime = SDL_GetTicks();
 
     while (isRunning_) {
-        // The engine only acts on window-close events itself; key events are
-        // handed to Input so a key tapped between frames still registers, and
-        // all gameplay input is read through the polling Input system.
+        // Window events keep the application responsive; gameplay input is
+        // read exclusively through the polling Input system below.
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT ||
                 event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                 isRunning_ = false;
             }
-
-            Input::handleEvent(event);
         }
 
         Input::update();
@@ -155,10 +151,9 @@ void Engine::run(Game& game)
 
 Notes on the ordering:
 
-- Window-close/quit events are handled by `Engine` itself; every other key
-  event is forwarded to `Input::handleEvent()` so a key tapped and released
-  within a single frame is still latched for that frame. See the Input
-  section for why both a polling and an event path exist.
+- Window-close/quit events are handled by `Engine` itself; every other
+  event is discarded. Draining them is still required — see below. Gameplay
+  input comes entirely from the polling `Input` API.
 - `Input::update()` runs before the scale-toggle check and before
   `game.handleInput()`, so both the engine's own `F1` handling and the
   game's input logic see the same up-to-date key state.
@@ -345,8 +340,6 @@ void quit()
   (e.g. from `handleInput` or `update`). `quit()` only flips the flag; the
   current frame still finishes (input, update, render, present) before the
   loop exits.
-- Every other SDL event polled during the frame is forwarded to
-  `Input::handleEvent(event)` — see the Input section for how that is used.
 - Frame timing: `deltaTime` is
   `(currentFrameTime - previousFrameTime) / 1000.0F` seconds, using
   `SDL_GetTicks()` (millisecond resolution), then clamped:
@@ -779,17 +772,14 @@ void Engine::run(Game& game)
     Uint64 previousFrameTime = SDL_GetTicks();
 
     while (isRunning_) {
-        // The engine only acts on window-close events itself; key events are
-        // handed to Input so a key tapped between frames still registers, and
-        // all gameplay input is read through the polling Input system.
+        // Window events keep the application responsive; gameplay input is
+        // read exclusively through the polling Input system below.
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT ||
                 event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                 isRunning_ = false;
             }
-
-            Input::handleEvent(event);
         }
 
         Input::update();
@@ -1439,38 +1429,42 @@ void Physics::applyGravity(Entity& entity, float deltaTime)
 `Input.hpp`/`Input.cpp` — keyboard state for games built on the engine.
 
 `Input` is part of `engine` (SDL-dependent), not `engine-geometry`, because
-it reads `SDL_GetKeyboardState` and consumes `SDL_Event`s. Everything on it
+it reads `SDL_GetKeyboardState` from SDL. Everything on it
 is static (global) state, similar in spirit to `Physics` (see the Physics
 section).
 
-### Design: polling plus event latching
+### Design: polling only
 
-Games query key state by polling (`Input::isKeyPressed(...)`), but a key
-that is pressed and released entirely between two polls would otherwise be
-lost. `Input` solves this with two inputs feeding one piece of state:
+Games query key state by polling (`Input::isKeyPressed(...)`). `Input` keeps
+no event-queue path of its own — one read of the keyboard state per frame is
+the single source of truth behind every query:
 
 ```mermaid
 flowchart LR
-    sdlEvents["SDL key-down events\n(per Engine::run poll loop)"]
-    handleEvent["Input::handleEvent()"]
-    eventPressed["eventPressedKeys_[]\n(latched since last update)"]
     sdlState["SDL_GetKeyboardState()\nor injected source"]
     update["Input::update()"]
     currentKeys["currentKeys_[]"]
     previousKeys["previousKeys_[]"]
 
-    sdlEvents --> handleEvent --> eventPressed --> update
     sdlState --> update
     update --> currentKeys
     currentKeys -->|"copied at start of next update()"| previousKeys
 ```
 
-- `Engine.cpp`'s `run()` calls `Input::handleEvent(event)` for every SDL
-  event it polls (after checking for quit/close itself), and calls
-  `Input::update()` exactly once per frame, before `game.handleInput()`
-  runs.
-- A game normally only calls the query methods below; `handleEvent()` and
-  `update()` are driven by the engine, not by game code.
+- `Engine.cpp`'s `run()` drains the SDL event queue itself (acting only on
+  quit/close), then calls `Input::update()` exactly once per frame, before
+  `game.handleInput()` runs.
+- A game normally only calls the query methods below; `update()` is driven
+  by the engine, not by game code.
+
+**Tradeoff:** a press *and* its release that both fall between two
+`update()` calls are invisible to the engine. Latching `SDL_EVENT_KEY_DOWN`
+from the event queue would close that gap, but it introduces a second source
+of truth that can report a key as held after the hardware says it is
+released — the latch can only force a key *on*, never off. Polling alone
+keeps every query answering one unambiguous question, "is this key down
+right now?", which is what continuous movement and held-modifier chords are
+actually built on. Sub-frame taps are left to the game to design around.
 
 ### Using it from a game
 
@@ -1518,8 +1512,6 @@ private:
 
     static std::array<bool, keyCount> currentKeys_;
     static std::array<bool, keyCount> previousKeys_;
-    // Edges seen through the event queue since the last update().
-    static std::array<bool, keyCount> eventPressedKeys_;
     static const bool* stateSource_;
     static int stateSourceKeyCount_;
 ```
@@ -1527,7 +1519,6 @@ private:
 ```cpp
 std::array<bool, Input::keyCount> Input::currentKeys_{};
 std::array<bool, Input::keyCount> Input::previousKeys_{};
-std::array<bool, Input::keyCount> Input::eventPressedKeys_{};
 const bool* Input::stateSource_ = nullptr;
 int Input::stateSourceKeyCount_ = 0;
 
@@ -1549,11 +1540,10 @@ outside the arrays.
 | `keyCount` | `static constexpr int` (= `SDL_SCANCODE_COUNT`) | Size of every key array, and the valid scancode range. |
 | `currentKeys_` | `std::array<bool, keyCount>` | Keys held during the current frame. |
 | `previousKeys_` | `std::array<bool, keyCount>` | Last frame's `currentKeys_`. |
-| `eventPressedKeys_` | `std::array<bool, keyCount>` | Key-downs latched by `handleEvent()` since the last `update()`; merged into `currentKeys_` and cleared each frame. |
 | `stateSource_` | `const bool*` | Injected keyboard array, or `nullptr` to read real hardware. |
 | `stateSourceKeyCount_` | `int` | Entries in `stateSource_`; `0` when there is no injected source. |
 
-All state is private and static; games never touch it. All three arrays are
+All state is private and static; games never touch it. Both arrays are
 indexed directly by `SDL_Scancode`, so `currentKeys_[SDL_SCANCODE_W]` is the
 state of the W key.
 
@@ -1581,16 +1571,6 @@ void Input::update()
         const int copyCount = std::min(availableKeys, keyCount);
         std::copy(keyboardState, keyboardState + copyCount, currentKeys_.begin());
     }
-
-    // A key that was tapped between two updates is still reported for one
-    // frame, so quick keys in a combo are never dropped.
-    for (int key = 0; key < keyCount; ++key) {
-        if (eventPressedKeys_[key]) {
-            currentKeys_[key] = true;
-        }
-    }
-
-    eventPressedKeys_.fill(false);
 }
 ```
 
@@ -1604,36 +1584,11 @@ Each call:
    `currentKeys_`, resetting it to all-`false` first. Only
    `min(availableKeys, keyCount)` entries are copied, so a shorter source
    array cannot overrun `currentKeys_`.
-3. ORs in any scancode that was latched by `handleEvent()` since the last
-   `update()` call — so a key tapped and released between two polls still
-   reads as pressed for exactly one frame.
-4. Clears `eventPressedKeys_` for the next frame.
 
-Clearing `currentKeys_` before the copy is what keeps a key that disappears from
-the source from staying stuck on. Note also that the latch only ever forces a key
-*on*: it can extend a press by one frame, never suppress one.
-
-#### `Input::handleEvent(const SDL_Event& event)`
-
-```cpp
-void Input::handleEvent(const SDL_Event& event)
-{
-    if (event.type != SDL_EVENT_KEY_DOWN || event.key.repeat) {
-        return;
-    }
-
-    const SDL_Scancode key = event.key.scancode;
-
-    if (isValidKey(key)) {
-        eventPressedKeys_[key] = true;
-    }
-}
-```
-
-Only fresh key-down events are latched (`event.key.repeat` is ignored, so
-OS key-repeat does not re-trigger anything); key-up events are not handled
-here at all — releases are only detected through the polling path in
-`update()`.
+Clearing `currentKeys_` before the copy is what keeps a key that disappears
+from the source from staying stuck on. Both presses and releases are then
+derived purely by comparing `currentKeys_` against `previousKeys_`, so the
+entire edge-detection story lives in this one function.
 
 ### Query API
 
@@ -1657,8 +1612,7 @@ bool Input::isKeyJustReleased(SDL_Scancode key)
 - `isKeyPressed(key)` — `currentKeys_[key]` is true this frame (held,
   regardless of how long).
 - `isKeyJustPressed(key)` — true this frame, false last frame. Fires for
-  exactly one frame per press, including presses latched via
-  `handleEvent()`.
+  exactly one frame per press.
 - `isKeyJustReleased(key)` — false this frame, true last frame. Fires for
   exactly one frame per release.
 - All three return `false` for an out-of-range scancode (`isValidKey`
@@ -1773,7 +1727,6 @@ Complete, verbatim source of the files covered in this section.
 ```cpp
 #pragma once
 
-#include <SDL3/SDL_events.h>
 #include <SDL3/SDL_scancode.h>
 
 #include <array>
@@ -1789,10 +1742,6 @@ Complete, verbatim source of the files covered in this section.
 class Input {
 public:
     static void update();
-
-    // Optional: the engine forwards key events here so that a press which
-    // starts and ends inside a single frame is not lost between polls.
-    static void handleEvent(const SDL_Event& event);
 
     static bool isKeyPressed(SDL_Scancode key);
     static bool isKeyJustPressed(SDL_Scancode key);
@@ -1818,8 +1767,6 @@ private:
 
     static std::array<bool, keyCount> currentKeys_;
     static std::array<bool, keyCount> previousKeys_;
-    // Edges seen through the event queue since the last update().
-    static std::array<bool, keyCount> eventPressedKeys_;
     static const bool* stateSource_;
     static int stateSourceKeyCount_;
 };
@@ -1836,7 +1783,6 @@ private:
 
 std::array<bool, Input::keyCount> Input::currentKeys_{};
 std::array<bool, Input::keyCount> Input::previousKeys_{};
-std::array<bool, Input::keyCount> Input::eventPressedKeys_{};
 const bool* Input::stateSource_ = nullptr;
 int Input::stateSourceKeyCount_ = 0;
 
@@ -1860,29 +1806,6 @@ void Input::update()
         // each other and any number of them can read as pressed at once.
         const int copyCount = std::min(availableKeys, keyCount);
         std::copy(keyboardState, keyboardState + copyCount, currentKeys_.begin());
-    }
-
-    // A key that was tapped between two updates is still reported for one
-    // frame, so quick keys in a combo are never dropped.
-    for (int key = 0; key < keyCount; ++key) {
-        if (eventPressedKeys_[key]) {
-            currentKeys_[key] = true;
-        }
-    }
-
-    eventPressedKeys_.fill(false);
-}
-
-void Input::handleEvent(const SDL_Event& event)
-{
-    if (event.type != SDL_EVENT_KEY_DOWN || event.key.repeat) {
-        return;
-    }
-
-    const SDL_Scancode key = event.key.scancode;
-
-    if (isValidKey(key)) {
-        eventPressedKeys_[key] = true;
     }
 }
 
