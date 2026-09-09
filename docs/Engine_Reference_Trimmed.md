@@ -6,7 +6,26 @@ Team 17: Vanaja Agarwal, Harsha Puvvadi, Seojin Kim
 
 Source Code: https://github.com/CSC581/shared-engine/tree/main
 
+> *AI disclosure: Claude Code (Sonnet 5) was used to draft and re-format this content. All content was reviewed and edited by the team.*
+
 ## Overview & Architecture
+
+A reusable C++17/SDL3 foundation for 2D games: it owns the window, renderer,
+main loop, and timing, and gives games entities, physics, input, and collision.
+
+### Repository structure
+
+```
+shared-engine/
+├── CMakeLists.txt       build for both libraries, the tests, and each game
+├── include/             public headers (Engine, Game, Entity, Physics,
+│                        Input, Collision)
+├── src/                 engine implementation
+├── tests/               unit tests for entities/physics, input, and collision
+├── individual-games/    individual games built on the shared engine, one
+│                        folder per team member
+└── vendored/SDL/        SDL3 as a git submodule, built from source
+```
 
 ### What the engine is
 
