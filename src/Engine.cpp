@@ -42,17 +42,14 @@ void Engine::run(Game& game)
     Uint64 previousFrameTime = SDL_GetTicks();
 
     while (isRunning_) {
-        // The engine only acts on window-close events itself; key events are
-        // handed to Input so a key tapped between frames still registers, and
-        // all gameplay input is read through the polling Input system.
+        // Window events keep the application responsive; gameplay input is
+        // read exclusively through the polling Input system below.
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT ||
                 event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                 isRunning_ = false;
             }
-
-            Input::handleEvent(event);
         }
 
         Input::update();

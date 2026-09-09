@@ -6,7 +6,6 @@
 
 std::array<bool, Input::keyCount> Input::currentKeys_{};
 std::array<bool, Input::keyCount> Input::previousKeys_{};
-std::array<bool, Input::keyCount> Input::eventPressedKeys_{};
 const bool* Input::stateSource_ = nullptr;
 int Input::stateSourceKeyCount_ = 0;
 
@@ -32,28 +31,6 @@ void Input::update()
         std::copy(keyboardState, keyboardState + copyCount, currentKeys_.begin());
     }
 
-    // A key that was tapped between two updates is still reported for one
-    // frame, so quick keys in a combo are never dropped.
-    for (int key = 0; key < keyCount; ++key) {
-        if (eventPressedKeys_[key]) {
-            currentKeys_[key] = true;
-        }
-    }
-
-    eventPressedKeys_.fill(false);
-}
-
-void Input::handleEvent(const SDL_Event& event)
-{
-    if (event.type != SDL_EVENT_KEY_DOWN || event.key.repeat) {
-        return;
-    }
-
-    const SDL_Scancode key = event.key.scancode;
-
-    if (isValidKey(key)) {
-        eventPressedKeys_[key] = true;
-    }
 }
 
 bool Input::isKeyPressed(SDL_Scancode key)
