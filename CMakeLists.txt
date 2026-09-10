@@ -2,6 +2,25 @@ cmake_minimum_required(VERSION 3.16)
 
 project(shared-engine LANGUAGES CXX)
 
+# ZeroMQ (C) + cppzmq (C++ headers / cmake target)
+set(ZMQ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)          # libzmq sometimes uses this
+set(ENABLE_DRAFTS OFF CACHE BOOL "" FORCE)
+set(WITH_PERF_TOOL OFF CACHE BOOL "" FORCE)
+set(WITH_DOCS OFF CACHE BOOL "" FORCE)
+set(CPPZMQ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(vendored/libzmq EXCLUDE_FROM_ALL)
+
+# cppzmq's CMake does find_package(ZeroMQ). When libzmq is already in-tree,
+# recent cppzmq also detects TARGET libzmq / libzmq-static. If configure
+# still fails, set these before add_subdirectory(cppzmq):
+#   set(ZeroMQ_FOUND ON)
+#   set(ZeroMQ_LIBRARY libzmq)          # or libzmq-static
+#   set(ZeroMQ_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libzmq/include")
+
+add_subdirectory(vendored/cppzmq EXCLUDE_FROM_ALL)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -61,3 +80,8 @@ target_include_directories(starfall-salvage PRIVATE
 )
 
 target_link_libraries(starfall-salvage PRIVATE engine)
+
+# Example: only for a networked game / tool
+target_link_libraries(some-target PRIVATE cppzmq)
+# cppzmq usually pulls libzmq transitively; if not:
+# target_link_libraries(some-target PRIVATE cppzmq libzmq)
