@@ -6,6 +6,21 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ZeroMQ (libzmq, C++ sources w/ C ABI) + cppzmq (header-only C++ binding).
+# libzmq's own knobs, forced off so vendoring stays quiet and fast.
+# NOTE: libzmq's test switch is BUILD_TESTS (generic name, ours is separate);
+# it does not read a ZMQ_BUILD_TESTS variable.
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ENABLE_DRAFTS OFF CACHE BOOL "" FORCE)
+set(WITH_PERF_TOOL OFF CACHE BOOL "" FORCE)
+set(WITH_DOCS OFF CACHE BOOL "" FORCE)
+set(CPPZMQ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+
+# Order matters: libzmq first so cppzmq sees TARGET libzmq in-tree and skips
+# find_package(ZeroMQ) entirely (no system ZeroMQ install required).
+add_subdirectory(vendored/libzmq EXCLUDE_FROM_ALL)
+add_subdirectory(vendored/cppzmq EXCLUDE_FROM_ALL)
+
 add_subdirectory(vendored/SDL EXCLUDE_FROM_ALL)
 
 # SDL-free geometry code (Entity, Physics, Collision), so tests built on it
@@ -45,6 +60,14 @@ add_executable(collision-tests tests/CollisionTests.cpp)
 target_link_libraries(collision-tests PRIVATE engine-geometry)
 
 add_test(NAME collision-tests COMMAND collision-tests)
+
+# Verifies the vendored ZeroMQ import stays wired up. Links cppzmq-static so
+# the test binary is self-contained and does not depend on a shared libzmq
+# sitting next to it (which Windows, having no rpath, would not find).
+add_executable(zmq-smoke-tests tests/ZmqSmokeTests.cpp)
+target_link_libraries(zmq-smoke-tests PRIVATE cppzmq-static)
+
+add_test(NAME zmq-smoke-tests COMMAND zmq-smoke-tests)
 
 # Apex Ascent executable
 add_executable(apex-ascent individual-games/harsha/apexAscent.cpp)
