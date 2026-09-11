@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FrameTime.hpp"
+
 struct Rect {
     float x;
     float y;
@@ -12,6 +14,12 @@ public:
     Entity(float x, float y, float width, float height);
 
     void update(float deltaTime);
+
+    // The same move, on whatever timeline the engine handed this frame. An
+    // Entity stays time-agnostic: it owns no clock and asks none what time it
+    // is, it is simply told how much time to move through. Pausing or
+    // rescaling that timeline therefore needs no cooperation from the entity.
+    void update(const FrameTime& time);
 
     void setPosition(float x, float y);
     void setSize(float width, float height);
