@@ -6,6 +6,7 @@
 #include "Game.hpp"
 #include "Input.hpp"
 #include "Physics.hpp"
+#include "animation/PlayerAnimation.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -67,6 +68,9 @@ private:
     // Last platform stood on; used to carry the player next frame.
     Entity* groundedMovingPlatform_ = nullptr;
 
+    // Milestone 1: path/load smoke only; drawing arrives in later milestones.
+    PlayerAnimation playerAnim_;
+
     float viewWidth_;
     float viewHeight_;
     float worldWidth_;
@@ -110,6 +114,11 @@ ApexAscent::ApexAscent(const Engine& engine)
     Physics::setGravity(gravity);
 
     camera_ = worldHeight_ - viewHeight_;
+
+    if (!playerAnim_.smokeProbeMedia(engine.getRenderer())) {
+        std::cerr << "Apex Ascent: player media smoke probe failed "
+                     "(expected build/media/apex-ascent/Idle.png next to the binary).\n";
+    }
 
     std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
                  "release to leap. F1 to toggle scaling, Esc to quit.\n";
