@@ -68,7 +68,7 @@ private:
     // Last platform stood on; used to carry the player next frame.
     Entity* groundedMovingPlatform_ = nullptr;
 
-    // Milestone 3: Idle/Walk clips; full climb state machine arrives in M4.
+    // Milestone 4: climb-loop clips + facing driven by gameplay.
     PlayerAnimation playerAnim_;
 
     float viewWidth_;
@@ -233,8 +233,14 @@ void ApexAscent::update(float deltaTime, Engine& engine)
     handleCollisions();
     updateCamera(deltaTime);
 
-    // Milestone 3: simple |vx| → Walk vs Idle (full mapping in M4).
-    playerAnim_.update(deltaTime, player_.getVelocityX());
+    PlayerAnimation::AnimInput animInput;
+    animInput.onGround = isOnGround_;
+    animInput.charging = isCharging_;
+    animInput.velocityX = player_.getVelocityX();
+    animInput.velocityY = player_.getVelocityY();
+    // Prefer aim while charging; otherwise use horizontal velocity.
+    animInput.facingIntent = isCharging_ ? aimDirection_ : player_.getVelocityX();
+    playerAnim_.update(deltaTime, animInput);
 
     const int room = static_cast<int>((worldHeight_ - player_.getY()) / viewHeight_);
     if (room > highestRoomReached_) {

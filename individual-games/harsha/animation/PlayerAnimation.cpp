@@ -86,25 +86,36 @@ bool PlayerAnimation::load(SDL_Renderer* renderer)
 
     destroyTextures();
 
-    ClipData idle{};
-    idle.secondsPerFrame = 0.20F;
-    idle.loops = true;
-    if (!loadSheet(renderer, "Idle.png", idle)) {
-        return false;
+    struct SheetSpec {
+        Clip clip;
+        const char* fileName;
+        float secondsPerFrame;
+        bool loops;
+    };
+
+    const SheetSpec specs[] = {
+        {Clip::Idle, "Idle.png", 0.20F, true},
+        {Clip::Walk, "Walk.png", 0.10F, true},
+        {Clip::Crouch, "Crouch.png", 0.10F, true},
+        {Clip::Jump, "Jump.png", 0.08F, true},
+        {Clip::Fall, "Fall.png", 0.10F, true},
+        {Clip::Land, "Land.png", 0.08F, false},
+    };
+
+    for (const SheetSpec& spec : specs) {
+        ClipData data{};
+        data.secondsPerFrame = spec.secondsPerFrame;
+        data.loops = spec.loops;
+        if (!loadSheet(renderer, spec.fileName, data)) {
+            destroyTextures();
+            return false;
+        }
+        clips_[static_cast<int>(spec.clip)] = data;
     }
 
-    ClipData walk{};
-    walk.secondsPerFrame = 0.10F;
-    walk.loops = true;
-    if (!loadSheet(renderer, "Walk.png", walk)) {
-        SDL_DestroyTexture(idle.texture);
-        idle.texture = nullptr;
-        return false;
-    }
-
-    clips_[static_cast<int>(Clip::Idle)] = idle;
-    clips_[static_cast<int>(Clip::Walk)] = walk;
     loaded_ = true;
+    wasOnGround_ = true;
+    oneShotFinished_ = false;
     setClip(Clip::Idle);
     return true;
 }
@@ -117,20 +128,36 @@ void PlayerAnimation::setClip(Clip clip)
     currentClip_ = clip;
     frameIndex_ = 0;
     frameTimer_ = 0.0F;
+    oneShotFinished_ = false;
 }
 
-void PlayerAnimation::update(float deltaTime, float velocityX)
+PlayerAnimation::Clip PlayerAnimation::chooseGroundedClip(const AnimInput& input) const
 {
-    if (!loaded_) {
-        return;
+    if (input.charging) {
+        return Clip::Crouch;
     }
+    if (std::fabs(input.velocityX) > walkSpeedThreshold) {
+        return Clip::Walk;
+    }
+    return Clip::Idle;
+}
 
-    const Clip desired =
-        std::fabs(velocityX) > walkSpeedThreshold ? Clip::Walk : Clip::Idle;
-    setClip(desired);
+void PlayerAnimation::updateFacing(float facingIntent)
+{
+    if (facingIntent > facingEpsilon) {
+        facingRight_ = true;
+    } else if (facingIntent < -facingEpsilon) {
+        facingRight_ = false;
+    }
+}
 
+void PlayerAnimation::advanceFrames(float deltaTime)
+{
     const ClipData& clip = clips_[static_cast<int>(currentClip_)];
     if (clip.frameCount <= 1 || clip.secondsPerFrame <= 0.0F) {
+        if (!clip.loops) {
+            oneShotFinished_ = true;
+        }
         return;
     }
 
@@ -139,8 +166,50 @@ void PlayerAnimation::update(float deltaTime, float velocityX)
         frameTimer_ -= clip.secondsPerFrame;
         ++frameIndex_;
         if (frameIndex_ >= clip.frameCount) {
-            frameIndex_ = clip.loops ? 0 : (clip.frameCount - 1);
+            if (clip.loops) {
+                frameIndex_ = 0;
+            } else {
+                frameIndex_ = clip.frameCount - 1;
+                oneShotFinished_ = true;
+                break;
+            }
         }
+    }
+}
+
+void PlayerAnimation::update(float deltaTime, const AnimInput& input)
+{
+    if (!loaded_) {
+        return;
+    }
+
+    updateFacing(input.facingIntent);
+
+    const bool justLanded = input.onGround && !wasOnGround_;
+    wasOnGround_ = input.onGround;
+
+    if (justLanded && !input.charging) {
+        setClip(Clip::Land);
+    } else if (currentClip_ == Clip::Land && !oneShotFinished_) {
+        // Hold the one-shot unless charge starts (crouch takes priority).
+        if (input.charging) {
+            setClip(Clip::Crouch);
+        }
+    } else if (!input.onGround) {
+        setClip(input.velocityY < 0.0F ? Clip::Jump : Clip::Fall);
+    } else {
+        setClip(chooseGroundedClip(input));
+    }
+
+    // If Land finished this tick before we re-evaluated, pick the grounded clip.
+    if (currentClip_ == Clip::Land && oneShotFinished_) {
+        setClip(chooseGroundedClip(input));
+    }
+
+    advanceFrames(deltaTime);
+
+    if (currentClip_ == Clip::Land && oneShotFinished_) {
+        setClip(chooseGroundedClip(input));
     }
 }
 
@@ -173,5 +242,6 @@ void PlayerAnimation::draw(SDL_Renderer* renderer,
     const float destY = bodyBottom - frameFootY * spriteScale - cameraY;
 
     const SDL_FRect dst{destX, destY, destW, destH};
-    SDL_RenderTexture(renderer, clip.texture, &src, &dst);
+    const SDL_FlipMode flip = facingRight_ ? SDL_FLIP_NONE : SDL_FLIP_HORIZONTAL;
+    SDL_RenderTextureRotated(renderer, clip.texture, &src, &dst, 0.0, nullptr, flip);
 }
