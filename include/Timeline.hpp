@@ -44,10 +44,16 @@ public:
     void togglePause();
     bool isPaused() const;
 
-    // Changing the rate preserves the current reading: the new rate applies
-    // from this instant on, and no reader sees a jump. The partial tic in
-    // flight is carried across rather than rounded away, so repeated changes
-    // do not bleed time.
+    // Changing the rate preserves the current reading exactly: now() returns
+    // the same value either side of the call, whether the timeline is running
+    // or paused at the time, and a rate changed while paused stays invisible
+    // until the unpause.
+    //
+    // The tic still in flight is carried across as the fraction of a tic it
+    // is, not as a count of anchor units -- half way through a tic of 10 is
+    // still half way through when the tic becomes 5. Carrying the raw units
+    // instead would make the clock lurch forward the moment it sped up, and
+    // stall when it slowed down.
     void setTicSize(std::int64_t ticSize);
     std::int64_t ticSize() const;
 
