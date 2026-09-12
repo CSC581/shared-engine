@@ -68,7 +68,7 @@ private:
     // Last platform stood on; used to carry the player next frame.
     Entity* groundedMovingPlatform_ = nullptr;
 
-    // Milestone 1: path/load smoke only; drawing arrives in later milestones.
+    // Milestone 3: Idle/Walk clips; full climb state machine arrives in M4.
     PlayerAnimation playerAnim_;
 
     float viewWidth_;
@@ -115,9 +115,9 @@ ApexAscent::ApexAscent(const Engine& engine)
 
     camera_ = worldHeight_ - viewHeight_;
 
-    if (!playerAnim_.smokeProbeMedia(engine.getRenderer())) {
-        std::cerr << "Apex Ascent: player media smoke probe failed "
-                     "(expected build/media/apex-ascent/Idle.png next to the binary).\n";
+    if (!playerAnim_.load(engine.getRenderer())) {
+        std::cerr << "Apex Ascent: player sprite load failed; falling back to rect draw "
+                     "(expected media/apex-ascent/Idle.png next to the binary).\n";
     }
 
     std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
@@ -232,6 +232,9 @@ void ApexAscent::update(float deltaTime, Engine& engine)
 
     handleCollisions();
     updateCamera(deltaTime);
+
+    // Milestone 3: simple |vx| → Walk vs Idle (full mapping in M4).
+    playerAnim_.update(deltaTime, player_.getVelocityX());
 
     const int room = static_cast<int>((worldHeight_ - player_.getY()) / viewHeight_);
     if (room > highestRoomReached_) {
@@ -355,7 +358,12 @@ void ApexAscent::render(SDL_Renderer* renderer) const
         }
     }
 
-    drawRect(player_.getBounds(), 240, 240, 255);
+    if (playerAnim_.isLoaded()) {
+        playerAnim_.draw(renderer, player_.getX(), player_.getY(), camera_, playerWidth,
+                         playerHeight);
+    } else {
+        drawRect(player_.getBounds(), 240, 240, 255);
+    }
 
     // Charge meter in screen space (not world space).
     const float meterWidth = 220.0F;
