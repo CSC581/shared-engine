@@ -27,6 +27,8 @@ Entity     -> position, size, velocity, and movement
 Physics    -> configurable gravity
 Input      -> keyboard state queries
 Collision  -> overlap and separation calculations
+Timeline   -> pausable, rescalable clocks the simulation runs on
+DeltaTimer -> per-consumer "time since I last looked"
 ```
 
 The intended order for each frame is:
@@ -119,6 +121,81 @@ Press `F1` while a game is running, then resize the window to compare modes.
 | Proportional scaling | The design resolution scales uniformly and keeps its aspect ratio. Unused space may appear at the sides or top and bottom. |
 
 Use `Engine::setScaleToggleKey()` to change or disable the default `F1` key.
+
+### Timelines
+
+The engine measures time on three scales, and owns a clock for each:
+
+| Scale | Clock | Counts |
+| --- | --- | --- |
+| Real time | `realTime()` | Nanoseconds off `steady_clock`. Never pauses, never scales. |
+| Game time | `gameTime()` | Game microseconds. Pausable and rescalable; the simulation runs on this. |
+| Loop iterations | `loopTime()` | One tic per pass through the main loop, however long that pass took. |
+
+Each frame the engine builds a `FrameTime` off the game timeline -- game
+seconds elapsed, plus absolute game time -- and hands it down.
+
+Everything whose motion comes from that `FrameTime` can therefore be frozen or
+stretched by one call, with no cooperation from any of it:
+
+```cpp
+engine.gameTime().togglePause();  // freezes everything on game time at once
+engine.gameTime().setScale(0.5);  // half speed, with no jump in position
+```
+
+Entities stay time-agnostic -- they own no clock and ask none what time it is,
+they are simply told how far to move:
+
+```cpp
+void MyGame::update(const FrameTime& time, Engine&)
+{
+    player_.update(time);                                  // velocity * dt
+    const double t = time.gameTimeUs / 1'000'000.0;        // absolute, no drift
+    platform_.setPosition(originX + amplitude * std::sin(t), platformY);
+}
+```
+
+A game that only implements the older `update(float deltaTime, Engine&)` keeps
+working untouched; the engine forwards to it.
+
+Timelines nest. Anchoring one to another gives a clock that inherits the
+parent's pauses and multiplies its scale, which is what a slow-motion layer or
+a per-client loop speed is made of:
+
+```cpp
+Timeline childTime(engine.gameTime(), 1000);  // anchor, tics of the anchor
+DeltaTimer childTimer(childTime, 250);        // one per consumer
+```
+
+`engine.realTime()` is never paused and never scaled -- anchor to it for menu
+animation or anything that has to keep running while the game is frozen. Input
+polling and rendering run on real time for the same reason: a loop that waited
+on a paused timeline could never read the key that unpauses it.
+
+`engine.loopTime()` counts frames rather than seconds, and takes the same
+pause, tic size and scale as the others -- a tic size of 2 is one tic every
+second iteration. Anchor to it when a simulation has to advance per frame
+rather than per second and reach the same state on every machine however fast
+each one runs: lockstep peer-to-peer sync, a reproducible replay, a fixed-step
+physics tick.
+
+The module (`TimeSource`, `Timeline`, `DeltaTimer`, `FrameTime`) has no SDL
+dependency and no global state, so a headless server can link `engine-time` on
+its own. Every `Timeline` method is thread-safe.
+
+### The Timeline Sandbox
+
+`timeline-sandbox` is an interactive bench for all of the above: pause, scale
+and tic size sliders, a child timeline, an adjustable frame-delta clamp and
+frame delay, and a graph of recent frame deltas.
+
+```bash
+cmake --build build --target timeline-sandbox
+./build/timeline-sandbox            # --frames N runs N frames and exits
+```
+
+`P` pauses, `1`/`2`/`3` select 0.5x, 1.0x and 2.0x, `WASD` moves. It is the only
+target that depends on Dear ImGui; the engine library must not.
 
 ### Multiple Keys At Once
 
