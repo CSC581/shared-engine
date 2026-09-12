@@ -29,6 +29,7 @@ Input      -> keyboard state queries
 Collision  -> overlap and separation calculations
 Timeline   -> pausable, rescalable clocks the simulation runs on
 DeltaTimer -> per-consumer "time since I last looked"
+Network    -> SDL-free protocol, authoritative server, non-blocking client
 ```
 
 The intended order for each frame is:
@@ -39,7 +40,8 @@ input -> gravity (selected entities) -> entity update -> collision -> render
 
 ## Build
 
-`vendored/SDL` is a Git submodule. On a new clone, fetch it first:
+SDL3 and ZeroMQ are Git submodules under `vendored/`. On a new clone, fetch
+them first:
 
 ```bash
 git submodule update --init --recursive
@@ -182,6 +184,44 @@ physics tick.
 The module (`TimeSource`, `Timeline`, `DeltaTimer`, `FrameTime`) has no SDL
 dependency and no global state, so a headless server can link `engine-time` on
 its own. Every `Timeline` method is thread-safe.
+
+### Networking
+
+The Section 2 networking module is separate from the individual games. It uses
+a headless, authoritative ZeroMQ server and SDL client windows. Each client
+sends its current direction; the server advances the shared world and returns
+the complete player snapshot. Every visible position is therefore
+server-confirmed, and a new client can join an active arena at any time.
+
+`network-core` does not choose sprites, colors, or a level layout. The
+standalone demo supplies its own arena, spawn points, and player colors in
+`sandbox/NetworkDemoConfig.hpp`; another game can pass different world values
+to `NetworkServer` without changing the networking module.
+
+Start the server in one terminal:
+
+```bash
+./build/network-server
+```
+
+Then start three clients in separate terminals:
+
+```bash
+./build/network-client
+./build/network-client
+./build/network-client
+```
+
+Use `WASD` or the arrow keys in each window. The window title shows connection
+state, player ID, and player count. The white outline marks the local player.
+Clients retry automatically if started before the server; disconnected players
+are removed after three seconds. The defaults use local TCP port 5555. Pass an
+endpoint to use another address, for example:
+
+```bash
+./build/network-server tcp://*:6000
+./build/network-client tcp://192.168.1.10:6000
+```
 
 ### The Timeline Sandbox
 
