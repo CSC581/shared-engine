@@ -272,7 +272,10 @@ void ApexAscent::handleCollisions()
             playerBounds.x < platformBounds.x + platformBounds.width &&
             playerBounds.x + playerBounds.width > platformBounds.x;
 
-        if (player_.getVelocityY() > 0.0F && overlapsHorizontally &&
+        // vy >= 0 (not only > 0): resting contact has vy == 0 and feet on the
+        // surface with no AABB overlap, so MTV never fires; requiring a fall
+        // made isOnGround_ flicker every other frame (anim Land/air twitch).
+        if (player_.getVelocityY() >= 0.0F && overlapsHorizontally &&
             previousPlayerBottom_ <= platformBounds.y + landingTolerance &&
             playerBounds.y + playerBounds.height >= platformBounds.y) {
             player_.setPosition(player_.getX(), platformBounds.y - playerHeight);

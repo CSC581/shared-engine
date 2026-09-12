@@ -188,13 +188,13 @@ void PlayerAnimation::update(float deltaTime, const AnimInput& input)
     const bool justLanded = input.onGround && !wasOnGround_;
     wasOnGround_ = input.onGround;
 
-    if (justLanded && !input.charging) {
+    // Charging always means Crouch, even if onGround flickers for a frame.
+    if (input.charging) {
+        setClip(Clip::Crouch);
+    } else if (justLanded) {
         setClip(Clip::Land);
     } else if (currentClip_ == Clip::Land && !oneShotFinished_) {
-        // Hold the one-shot unless charge starts (crouch takes priority).
-        if (input.charging) {
-            setClip(Clip::Crouch);
-        }
+        // Hold the one-shot land clip until it finishes.
     } else if (!input.onGround) {
         setClip(input.velocityY < 0.0F ? Clip::Jump : Clip::Fall);
     } else {
@@ -242,6 +242,7 @@ void PlayerAnimation::draw(SDL_Renderer* renderer,
     const float destY = bodyBottom - frameFootY * spriteScale - cameraY;
 
     const SDL_FRect dst{destX, destY, destW, destH};
-    const SDL_FlipMode flip = facingRight_ ? SDL_FLIP_NONE : SDL_FLIP_HORIZONTAL;
+    // Sheet art faces left; flip when facing right.
+    const SDL_FlipMode flip = facingRight_ ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
     SDL_RenderTextureRotated(renderer, clip.texture, &src, &dst, 0.0, nullptr, flip);
 }
