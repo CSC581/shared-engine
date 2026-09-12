@@ -38,6 +38,17 @@ target_include_directories(engine-time PUBLIC include)
 find_package(Threads REQUIRED)
 target_link_libraries(engine-time PUBLIC Threads::Threads)
 
+# SDL-free networking: protocol, authoritative world, and non-blocking ZeroMQ
+# client adapter. A headless server can link this without the window engine.
+add_library(network-core STATIC
+    src/NetworkProtocol.cpp
+    src/NetworkServer.cpp
+    src/NetworkClient.cpp
+)
+
+target_include_directories(network-core PUBLIC include)
+target_link_libraries(network-core PUBLIC engine-time cppzmq-static)
+
 # SDL-free geometry code (Entity, Physics, Collision), so tests built on it
 # stay independently testable with no SDL dependency.
 add_library(engine-geometry STATIC
@@ -98,6 +109,11 @@ target_link_libraries(zmq-smoke-tests PRIVATE cppzmq-static)
 
 add_test(NAME zmq-smoke-tests COMMAND zmq-smoke-tests)
 
+add_executable(network-tests tests/NetworkTests.cpp)
+target_link_libraries(network-tests PRIVATE network-core)
+
+add_test(NAME network-tests COMMAND network-tests)
+
 # Dear ImGui, for the timeline sandbox and nothing else. Fetched rather than
 # vendored as a submodule: it is a development tool for one target, not a
 # dependency of the engine or of any game, and the engine library must never
@@ -135,6 +151,14 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3)
 # with no privileged access to the engine.
 add_executable(timeline-sandbox sandbox/TimelineSandbox.cpp)
 target_link_libraries(timeline-sandbox PRIVATE engine imgui)
+
+# Standalone Section 2 proof. These do not modify or build into any person's
+# individual game: the server is headless and the client is a small SDL demo.
+add_executable(network-server sandbox/NetworkServerMain.cpp)
+target_link_libraries(network-server PRIVATE network-core)
+
+add_executable(network-client sandbox/NetworkClientDemo.cpp)
+target_link_libraries(network-client PRIVATE engine network-core)
 
 # Apex Ascent executable
 add_executable(apex-ascent individual-games/harsha/apexAscent.cpp)
