@@ -49,10 +49,6 @@ public:
     void update(float, Engine& engine) override
     {
         client_.poll();
-        if (client_.state() == Network::ConnectionState::Disconnected ||
-            client_.state() == Network::ConnectionState::Error) {
-            client_.start();
-        }
         client_.submitInput(horizontal_, vertical_);
 
         const std::string title = std::string("Network Client | ") + stateLabel(client_.state()) +

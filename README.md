@@ -215,8 +215,11 @@ Then start three clients in separate terminals:
 Use `WASD` or the arrow keys in each window. The window title shows connection
 state, player ID, and player count. The white outline marks the local player.
 Clients retry automatically if started before the server; disconnected players
-are removed after three seconds. The defaults use local TCP port 5555. Pass an
-endpoint to use another address, for example:
+are removed after three seconds. A stable per-client session token means a
+retry keeps the same player instead of creating a duplicate, and a client
+cannot submit movement for another player's ID without that player's token.
+The defaults use local TCP port 5555. Pass an endpoint to use another address,
+for example:
 
 ```bash
 ./build/network-server tcp://*:6000
