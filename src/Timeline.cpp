@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -13,6 +14,40 @@ std::int64_t validateTicSize(std::int64_t ticSize)
     }
 
     return ticSize;
+}
+
+// Converts a partial tic from one rate to another.
+//
+// What is carried across a rate change is a *fraction of a tic*, not a count
+// of anchor units. Half way through a tic of 10, a timeline is still half way
+// through when the tic becomes 5 -- it is not suddenly a whole tic further on.
+// Carrying the raw 5 anchor units across and dividing them by the new tic size
+// is what made the clock lurch the instant its rate changed, and stall in the
+// other direction when the rate got slower.
+std::int64_t rescaleRemainder(std::int64_t remainder, std::int64_t fromTicSize,
+                              std::int64_t toTicSize)
+{
+    if (remainder <= 0 || fromTicSize == toTicSize) {
+        return remainder < 0 ? 0 : remainder;
+    }
+
+    std::int64_t rescaled = 0;
+
+    if (remainder <= std::numeric_limits<std::int64_t>::max() / toTicSize) {
+        rescaled = remainder * toTicSize / fromTicSize;
+    } else {
+        // Only reachable with tic sizes in the billions of billions, where the
+        // exact product would overflow. Precision is worth less there than not
+        // wrapping around.
+        rescaled = static_cast<std::int64_t>(static_cast<long double>(remainder) /
+                                             static_cast<long double>(fromTicSize) *
+                                             static_cast<long double>(toTicSize));
+    }
+
+    // A partial tic is by definition less than a whole one. The arithmetic
+    // above already guarantees it; the clamp makes the invariant that actually
+    // matters -- a rate change never advances the clock -- independent of it.
+    return std::max<std::int64_t>(0, std::min(rescaled, toTicSize - 1));
 }
 
 } // namespace
@@ -118,8 +153,9 @@ std::int64_t Timeline::rebaseLocked()
     accumulated_ += elapsed / ticSize_;
 
     // Carry the partial tic instead of discarding it: origin_ moves forward
-    // only by the whole tics that were banked, so a run of rebases (a scale
-    // slider being dragged, say) loses no time at all.
+    // only by the whole tics that were banked, so a run of rebases at one rate
+    // loses no time at all. When the rate itself changes, the caller converts
+    // this remainder with rescaleRemainder.
     origin_ = anchorNow - remainder;
 
     return remainder;
@@ -149,12 +185,26 @@ void Timeline::unpauseLocked()
 
 void Timeline::setTicSizeLocked(std::int64_t ticSize)
 {
-    // Bank everything earned at the old rate first, so the reading does not
-    // jump. While paused there is nothing to bank: now() is already frozen at
-    // accumulated_, and the carried remainder still belongs to the old rate.
-    if (!paused_) {
-        rebaseLocked();
+    if (paused_) {
+        // now() is already frozen at accumulated_, so there is nothing to
+        // bank; only the partial tic waiting to be resumed has to be restated
+        // at the new rate, or unpausing would credit it as more (or less) than
+        // the fraction of a tic it actually is.
+        pausedRemainder_ = rescaleRemainder(pausedRemainder_, ticSize_, ticSize);
+        ticSize_ = ticSize;
+        return;
     }
+
+    // Bank everything earned at the old rate first, so the reading does not
+    // jump...
+    const std::int64_t remainder = rebaseLocked();
+
+    // ...and restate the tic still in flight at the new rate too. rebaseLocked
+    // has just left origin_ at anchorNow - remainder, so anchorNow is recovered
+    // from it rather than read again: the anchor may have moved in between, and
+    // a second reading would silently drop that sliver of time.
+    const std::int64_t anchorNow = origin_ + remainder;
+    origin_ = anchorNow - rescaleRemainder(remainder, ticSize_, ticSize);
 
     ticSize_ = ticSize;
 }

@@ -380,6 +380,93 @@ namespace
         CHECK(everyOther.now() == 2);
     }
 
+    // 15. A rate change must never advance the clock by itself, whether the
+    //     timeline is running or paused when it happens.
+    //
+    //     The partial tic in flight is a fraction of a tic, not a count of
+    //     anchor units: banked half way through a slow tic, it is still half
+    //     way through a fast one. Carrying it across as raw anchor units and
+    //     reinterpreting it against the new tic size is what makes a timeline
+    //     lurch forward the instant its rate changes, with no time having
+    //     passed at all -- a remainder of 5 is most of a tic at a tic size of
+    //     10 and a whole one at a tic size of 5.
+    void rateChangeNeverJumpsTheClock()
+    {
+        // Paused half way through a tic, then sped up.
+        {
+            ManualClock clock;
+            Timeline timeline(clock, 10);
+
+            clock.advance(15);  // one whole tic, and half of the next
+            CHECK(timeline.now() == 1);
+
+            timeline.pause();
+            CHECK(timeline.now() == 1);
+
+            timeline.setTicSize(5);  // twice as fast
+            CHECK(timeline.now() == 1);
+
+            timeline.unpause();
+            CHECK(timeline.now() == 1);  // no anchor time passed, so no tic
+
+            // The half tic in flight is still half a tic, so it completes
+            // after half of the new, shorter one.
+            clock.advance(3);
+            CHECK(timeline.now() == 2);
+        }
+
+        // The same rate change with the timeline running, which goes through
+        // the same carry and has always had the same flaw.
+        {
+            ManualClock clock;
+            Timeline timeline(clock, 10);
+
+            clock.advance(15);
+            CHECK(timeline.now() == 1);
+
+            timeline.setTicSize(5);
+            CHECK(timeline.now() == 1);
+
+            clock.advance(3);
+            CHECK(timeline.now() == 2);
+        }
+
+        // Slowing down mid-tic is the same story in the other direction: half
+        // way through a tic of 100 leaves 50 anchor units to go, not 5.
+        {
+            ManualClock clock;
+            Timeline timeline(clock, 10);
+
+            clock.advance(15);
+            timeline.pause();
+            timeline.setTicSize(100);
+            timeline.unpause();
+            CHECK(timeline.now() == 1);
+
+            clock.advance(49);
+            CHECK(timeline.now() == 1);
+
+            clock.advance(1);
+            CHECK(timeline.now() == 2);
+        }
+
+        // And through setScale, which is how a game actually changes rate.
+        // 999 carried anchor units would be worth three whole tics at the
+        // 250 that 4.0x asks for.
+        {
+            ManualClock clock;
+            Timeline timeline(clock, 1000);
+
+            clock.advance(1999);  // one tic, and 999/1000 of the next
+            CHECK(timeline.now() == 1);
+
+            timeline.pause();
+            timeline.setScale(4.0);
+            timeline.unpause();
+            CHECK(timeline.now() == 1);
+        }
+    }
+
     // ---- The one case with real threads and a real clock. ----
 
     constexpr int readerCount = 4;
@@ -419,7 +506,7 @@ namespace
         }
     }
 
-    // 15. The design has to survive a multithreaded update loop later, so
+    // 16. The design has to survive a multithreaded update loop later, so
     //     readers on other threads must never see time run backwards while
     //     another thread pauses and rescales it underneath them.
     void staysMonotonicUnderConcurrentWriters()
@@ -500,7 +587,7 @@ namespace
         int secondsOnlyCount = 0;
     };
 
-    // 16. The engine hands every game a FrameTime; a game that only implements
+    // 17. The engine hands every game a FrameTime; a game that only implements
     //     the old signature must still be driven by it.
     void legacyGameStillReceivesDelta()
     {
@@ -514,7 +601,7 @@ namespace
         CHECK(nearlyEqual(game.lastDeltaTime, 0.25F));
     }
 
-    // 17. A game that does override the FrameTime version gets it instead, and
+    // 18. A game that does override the FrameTime version gets it instead, and
     //     the forwarding to the float version does not also fire.
     void timeAwareGameReceivesAbsoluteTime()
     {
@@ -529,7 +616,7 @@ namespace
         CHECK(game.lastGameTimeUs == 12'345'678);
     }
 
-    // 18. Both Entity overloads describe the same move, so handing an entity
+    // 19. Both Entity overloads describe the same move, so handing an entity
     //     the frame instead of a float changes nothing about where it ends up.
     void entityOverloadsAgree()
     {
@@ -548,7 +635,7 @@ namespace
         CHECK(nearlyEqual(viaFrame.getX(), 50.0F));
     }
 
-    // 19. The three engine requirements, stated the way the loop states them:
+    // 20. The three engine requirements, stated the way the loop states them:
     //     build a FrameTime out of a game timeline exactly as Engine::run does,
     //     and drive a real Entity through it on a clock the test controls.
     //
@@ -632,6 +719,7 @@ int main()
     deltaTimerClampsAndFollowsPause();
     deltaTimersAreIndependent();
     loopIterationTimeline();
+    rateChangeNeverJumpsTheClock();
 
     legacyGameStillReceivesDelta();
     timeAwareGameReceivesAbsoluteTime();
