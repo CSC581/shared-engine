@@ -66,12 +66,23 @@ Message NetworkServer::handle(const Message& message)
 
     const std::int64_t now = clock_.now();
     if (request.type == RequestType::Join) {
+        const auto existingId = playerIdsByToken_.find(request.sessionToken);
+        if (existingId != playerIdsByToken_.end()) {
+            const auto existingPlayer = players_.find(existingId->second);
+            if (existingPlayer != players_.end()) {
+                existingPlayer->second.lastHeard = now;
+                return encodeWelcome(existingPlayer->first, snapshotLocked());
+            }
+            playerIdsByToken_.erase(existingId);
+        }
+
         if (players_.size() >= config_.maxPlayers) {
             return encodeError("server is full");
         }
 
         const PlayerId id = nextPlayerId_++;
-        players_.emplace(id, ActivePlayer{spawnPlayer(id), {}, now});
+        players_.emplace(id, ActivePlayer{spawnPlayer(id), request.sessionToken, {}, now});
+        playerIdsByToken_.emplace(request.sessionToken, id);
         ++serverTick_;
         return encodeWelcome(id, snapshotLocked());
     }
@@ -81,7 +92,12 @@ Message NetworkServer::handle(const Message& message)
         return encodeError("unknown player ID");
     }
 
+    if (player->second.sessionToken != request.sessionToken) {
+        return encodeError("session token does not own this player");
+    }
+
     if (request.type == RequestType::Leave) {
+        playerIdsByToken_.erase(player->second.sessionToken);
         players_.erase(player);
         ++serverTick_;
         return encodeGoodbye();
@@ -110,6 +126,7 @@ void NetworkServer::expireInactivePlayers(std::int64_t now)
 {
     for (auto player = players_.begin(); player != players_.end();) {
         if (now - player->second.lastHeard >= config_.inactivityTimeoutTics) {
+            playerIdsByToken_.erase(player->second.sessionToken);
             player = players_.erase(player);
             ++serverTick_;
         } else {

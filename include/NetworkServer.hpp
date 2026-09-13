@@ -47,6 +47,7 @@ public:
 private:
     struct ActivePlayer {
         PlayerState state;
+        SessionToken sessionToken;
         MovementInput input;
         std::int64_t lastHeard = 0;
     };
@@ -61,6 +62,7 @@ private:
     PlayerId nextPlayerId_ = 1;
     std::uint64_t serverTick_ = 0;
     std::unordered_map<PlayerId, ActivePlayer> players_;
+    std::unordered_map<SessionToken, PlayerId> playerIdsByToken_;
 };
 
 } // namespace Network

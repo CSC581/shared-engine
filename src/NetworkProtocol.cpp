@@ -1,5 +1,7 @@
 #include "NetworkProtocol.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -56,6 +58,17 @@ bool parseVersion(const Message& message, std::string& error)
     return true;
 }
 
+bool isValidSessionToken(const std::string& token)
+{
+    if (token.size() != 32) {
+        return false;
+    }
+
+    return std::all_of(token.begin(), token.end(), [](unsigned char character) {
+        return std::isxdigit(character) != 0;
+    });
+}
+
 bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& snapshot, std::string& error)
 {
     std::uint64_t playerCount = 0;
@@ -107,20 +120,20 @@ void appendSnapshot(Message& message, const WorldSnapshot& snapshot)
 
 } // namespace
 
-Message encodeJoin()
+Message encodeJoin(const SessionToken& sessionToken)
 {
-    return {std::to_string(protocolVersion), "JOIN"};
+    return {std::to_string(protocolVersion), "JOIN", sessionToken};
 }
 
-Message encodeInput(PlayerId playerId, const MovementInput& input)
+Message encodeInput(PlayerId playerId, const SessionToken& sessionToken, const MovementInput& input)
 {
-    return {std::to_string(protocolVersion), "INPUT", std::to_string(playerId),
+    return {std::to_string(protocolVersion), "INPUT", std::to_string(playerId), sessionToken,
             std::to_string(input.sequence), std::to_string(input.horizontal), std::to_string(input.vertical)};
 }
 
-Message encodeLeave(PlayerId playerId)
+Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken)
 {
-    return {std::to_string(protocolVersion), "LEAVE", std::to_string(playerId)};
+    return {std::to_string(protocolVersion), "LEAVE", std::to_string(playerId), sessionToken};
 }
 
 bool decodeRequest(const Message& message, Request& request, std::string& error)
@@ -130,17 +143,18 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
     }
 
     if (message[1] == "JOIN") {
-        if (message.size() != 2) {
-            error = "JOIN has no arguments";
+        if (message.size() != 3 || !isValidSessionToken(message[2])) {
+            error = "JOIN requires a valid session token";
             return false;
         }
         request = {};
         request.type = RequestType::Join;
+        request.sessionToken = message[2];
         return true;
     }
 
     std::uint64_t playerId = 0;
-    if (message.size() < 3 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
+    if (message.size() < 4 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
         playerId > std::numeric_limits<PlayerId>::max()) {
         error = "invalid player ID";
         return false;
@@ -148,24 +162,29 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
 
     request = {};
     request.playerId = static_cast<PlayerId>(playerId);
+    if (!isValidSessionToken(message[3])) {
+        error = "invalid session token";
+        return false;
+    }
+    request.sessionToken = message[3];
 
     if (message[1] == "LEAVE") {
-        if (message.size() != 3) {
-            error = "LEAVE requires only a player ID";
+        if (message.size() != 4) {
+            error = "LEAVE requires a player ID and session token";
             return false;
         }
         request.type = RequestType::Leave;
         return true;
     }
 
-    if (message[1] != "INPUT" || message.size() != 6) {
+    if (message[1] != "INPUT" || message.size() != 7) {
         error = "unknown request command";
         return false;
     }
 
     std::uint64_t sequence = 0;
-    if (!parseUnsigned(message[3], sequence) || !parseInt(message[4], request.input.horizontal) ||
-        !parseInt(message[5], request.input.vertical) || request.input.horizontal < -1 ||
+    if (!parseUnsigned(message[4], sequence) || !parseInt(message[5], request.input.horizontal) ||
+        !parseInt(message[6], request.input.vertical) || request.input.horizontal < -1 ||
         request.input.horizontal > 1 || request.input.vertical < -1 || request.input.vertical > 1) {
         error = "invalid movement input";
         return false;

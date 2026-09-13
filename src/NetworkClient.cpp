@@ -6,8 +6,10 @@
 #include <zmq.hpp>
 #include <zmq_addon.hpp>
 
-#include <chrono>
 #include <algorithm>
+#include <iomanip>
+#include <random>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -15,6 +17,17 @@ namespace Network {
 namespace {
 
 constexpr std::int64_t retryDelayNs = kNsPerSec;
+
+SessionToken makeSessionToken()
+{
+    std::random_device random;
+    std::ostringstream token;
+    token << std::hex << std::setfill('0');
+    for (int part = 0; part < 4; ++part) {
+        token << std::setw(8) << static_cast<std::uint32_t>(random());
+    }
+    return token.str();
+}
 
 std::vector<zmq::const_buffer> makeBuffers(const Message& message)
 {
@@ -70,7 +83,7 @@ struct NetworkClient::Impl {
 
     void sendJoin()
     {
-        if (!socket || !sendMessage(*socket, encodeJoin())) {
+        if (!socket || !sendMessage(*socket, encodeJoin(sessionToken))) {
             scheduleRetry("could not send JOIN request");
             return;
         }
@@ -81,6 +94,7 @@ struct NetworkClient::Impl {
 
     void scheduleRetry(const std::string& message)
     {
+        socket.reset();
         waitingForReply = false;
         state = ConnectionState::Connecting;
         error = message;
@@ -91,6 +105,7 @@ struct NetworkClient::Impl {
     std::unique_ptr<zmq::socket_t> socket;
     RealTimeClock clock;
     std::string endpoint;
+    SessionToken sessionToken = makeSessionToken();
     ConnectionState state = ConnectionState::Disconnected;
     PlayerId playerId = 0;
     WorldSnapshot snapshot;
@@ -144,14 +159,12 @@ void NetworkClient::poll()
     Reply reply;
     std::string error;
     if (!decodeReply(message, reply, error)) {
-        impl_->state = ConnectionState::Error;
-        impl_->error = error;
+        impl_->scheduleRetry(error);
         return;
     }
 
     if (reply.type == ReplyType::Error) {
-        impl_->state = ConnectionState::Error;
-        impl_->error = reply.error;
+        impl_->scheduleRetry(reply.error);
         return;
     }
 
@@ -179,7 +192,7 @@ void NetworkClient::submitInput(int horizontal, int vertical)
     input.horizontal = std::clamp(horizontal, -1, 1);
     input.vertical = std::clamp(vertical, -1, 1);
     input.sequence = impl_->nextSequence++;
-    if (!sendMessage(*impl_->socket, encodeInput(impl_->playerId, input))) {
+    if (!sendMessage(*impl_->socket, encodeInput(impl_->playerId, impl_->sessionToken, input))) {
         impl_->scheduleRetry("could not send movement input");
         return;
     }
@@ -191,7 +204,7 @@ void NetworkClient::submitInput(int horizontal, int vertical)
 void NetworkClient::leave()
 {
     if (impl_->state == ConnectionState::Connected && !impl_->waitingForReply) {
-        sendMessage(*impl_->socket, encodeLeave(impl_->playerId));
+        sendMessage(*impl_->socket, encodeLeave(impl_->playerId, impl_->sessionToken));
     }
     impl_->socket.reset();
     impl_->state = ConnectionState::Disconnected;

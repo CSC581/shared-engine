@@ -8,9 +8,10 @@
 // of text fields so they never depend on C++ struct layout or byte order.
 namespace Network {
 
-constexpr int protocolVersion = 1;
+constexpr int protocolVersion = 2;
 
 using PlayerId = std::uint32_t;
+using SessionToken = std::string;
 using Message = std::vector<std::string>;
 
 struct MovementInput {
@@ -46,6 +47,7 @@ enum class RequestType {
 struct Request {
     RequestType type = RequestType::Join;
     PlayerId playerId = 0;
+    SessionToken sessionToken;
     MovementInput input{};
 };
 
@@ -63,9 +65,9 @@ struct Reply {
     std::string error;
 };
 
-Message encodeJoin();
-Message encodeInput(PlayerId playerId, const MovementInput& input);
-Message encodeLeave(PlayerId playerId);
+Message encodeJoin(const SessionToken& sessionToken);
+Message encodeInput(PlayerId playerId, const SessionToken& sessionToken, const MovementInput& input);
+Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken);
 bool decodeRequest(const Message& message, Request& request, std::string& error);
 
 Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot);
