@@ -11,6 +11,11 @@ void Entity::update(float deltaTime)
     y_ += velocityY_ * deltaTime;
 }
 
+void Entity::update(const FrameTime& time)
+{
+    update(static_cast<float>(time.dtSeconds));
+}
+
 void Entity::setPosition(float x, float y)
 {
     x_ = x;

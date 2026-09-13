@@ -207,11 +207,18 @@ namespace
         float cameraTarget() const;
 
         // ---- handleInput, split by concern. ----
+        // P pauses the game timeline and 1/2/3 pick its rate. Read before
+        // anything else, so time can still be started again from the scorecard
+        // or from a paused game.
+        void handleTimeControls(Engine &engine);
+        void refreshTitle(Engine &engine);
         // ESC/R/N: quit, restart or advance. Returns true when one of those fired
         // and the rest of handleInput should be skipped, mirroring the early
         // returns this replaces.
         bool handleGlobalInput(Engine &engine);
         void handleMovementInput();
+        // The aim swing itself, on game time rather than on frames.
+        void updateAim(float deltaTime);
 
         // ---- update, split by phase, called in original order. ----
         void updateCharging(float deltaTime);
@@ -324,6 +331,14 @@ namespace
         // loaded, so a sail's position is a pure function of it -- the same clock
         // always gives the same arrangement.
         float swingClock_ = 0.0F;
+
+        // Which way the aim keys are pushing this frame: -1, 0 or +1.
+        float aimInput_ = 0.0F;
+
+        // The window title as it was last written. Compared against rather than
+        // counted on: the title is rewritten only when the timeline state it
+        // shows actually changes, not once a frame.
+        char shownTitle_[64] = {};
 
         // Where the ball has been since the last swing: the parabola, drawn.
         std::vector<SDL_FPoint> flightPath_;
@@ -1201,6 +1216,10 @@ namespace
 
     void GolfGame::handleInput(Engine &engine)
     {
+        // Before every early return below: whatever the round is doing, the
+        // clock has to stay reachable.
+        handleTimeControls(engine);
+
         if (handleGlobalInput(engine))
         {
             return;
@@ -1223,6 +1242,59 @@ namespace
             isCharging_ = false;
             swing();
         }
+    }
+
+    // P pauses and unpauses the game timeline; 1, 2 and 3 run it at half, normal
+    // and double speed. Everything that moves does so out of that one clock, so
+    // none of the golfer, the ball or the windmills needs to know any of this
+    // happened -- and the engine reserves none of these keys, because which key
+    // means what is a game's business and not an engine's.
+    //
+    // Just-pressed rather than held: isKeyPressed would flip the pause on every
+    // frame the key was down.
+    void GolfGame::handleTimeControls(Engine &engine)
+    {
+        Timeline &gameTime = engine.gameTime();
+
+        if (Input::isKeyJustPressed(SDL_SCANCODE_P))
+        {
+            gameTime.togglePause();
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_1))
+        {
+            gameTime.setScale(0.5);
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_2))
+        {
+            gameTime.setScale(1.0);
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_3))
+        {
+            gameTime.setScale(2.0);
+        }
+
+        refreshTitle(engine);
+    }
+
+    // Writes the timeline state into the window title, and only when it has
+    // changed: SDL_SetWindowTitle talks to the window server, which is not
+    // something to do sixty times a second to say nothing new.
+    void GolfGame::refreshTitle(Engine &engine)
+    {
+        const Timeline &gameTime = engine.gameTime();
+
+        char title[sizeof(shownTitle_)];
+        std::snprintf(title, sizeof(title), "Golf  -  x%.1f%s",
+                      gameTime.scale(),
+                      gameTime.isPaused() ? "  |  PAUSED" : "");
+
+        if (std::strcmp(title, shownTitle_) == 0)
+        {
+            return;
+        }
+
+        std::snprintf(shownTitle_, sizeof(shownTitle_), "%s", title);
+        SDL_SetWindowTitle(engine.getWindow(), title);
     }
 
     // ESC quits, R restarts and N carries on: to the next tee once the ball is
@@ -1274,14 +1346,27 @@ namespace
         }
         golfer_.setVelocityX(velocityX);
 
+        // Direction only. The aim is swung in updateAim, out of the frame's
+        // game time, for the same reason the golfer's walk is: the input
+        // system runs on real time, so integrating here would keep the aim
+        // turning while the game was paused, and would swing it at whatever
+        // rate the machine happened to be running frames at.
+        aimInput_ = 0.0F;
         if (Input::isKeyPressed(SDL_SCANCODE_W) || Input::isKeyPressed(SDL_SCANCODE_UP))
         {
-            angle_ += aimSpeed * 0.016F;
+            aimInput_ += 1.0F;
         }
         if (Input::isKeyPressed(SDL_SCANCODE_S) || Input::isKeyPressed(SDL_SCANCODE_DOWN))
         {
-            angle_ -= aimSpeed * 0.016F;
+            aimInput_ -= 1.0F;
         }
+    }
+
+    // aimSpeed is degrees per second, so the swing takes the same time on any
+    // machine and stops dead with everything else on a pause.
+    void GolfGame::updateAim(float deltaTime)
+    {
+        angle_ += aimSpeed * aimInput_ * deltaTime;
         angle_ = angle_ < minAngle ? minAngle : (angle_ > maxAngle ? maxAngle : angle_);
     }
 
@@ -1302,6 +1387,7 @@ namespace
             return;
         }
 
+        updateAim(deltaTime);
         updateCharging(deltaTime);
 
         // The sails run on their own clock, before anything else moves, so the
