@@ -5,6 +5,8 @@
 #include <memory>
 #include <string>
 
+class TimeSource;
+
 namespace Network {
 
 // Non-blocking REQ client for a Game update loop. It sends intent only; the
@@ -12,6 +14,9 @@ namespace Network {
 class NetworkClient {
 public:
     explicit NetworkClient(std::string endpoint = "tcp://127.0.0.1:5555");
+    // The clock must count monotonic nanoseconds and outlive this client.
+    // Use unpaused real time in games so connection recovery keeps running.
+    NetworkClient(const TimeSource& clock, std::string endpoint = "tcp://127.0.0.1:5555");
     ~NetworkClient();
 
     NetworkClient(const NetworkClient&) = delete;

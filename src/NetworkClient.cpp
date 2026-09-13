@@ -65,8 +65,9 @@ Message receiveMessage(zmq::socket_t& socket, bool& received)
 } // namespace
 
 struct NetworkClient::Impl {
-    explicit Impl(std::string endpointValue)
-        : endpoint(std::move(endpointValue))
+    explicit Impl(std::string endpointValue, const TimeSource* timeSource = nullptr)
+        : clock(timeSource ? *timeSource : realClock),
+          endpoint(std::move(endpointValue))
     {
     }
 
@@ -103,7 +104,8 @@ struct NetworkClient::Impl {
 
     zmq::context_t context{1};
     std::unique_ptr<zmq::socket_t> socket;
-    RealTimeClock clock;
+    RealTimeClock realClock;
+    const TimeSource& clock;
     std::string endpoint;
     SessionToken sessionToken = makeSessionToken();
     ConnectionState state = ConnectionState::Disconnected;
@@ -118,6 +120,11 @@ struct NetworkClient::Impl {
 
 NetworkClient::NetworkClient(std::string endpoint)
     : impl_(std::make_unique<Impl>(std::move(endpoint)))
+{
+}
+
+NetworkClient::NetworkClient(const TimeSource& clock, std::string endpoint)
+    : impl_(std::make_unique<Impl>(std::move(endpoint), &clock))
 {
 }
 

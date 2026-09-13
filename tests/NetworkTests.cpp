@@ -204,13 +204,17 @@ int main()
     const std::string delayedEndpoint = reservation.get(zmq::sockopt::last_endpoint);
     reservation.close();
 
-    Network::NetworkClient delayedClient(delayedEndpoint);
+    ManualClock clientClock;
+    Network::NetworkClient delayedClient(clientClock, delayedEndpoint);
     delayedClient.start();
-    const auto firstRetryDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
-    while (std::chrono::steady_clock::now() < firstRetryDeadline) {
-        delayedClient.poll();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    passed &= expect(delayedClient.error().empty(), "initial JOIN should be queued");
+    clientClock.advance(kNsPerSec - 1);
+    delayedClient.poll();
+    passed &= expect(delayedClient.error().empty(), "request must not time out before one second");
+    clientClock.advance(1);
+    delayedClient.poll();
+    passed &= expect(delayedClient.error() == "waiting for server at " + delayedEndpoint,
+                     "request should time out exactly at one second on the supplied clock");
     passed &= expect(delayedClient.state() == Network::ConnectionState::Connecting,
                      "client without a server should remain connecting");
 
@@ -226,7 +230,10 @@ int main()
         delayedServerBound.set_value();
 
         RealTimeClock delayedClock;
-        Network::NetworkServer delayedServer(delayedClock, networkConfig);
+        Network::ServerConfig delayedConfig = networkConfig;
+        delayedConfig.ticsPerSecond = kNsPerSec;
+        delayedConfig.inactivityTimeoutTics = 3 * kNsPerSec;
+        Network::NetworkServer delayedServer(delayedClock, delayedConfig);
         while (delayedServerRunning.load()) {
             std::vector<zmq::message_t> raw;
             const auto received = zmq::recv_multipart(delayedSocket, std::back_inserter(raw));
@@ -242,6 +249,12 @@ int main()
         }
     });
     delayedServerReady.wait();
+
+    clientClock.advance(kNsPerSec - 1);
+    delayedClient.poll();
+    passed &= expect(delayedClient.state() == Network::ConnectionState::Connecting,
+                     "client should remain connecting during retry backoff");
+    clientClock.advance(1);
 
     const auto connectionDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1800);
     while (delayedClient.state() != Network::ConnectionState::Connected &&
