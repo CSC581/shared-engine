@@ -29,7 +29,7 @@ Input      -> keyboard state queries
 Collision  -> overlap and separation calculations
 Timeline   -> pausable, rescalable clocks the simulation runs on
 DeltaTimer -> per-consumer "time since I last looked"
-Network    -> SDL-free protocol, authoritative server, non-blocking client
+Network    -> SDL-free protocol, player-state server, non-blocking client
 ```
 
 The intended order for each frame is:
@@ -188,15 +188,30 @@ its own. Every `Timeline` method is thread-safe.
 ### Networking
 
 The Section 2 networking module is separate from the individual games. It uses
-a headless, authoritative ZeroMQ server and SDL client windows. Each client
-sends its current direction; the server advances the shared world and returns
-the complete player snapshot. Every visible position is therefore
-server-confirmed, and a new client can join an active arena at any time.
+a headless ZeroMQ server and SDL client windows. Each client simulates its own
+character using the shared `Entity` class and game delta time, then sends its
+calculated position. The server checks session ownership and increasing sequence
+numbers, stores the position, and replies with all current player positions.
+Other clients draw those snapshots; the local character is drawn from its own
+simulation so delayed replies do not rewind its movement. New clients can join
+an active arena at any time.
 
 `network-core` does not choose sprites, colors, or a level layout. The
-standalone demo supplies its own arena, spawn points, and player colors in
-`sandbox/NetworkDemoConfig.hpp`; another game can pass different world values
-to `NetworkServer` without changing the networking module.
+standalone demo supplies its arena, speed, spawn points, and colors in
+`sandbox/NetworkDemoConfig.hpp`. `sandbox/NetworkDemoPlayer.hpp` handles local
+movement, diagonal normalization, and arena boundaries. The server receives
+initial spawn positions but has no character speed, gravity, or boundary rules.
+Individual games can apply their own gravity and collision rules before calling
+`NetworkClient::submitPosition(x, y)`.
+
+Protocol version 3 replaces `INPUT` messages with
+`[3, POSITION, playerId, sessionToken, sequence, x, y]`. Rebuild and restart both
+the server and clients together; version 2 executables are incompatible.
+Position values must be finite, but the server trusts clients to obey game rules.
+Coordinates use locale-independent decimal text with enough precision to preserve
+float values between clients and server.
+This version does not prevent teleporting or resolve player-to-player collisions.
+Server-controlled moving platforms and per-client server threads remain Section 4 work.
 
 Start the server in one terminal:
 
@@ -214,15 +229,26 @@ Then start three clients in separate terminals:
 
 Use `WASD` or the arrow keys in each window. The window title shows connection
 state, player ID, and player count. The white outline marks the local player.
-Clients retry automatically if started before the server; disconnected players
-are removed after three seconds. A stable per-client session token means a
-retry keeps the same player instead of creating a duplicate, and a client
-cannot submit movement for another player's ID without that player's token.
+Clients retry automatically if started before the server. Each frame the demo
+attempts to send its position, even when stationary or given zero game delta;
+only one request may be outstanding. These updates refresh presence and fetch
+snapshots. Connection recovery uses real time, independently of game time.
+The client also accepts an external nanosecond clock for tests.
+Invalid addresses and incompatible protocol replies put the client in `Error`
+and display the reason in the demo instead of retrying forever. After fixing an
+address or rebuilding incompatible binaries, restart the demo. A game can also
+explicitly call `start()` to retry an existing client's endpoint. Temporary
+connection loss continues to use automatic retries.
+The server removes clients inactive for three seconds when processing a request
+or explicitly calling `update()`. A retry reuses the same player while its session
+still exists; otherwise it joins as a new player. The demo adopts the stored
+position on rejoin. A client cannot update another player's position without that
+player's token.
 The defaults use local TCP port 5555. Pass an endpoint to use another address,
 for example:
 
 ```bash
-./build/network-server tcp://*:6000
+./build/network-server 'tcp://*:6000'
 ./build/network-client tcp://192.168.1.10:6000
 ```
 
