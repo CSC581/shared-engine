@@ -4,6 +4,9 @@
 #include <cctype>
 #include <cmath>
 #include <limits>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
 
 namespace Network {
@@ -11,6 +14,11 @@ namespace {
 
 bool parseUnsigned(const std::string& text, std::uint64_t& value)
 {
+    if (text.empty() || !std::all_of(text.begin(), text.end(), [](unsigned char c) {
+            return c >= '0' && c <= '9';
+        })) {
+        return false;
+    }
     try {
         std::size_t parsed = 0;
         value = std::stoull(text, &parsed);
@@ -20,26 +28,27 @@ bool parseUnsigned(const std::string& text, std::uint64_t& value)
     }
 }
 
-bool parseInt(const std::string& text, int& value)
-{
-    try {
-        std::size_t parsed = 0;
-        value = std::stoi(text, &parsed);
-        return parsed == text.size();
-    } catch (const std::exception&) {
-        return false;
-    }
-}
-
 bool parseFloat(const std::string& text, float& value)
 {
-    try {
-        std::size_t parsed = 0;
-        value = std::stof(text, &parsed);
-        return parsed == text.size() && std::isfinite(value);
-    } catch (const std::exception&) {
+    std::istringstream input(text);
+    input.imbue(std::locale::classic());
+    // Parsing through double preserves subnormal floats on older libc++ builds.
+    double parsed = 0.0;
+    input >> std::noskipws >> parsed;
+    if (input.fail() || !input.eof() || !std::isfinite(parsed) ||
+        std::fabs(parsed) > std::numeric_limits<float>::max()) {
         return false;
     }
+    value = static_cast<float>(parsed);
+    return parsed == 0.0 || value != 0.0F;
+}
+
+std::string formatFloat(float value)
+{
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output << std::setprecision(std::numeric_limits<double>::max_digits10) << static_cast<double>(value);
+    return output.str();
 }
 
 bool parseVersion(const Message& message, std::string& error)
@@ -113,8 +122,8 @@ void appendSnapshot(Message& message, const WorldSnapshot& snapshot)
 
     for (const PlayerState& player : snapshot.players) {
         message.push_back(std::to_string(player.id));
-        message.push_back(std::to_string(player.x));
-        message.push_back(std::to_string(player.y));
+        message.push_back(formatFloat(player.x));
+        message.push_back(formatFloat(player.y));
     }
 }
 
@@ -125,10 +134,10 @@ Message encodeJoin(const SessionToken& sessionToken)
     return {std::to_string(protocolVersion), "JOIN", sessionToken};
 }
 
-Message encodeInput(PlayerId playerId, const SessionToken& sessionToken, const MovementInput& input)
+Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position)
 {
-    return {std::to_string(protocolVersion), "INPUT", std::to_string(playerId), sessionToken,
-            std::to_string(input.sequence), std::to_string(input.horizontal), std::to_string(input.vertical)};
+    return {std::to_string(protocolVersion), "POSITION", std::to_string(playerId), sessionToken,
+            std::to_string(position.sequence), formatFloat(position.x), formatFloat(position.y)};
 }
 
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken)
@@ -177,21 +186,20 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
         return true;
     }
 
-    if (message[1] != "INPUT" || message.size() != 7) {
+    if (message[1] != "POSITION" || message.size() != 7) {
         error = "unknown request command";
         return false;
     }
 
     std::uint64_t sequence = 0;
-    if (!parseUnsigned(message[4], sequence) || !parseInt(message[5], request.input.horizontal) ||
-        !parseInt(message[6], request.input.vertical) || request.input.horizontal < -1 ||
-        request.input.horizontal > 1 || request.input.vertical < -1 || request.input.vertical > 1) {
-        error = "invalid movement input";
+    if (!parseUnsigned(message[4], sequence) || sequence == 0 ||
+        !parseFloat(message[5], request.position.x) || !parseFloat(message[6], request.position.y)) {
+        error = "invalid position update";
         return false;
     }
 
-    request.type = RequestType::Input;
-    request.input.sequence = sequence;
+    request.type = RequestType::Position;
+    request.position.sequence = sequence;
     return true;
 }
 

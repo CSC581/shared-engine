@@ -38,7 +38,7 @@ target_include_directories(engine-time PUBLIC include)
 find_package(Threads REQUIRED)
 target_link_libraries(engine-time PUBLIC Threads::Threads)
 
-# SDL-free networking: protocol, authoritative world, and non-blocking ZeroMQ
+# SDL-free networking: protocol, session/state store, and non-blocking ZeroMQ
 # client adapter. A headless server can link this without the window engine.
 add_library(network-core STATIC
     src/NetworkProtocol.cpp
@@ -110,7 +110,7 @@ target_link_libraries(zmq-smoke-tests PRIVATE cppzmq-static)
 add_test(NAME zmq-smoke-tests COMMAND zmq-smoke-tests)
 
 add_executable(network-tests tests/NetworkTests.cpp)
-target_link_libraries(network-tests PRIVATE network-core)
+target_link_libraries(network-tests PRIVATE network-core engine-geometry)
 
 add_test(NAME network-tests COMMAND network-tests)
 

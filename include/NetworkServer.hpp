@@ -16,26 +16,22 @@ struct SpawnPoint {
     float y = 0.0F;
 };
 
-// A game/server executable chooses its own level bounds, speed, and spawn
-// points, then passes them to the generic authoritative simulation below.
+// The application supplies initial positions. Character simulation belongs to
+// clients; the server manages membership and stores their reported positions.
 struct ServerConfig {
-    float arenaWidth = 0.0F;
-    float arenaHeight = 0.0F;
-    float playerSize = 0.0F;
-    float playerSpeed = 0.0F;
     std::vector<SpawnPoint> spawnPoints;
     std::size_t maxPlayers = 8;
-    std::int64_t ticsPerSecond = kNsPerSec;
+    // In the supplied clock's units; the default assumes real nanoseconds.
     std::int64_t inactivityTimeoutTics = 3 * kNsPerSec;
 };
 
-// The authoritative world. It has no SDL or ZeroMQ dependency, which lets
-// tests drive it directly with ManualClock and lets the transport stay thin.
+// Single-threaded session/state store, independent of SDL and ZeroMQ.
+// Positions are trusted client reports, not validated game physics.
 class NetworkServer {
 public:
     NetworkServer(const TimeSource& clock, ServerConfig config);
 
-    // Advances active player positions and removes timed-out clients.
+    // Removes timed-out clients without moving characters.
     void update();
 
     // Processes one decoded transport message and returns its reply message.
@@ -48,17 +44,16 @@ private:
     struct ActivePlayer {
         PlayerState state;
         SessionToken sessionToken;
-        MovementInput input;
+        std::uint64_t lastSequence = 0;
         std::int64_t lastHeard = 0;
     };
 
     void expireInactivePlayers(std::int64_t now);
-    WorldSnapshot snapshotLocked() const;
+    WorldSnapshot buildSnapshot() const;
     PlayerState spawnPlayer(PlayerId id) const;
 
     const TimeSource& clock_;
     ServerConfig config_;
-    std::int64_t lastUpdate_;
     PlayerId nextPlayerId_ = 1;
     std::uint64_t serverTick_ = 0;
     std::unordered_map<PlayerId, ActivePlayer> players_;

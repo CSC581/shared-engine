@@ -3,6 +3,7 @@
 #include "Input.hpp"
 #include "NetworkClient.hpp"
 #include "NetworkDemoConfig.hpp"
+#include "NetworkDemoPlayer.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -46,10 +47,20 @@ public:
         }
     }
 
-    void update(float, Engine& engine) override
+    void update(float deltaTime, Engine& engine) override
     {
         client_.poll();
-        client_.submitInput(horizontal_, vertical_);
+        if (client_.state() == Network::ConnectionState::Connected) {
+            // Use the server position only on join/rejoin. Later snapshot echoes
+            // may be older than our local simulation and must not rewind it.
+            if (localPlayer_.synchronize(client_.snapshot(), client_.playerId())) {
+                localPlayer_.update(horizontal_, vertical_, deltaTime);
+                const Rect bounds = localPlayer_.bounds();
+                client_.submitPosition(bounds.x, bounds.y);
+            }
+        } else {
+            localPlayer_.reset();
+        }
 
         const std::string title = std::string("Network Client | ") + stateLabel(client_.state()) +
                                   " | Player " + std::to_string(client_.playerId()) + " | " +
@@ -67,13 +78,20 @@ public:
         SDL_SetRenderDrawColor(renderer, 180, 205, 230, 255);
         SDL_RenderDebugTextFormat(renderer, 32.0F, 18.0F, "%s | WASD or arrows to move", stateLabel(client_.state()));
 
-        if (client_.state() != Network::ConnectionState::Connected) {
+        if (!client_.error().empty()) {
+            SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
+            SDL_RenderDebugText(renderer, 32.0F, 510.0F, client_.error().c_str());
+        } else if (client_.state() != Network::ConnectionState::Connected) {
             SDL_SetRenderDrawColor(renderer, 255, 205, 100, 255);
-            SDL_RenderDebugText(renderer, 32.0F, 526.0F, "Start ./build/network-server to join the arena.");
+            SDL_RenderDebugText(renderer, 32.0F, 510.0F, "Connecting to server...");
         }
 
         for (const Network::PlayerState& player : client_.snapshot().players) {
-            const SDL_FRect rect{NetworkDemo::arenaX + player.x, NetworkDemo::arenaY + player.y,
+            const bool isLocal = player.id == client_.playerId() &&
+                                 client_.state() == Network::ConnectionState::Connected;
+            const Rect local = localPlayer_.bounds();
+            const SDL_FRect rect{NetworkDemo::arenaX + (isLocal ? local.x : player.x),
+                                 NetworkDemo::arenaY + (isLocal ? local.y : player.y),
                                  NetworkDemo::playerSize, NetworkDemo::playerSize};
             const NetworkDemo::Color color = NetworkDemo::colorForPlayer(player.id);
             SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, 255);
@@ -88,6 +106,7 @@ public:
 
 private:
     Network::NetworkClient client_;
+    NetworkDemo::Player localPlayer_;
     int horizontal_ = 0;
     int vertical_ = 0;
 };

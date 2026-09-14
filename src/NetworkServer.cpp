@@ -8,55 +8,28 @@ namespace Network {
 
 NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
     : clock_(clock),
-      config_(config),
-      lastUpdate_(clock.now())
+      config_(config)
 {
-    if (config_.arenaWidth <= config_.playerSize || config_.arenaHeight <= config_.playerSize ||
-        config_.playerSize <= 0.0F || config_.playerSpeed < 0.0F || config_.spawnPoints.empty() || config_.maxPlayers == 0 ||
-        config_.ticsPerSecond <= 0 || config_.inactivityTimeoutTics <= 0) {
+    if (config_.spawnPoints.empty() || config_.maxPlayers == 0 || config_.inactivityTimeoutTics <= 0) {
         throw std::invalid_argument("NetworkServer configuration is invalid");
     }
 
     for (const SpawnPoint& spawn : config_.spawnPoints) {
-        if (spawn.x < 0.0F || spawn.y < 0.0F || spawn.x > config_.arenaWidth - config_.playerSize ||
-            spawn.y > config_.arenaHeight - config_.playerSize) {
-            throw std::invalid_argument("NetworkServer spawn point is outside the arena");
+        if (!std::isfinite(spawn.x) || !std::isfinite(spawn.y)) {
+            throw std::invalid_argument("NetworkServer spawn point must be finite");
         }
     }
 }
 
 void NetworkServer::update()
 {
-    const std::int64_t now = clock_.now();
-    const std::int64_t elapsed = std::max<std::int64_t>(0, now - lastUpdate_);
-    lastUpdate_ = now;
-
-    if (elapsed > 0) {
-        const float elapsedSeconds = static_cast<float>(elapsed) / static_cast<float>(config_.ticsPerSecond);
-        for (auto& entry : players_) {
-            ActivePlayer& player = entry.second;
-            float horizontal = static_cast<float>(player.input.horizontal);
-            float vertical = static_cast<float>(player.input.vertical);
-            const float length = std::sqrt(horizontal * horizontal + vertical * vertical);
-            if (length > 1.0F) {
-                horizontal /= length;
-                vertical /= length;
-            }
-
-            player.state.x = std::clamp(player.state.x + horizontal * config_.playerSpeed * elapsedSeconds,
-                                        0.0F, config_.arenaWidth - config_.playerSize);
-            player.state.y = std::clamp(player.state.y + vertical * config_.playerSpeed * elapsedSeconds,
-                                        0.0F, config_.arenaHeight - config_.playerSize);
-        }
-        ++serverTick_;
-    }
-
-    expireInactivePlayers(now);
+    expireInactivePlayers(clock_.now());
 }
 
 Message NetworkServer::handle(const Message& message)
 {
-    update();
+    const std::int64_t now = clock_.now();
+    expireInactivePlayers(now);
 
     Request request;
     std::string error;
@@ -64,14 +37,13 @@ Message NetworkServer::handle(const Message& message)
         return encodeError(error);
     }
 
-    const std::int64_t now = clock_.now();
     if (request.type == RequestType::Join) {
         const auto existingId = playerIdsByToken_.find(request.sessionToken);
         if (existingId != playerIdsByToken_.end()) {
             const auto existingPlayer = players_.find(existingId->second);
             if (existingPlayer != players_.end()) {
                 existingPlayer->second.lastHeard = now;
-                return encodeWelcome(existingPlayer->first, snapshotLocked());
+                return encodeWelcome(existingPlayer->first, buildSnapshot());
             }
             playerIdsByToken_.erase(existingId);
         }
@@ -84,7 +56,7 @@ Message NetworkServer::handle(const Message& message)
         players_.emplace(id, ActivePlayer{spawnPlayer(id), request.sessionToken, {}, now});
         playerIdsByToken_.emplace(request.sessionToken, id);
         ++serverTick_;
-        return encodeWelcome(id, snapshotLocked());
+        return encodeWelcome(id, buildSnapshot());
     }
 
     const auto player = players_.find(request.playerId);
@@ -103,18 +75,21 @@ Message NetworkServer::handle(const Message& message)
         return encodeGoodbye();
     }
 
-    if (request.input.sequence <= player->second.input.sequence) {
-        return encodeError("input sequence must increase");
+    if (request.position.sequence <= player->second.lastSequence) {
+        return encodeError("position sequence must increase");
     }
 
-    player->second.input = request.input;
+    player->second.state.x = request.position.x;
+    player->second.state.y = request.position.y;
+    player->second.lastSequence = request.position.sequence;
     player->second.lastHeard = now;
-    return encodeSnapshot(snapshotLocked());
+    ++serverTick_;
+    return encodeSnapshot(buildSnapshot());
 }
 
 WorldSnapshot NetworkServer::snapshot() const
 {
-    return snapshotLocked();
+    return buildSnapshot();
 }
 
 std::size_t NetworkServer::playerCount() const
@@ -135,7 +110,7 @@ void NetworkServer::expireInactivePlayers(std::int64_t now)
     }
 }
 
-WorldSnapshot NetworkServer::snapshotLocked() const
+WorldSnapshot NetworkServer::buildSnapshot() const
 {
     WorldSnapshot result;
     result.serverTick = serverTick_;
@@ -150,13 +125,27 @@ WorldSnapshot NetworkServer::snapshotLocked() const
 
 PlayerState NetworkServer::spawnPlayer(PlayerId id) const
 {
-    const std::size_t index = static_cast<std::size_t>(id - 1);
-    const SpawnPoint spawn = config_.spawnPoints[index % config_.spawnPoints.size()];
+    const std::size_t count = config_.spawnPoints.size();
+    const std::size_t firstIndex = static_cast<std::size_t>(id - 1) % count;
+
+    // Start at the usual rotating point, but prefer an empty configured spawn
+    // so join/leave churn cannot immediately stack two active players.
+    const SpawnPoint* selected = &config_.spawnPoints[firstIndex];
+    for (std::size_t offset = 0; offset < count; ++offset) {
+        const SpawnPoint& candidate = config_.spawnPoints[(firstIndex + offset) % count];
+        const bool occupied = std::any_of(players_.begin(), players_.end(), [&](const auto& entry) {
+            return entry.second.state.x == candidate.x && entry.second.state.y == candidate.y;
+        });
+        if (!occupied) {
+            selected = &candidate;
+            break;
+        }
+    }
 
     PlayerState player;
     player.id = id;
-    player.x = spawn.x;
-    player.y = spawn.y;
+    player.x = selected->x;
+    player.y = selected->y;
     return player;
 }
 

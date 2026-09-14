@@ -8,15 +8,15 @@
 // of text fields so they never depend on C++ struct layout or byte order.
 namespace Network {
 
-constexpr int protocolVersion = 2;
+constexpr int protocolVersion = 3;
 
 using PlayerId = std::uint32_t;
 using SessionToken = std::string;
 using Message = std::vector<std::string>;
 
-struct MovementInput {
-    int horizontal = 0;
-    int vertical = 0;
+struct PositionUpdate {
+    float x = 0.0F;
+    float y = 0.0F;
     std::uint64_t sequence = 0;
 };
 
@@ -27,6 +27,7 @@ struct PlayerState {
 };
 
 struct WorldSnapshot {
+    // Revision of stored positions and membership, not elapsed simulation time.
     std::uint64_t serverTick = 0;
     std::vector<PlayerState> players;
 };
@@ -40,7 +41,7 @@ enum class ConnectionState {
 
 enum class RequestType {
     Join,
-    Input,
+    Position,
     Leave,
 };
 
@@ -48,7 +49,7 @@ struct Request {
     RequestType type = RequestType::Join;
     PlayerId playerId = 0;
     SessionToken sessionToken;
-    MovementInput input{};
+    PositionUpdate position{};
 };
 
 enum class ReplyType {
@@ -66,7 +67,7 @@ struct Reply {
 };
 
 Message encodeJoin(const SessionToken& sessionToken);
-Message encodeInput(PlayerId playerId, const SessionToken& sessionToken, const MovementInput& input);
+Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position);
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken);
 bool decodeRequest(const Message& message, Request& request, std::string& error);
 

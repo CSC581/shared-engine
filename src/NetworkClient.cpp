@@ -6,8 +6,9 @@
 #include <zmq.hpp>
 #include <zmq_addon.hpp>
 
-#include <algorithm>
+#include <cmath>
 #include <iomanip>
+#include <locale>
 #include <random>
 #include <sstream>
 #include <utility>
@@ -22,6 +23,7 @@ SessionToken makeSessionToken()
 {
     std::random_device random;
     std::ostringstream token;
+    token.imbue(std::locale::classic());
     token << std::hex << std::setfill('0');
     for (int part = 0; part < 4; ++part) {
         token << std::setw(8) << static_cast<std::uint32_t>(random());
@@ -42,7 +44,11 @@ std::vector<zmq::const_buffer> makeBuffers(const Message& message)
 bool sendMessage(zmq::socket_t& socket, const Message& message)
 {
     const std::vector<zmq::const_buffer> buffers = makeBuffers(message);
-    return zmq::send_multipart(socket, buffers, zmq::send_flags::dontwait).has_value();
+    try {
+        return zmq::send_multipart(socket, buffers, zmq::send_flags::dontwait).has_value();
+    } catch (const zmq::error_t&) {
+        return false;
+    }
 }
 
 Message receiveMessage(zmq::socket_t& socket, bool& received)
@@ -73,13 +79,29 @@ struct NetworkClient::Impl {
 
     void reconnect()
     {
-        socket.reset();
-        socket = std::make_unique<zmq::socket_t>(context, zmq::socket_type::req);
-        socket->set(zmq::sockopt::linger, 0);
-        socket->connect(endpoint);
+        try {
+            socket.reset();
+            socket = std::make_unique<zmq::socket_t>(context, zmq::socket_type::req);
+            socket->set(zmq::sockopt::linger, 0);
+            socket->connect(endpoint);
+        } catch (const zmq::error_t& exception) {
+            fail(std::string("Cannot connect: ") + exception.what() + ". Check the server address.");
+            return;
+        }
         waitingForReply = false;
         state = ConnectionState::Connecting;
+        error.clear();
         sendJoin();
+    }
+
+    void fail(const std::string& message)
+    {
+        socket.reset();
+        waitingForReply = false;
+        state = ConnectionState::Error;
+        error = message;
+        playerId = 0;
+        snapshot = {};
     }
 
     void sendJoin()
@@ -99,6 +121,10 @@ struct NetworkClient::Impl {
         waitingForReply = false;
         state = ConnectionState::Connecting;
         error = message;
+        // A disconnected world is no longer authoritative. The next WELCOME
+        // replaces it after this client has joined the server again.
+        playerId = 0;
+        snapshot = {};
         nextRetryAt = clock.now() + retryDelayNs;
     }
 
@@ -142,7 +168,7 @@ void NetworkClient::start()
 void NetworkClient::poll()
 {
     const std::int64_t now = impl_->clock.now();
-    if (impl_->state == ConnectionState::Disconnected) {
+    if (impl_->state == ConnectionState::Disconnected || impl_->state == ConnectionState::Error) {
         return;
     }
 
@@ -154,7 +180,13 @@ void NetworkClient::poll()
     }
 
     bool received = false;
-    const Message message = receiveMessage(*impl_->socket, received);
+    Message message;
+    try {
+        message = receiveMessage(*impl_->socket, received);
+    } catch (const zmq::error_t& exception) {
+        impl_->scheduleRetry(std::string("Could not receive server reply: ") + exception.what());
+        return;
+    }
     if (!received) {
         if (now - impl_->requestSentAt >= retryDelayNs) {
             impl_->scheduleRetry("waiting for server at " + impl_->endpoint);
@@ -166,12 +198,18 @@ void NetworkClient::poll()
     Reply reply;
     std::string error;
     if (!decodeReply(message, reply, error)) {
-        impl_->scheduleRetry(error);
+        impl_->fail(error == "unsupported protocol version"
+                        ? "Protocol version mismatch. Rebuild and restart both server and clients."
+                        : "Invalid server reply: " + error);
         return;
     }
 
     if (reply.type == ReplyType::Error) {
-        impl_->scheduleRetry(reply.error);
+        if (reply.error == "unsupported protocol version") {
+            impl_->fail("Protocol version mismatch. Rebuild and restart both server and clients.");
+        } else {
+            impl_->scheduleRetry(reply.error);
+        }
         return;
     }
 
@@ -189,21 +227,24 @@ void NetworkClient::poll()
     impl_->snapshot = std::move(reply.snapshot);
 }
 
-void NetworkClient::submitInput(int horizontal, int vertical)
+void NetworkClient::submitPosition(float x, float y)
 {
     if (impl_->state != ConnectionState::Connected || impl_->waitingForReply) {
         return;
     }
 
-    MovementInput input;
-    input.horizontal = std::clamp(horizontal, -1, 1);
-    input.vertical = std::clamp(vertical, -1, 1);
-    input.sequence = impl_->nextSequence++;
-    if (!sendMessage(*impl_->socket, encodeInput(impl_->playerId, impl_->sessionToken, input))) {
-        impl_->scheduleRetry("could not send movement input");
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        impl_->error = "position must be finite";
         return;
     }
 
+    const PositionUpdate position{x, y, impl_->nextSequence++};
+    if (!sendMessage(*impl_->socket, encodePosition(impl_->playerId, impl_->sessionToken, position))) {
+        impl_->scheduleRetry("could not send position update");
+        return;
+    }
+
+    impl_->error.clear();
     impl_->waitingForReply = true;
     impl_->requestSentAt = impl_->clock.now();
 }

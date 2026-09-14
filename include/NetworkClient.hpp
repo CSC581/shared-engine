@@ -9,8 +9,8 @@ class TimeSource;
 
 namespace Network {
 
-// Non-blocking REQ client for a Game update loop. It sends intent only; the
-// latest WorldSnapshot always comes from the authoritative server.
+// Non-blocking REQ client. Games simulate their own character and submit its
+// position; snapshots contain the latest positions stored by the server.
 class NetworkClient {
 public:
     explicit NetworkClient(std::string endpoint = "tcp://127.0.0.1:5555");
@@ -24,9 +24,12 @@ public:
     NetworkClient(NetworkClient&&) noexcept;
     NetworkClient& operator=(NetworkClient&&) noexcept;
 
+    // Starts connecting, or explicitly retries after a terminal Error.
     void start();
     void poll();
-    void submitInput(int horizontal, int vertical);
+    // Call every frame, even while stationary, to refresh presence and snapshots.
+    // While awaiting a reply, submissions are skipped; no stale positions queue up.
+    void submitPosition(float x, float y);
     void leave();
 
     ConnectionState state() const;

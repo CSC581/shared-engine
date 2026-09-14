@@ -16,6 +16,7 @@ constexpr float arenaY = 56.0F;
 constexpr float arenaWidth = 896.0F;
 constexpr float arenaHeight = 452.0F;
 constexpr float playerSize = 32.0F;
+constexpr float playerSpeed = 220.0F;
 
 struct Color {
     std::uint8_t red;
@@ -35,10 +36,6 @@ inline Color colorForPlayer(Network::PlayerId playerId)
 inline Network::ServerConfig makeServerConfig()
 {
     Network::ServerConfig config;
-    config.arenaWidth = arenaWidth;
-    config.arenaHeight = arenaHeight;
-    config.playerSize = playerSize;
-    config.playerSpeed = 220.0F;
     config.spawnPoints = {
         {48.0F, 48.0F}, {309.0F, 48.0F}, {570.0F, 48.0F}, {832.0F, 48.0F},
         {48.0F, 372.0F}, {309.0F, 372.0F}, {570.0F, 372.0F}, {832.0F, 372.0F},
