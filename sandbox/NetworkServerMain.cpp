@@ -43,6 +43,7 @@ void sendMessage(zmq::socket_t& socket, const Network::Message& message)
 int main(int argc, char* argv[])
 {
     const std::string endpoint = argc > 1 ? argv[1] : "tcp://*:5555";
+    const std::string stateFilePath = argc > 2 ? argv[2] : "network-server-state.txt";
 
     try {
         zmq::context_t context(1);
@@ -51,8 +52,10 @@ int main(int argc, char* argv[])
         socket.bind(endpoint);
 
         RealTimeClock clock;
-        Network::NetworkServer server(clock, NetworkDemo::makeServerConfig());
-        std::cout << "Network server listening on " << endpoint << "\n";
+        Network::ServerConfig config = NetworkDemo::makeServerConfig();
+        config.stateFilePath = stateFilePath;
+        Network::NetworkServer server(clock, std::move(config));
+        std::cout << "Network server listening on " << endpoint << " using state file " << stateFilePath << "\n";
 
         while (true) {
             sendMessage(socket, server.handle(receiveMessage(socket)));

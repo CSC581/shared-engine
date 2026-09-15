@@ -12,6 +12,7 @@
 #include <clocale>
 #include <cmath>
 #include <future>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <locale>
@@ -294,6 +295,37 @@ int main()
     directConfig.spawnPoints = {{48.0F, 48.0F}};
     directConfig.inactivityTimeoutTics = 3000;
     Network::NetworkServer directServer(manualClock, directConfig);
+
+    const std::filesystem::path persistedStatePath =
+        std::filesystem::temp_directory_path() / "shared-engine-network-server-state-test.txt";
+    std::error_code stateFileError;
+    std::filesystem::remove(persistedStatePath, stateFileError);
+    Network::ServerConfig persistenceConfig = directConfig;
+    persistenceConfig.stateFilePath = persistedStatePath.string();
+    Network::PlayerId restoredPlayerId = 0;
+    {
+        Network::NetworkServer savingServer(manualClock, persistenceConfig);
+        Network::Reply savingJoin;
+        Network::decodeReply(savingServer.handle(Network::encodeJoin(tokenThree)), savingJoin, error);
+        restoredPlayerId = savingJoin.playerId;
+        Network::Reply savingPosition;
+        Network::decodeReply(savingServer.handle(Network::encodePosition(restoredPlayerId, tokenThree, {321.5F, 123.25F, 7})),
+                             savingPosition, error);
+    }
+    Network::NetworkServer restoredServer(manualClock, persistenceConfig);
+    Network::Reply restoredJoin;
+    Network::decodeReply(restoredServer.handle(Network::encodeJoin(tokenThree)), restoredJoin, error);
+    float restoredX = 0.0F;
+    passed &= expect(restoredJoin.type == Network::ReplyType::Welcome && restoredJoin.playerId == restoredPlayerId &&
+                         containsPlayer(restoredJoin.snapshot, restoredPlayerId, &restoredX) && restoredX == 321.5F,
+                     "a restarted server should restore a client's ID and last saved position");
+    Network::Reply afterRestorePosition;
+    Network::decodeReply(restoredServer.handle(Network::encodePosition(restoredPlayerId, tokenThree, {400.0F, 200.0F, 8})),
+                         afterRestorePosition, error);
+    passed &= expect(afterRestorePosition.type == Network::ReplyType::Snapshot,
+                     "a restored server should retain the previous position sequence");
+    std::filesystem::remove(persistedStatePath, stateFileError);
+    std::filesystem::remove(persistedStatePath.string() + ".tmp", stateFileError);
 
     Network::Reply joinReply;
     passed &= expect(Network::decodeReply(directServer.handle(Network::encodeJoin(tokenOne)), joinReply, error),
