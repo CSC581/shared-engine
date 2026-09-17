@@ -1,3 +1,8 @@
 build/
 
 individual-games/harsha/experiment.cpp
+# Built by individual-games/skim253/build.sh, which drops the binary next to
+# its source rather than in build/.
+individual-games/skim253/golf-game
+
+.ds_store

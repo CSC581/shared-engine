@@ -39,13 +39,22 @@ Engine::~Engine()
 
 void Engine::run(Game& game)
 {
-    Uint64 previousFrameTime = SDL_GetTicks();
+    // Whatever the game spent building itself is not this frame's delta.
+    frameTimer_.reset();
 
     while (isRunning_) {
+        // One tic of the loop clock per pass, counted before anything in the
+        // frame happens, so everything below sees the same iteration number.
+        loopClock_.advance();
+
         // Window events keep the application responsive; gameplay input is
         // read exclusively through the polling Input system below.
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            // The game sees every event first, and the engine consumes none of
+            // them: both this hook and the handling below get every event.
+            game.onEvent(event);
+
             if (event.type == SDL_EVENT_QUIT ||
                 event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                 isRunning_ = false;
@@ -60,21 +69,24 @@ void Engine::run(Game& game)
 
         game.handleInput(*this);
 
-        const Uint64 currentFrameTime = SDL_GetTicks();
-        float deltaTime = static_cast<float>(currentFrameTime - previousFrameTime) / 1000.0F;
-        previousFrameTime = currentFrameTime;
+        // Ticked after the game has read its input, so a pause pressed this
+        // frame takes effect this frame rather than one frame late.
+        //
+        // Events, input and rendering above and below deliberately run on real
+        // time and never consult gameTime_: a loop that waited on a paused
+        // timeline could never read the key that unpauses it.
+        const std::int64_t deltaTics = frameTimer_.tick();
+        const FrameTime frameTime{
+            static_cast<double>(deltaTics) / static_cast<double>(kGameTicsPerSecond),
+            gameTime_.now()};
 
-        // Keep physics stable if the window stalls for a moment.
-        if (deltaTime > maxDeltaTime) {
-            deltaTime = maxDeltaTime;
-        }
-
-        game.update(deltaTime, *this);
+        game.update(frameTime, *this);
 
         applyScaleMode();
         SDL_SetRenderDrawColor(renderer_, clearColor_.red, clearColor_.green, clearColor_.blue, 255);
         SDL_RenderClear(renderer_);
         game.render(renderer_);
+        game.renderOverlay(renderer_);
         SDL_RenderPresent(renderer_);
     }
 }
@@ -87,6 +99,31 @@ void Engine::quit()
 SDL_Renderer* Engine::getRenderer() const
 {
     return renderer_;
+}
+
+SDL_Window* Engine::getWindow() const
+{
+    return window_;
+}
+
+Timeline& Engine::gameTime()
+{
+    return gameTime_;
+}
+
+const TimeSource& Engine::realTime() const
+{
+    return realClock_;
+}
+
+DeltaTimer& Engine::frameTimer()
+{
+    return frameTimer_;
+}
+
+Timeline& Engine::loopTime()
+{
+    return loopTime_;
 }
 
 int Engine::getWidth() const

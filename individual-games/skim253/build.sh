@@ -11,7 +11,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 build="$root/build"
 
-for lib in libengine.a libengine-geometry.a vendored/SDL/libSDL3.dylib; do
+for lib in libengine.a libengine-geometry.a libengine-time.a vendored/SDL/libSDL3.dylib; do
     if [[ ! -e "$build/$lib" ]]; then
         echo "missing $build/$lib -- build the engine first:" >&2
         echo "  cmake -S \"$root\" -B \"$build\" && cmake --build \"$build\"" >&2
@@ -23,7 +23,7 @@ done
 c++ -std=c++17 -Wall -Wextra -O2 \
     -I"$root/include" -I"$root/vendored/SDL/include" \
     "$here/main.cpp" \
-    "$build/libengine.a" "$build/libengine-geometry.a" \
+    "$build/libengine.a" "$build/libengine-geometry.a" "$build/libengine-time.a" \
     "$build/vendored/SDL/libSDL3.dylib" \
     -Wl,-rpath,"$build/vendored/SDL" \
     -o "$here/golf-game"

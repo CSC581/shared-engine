@@ -27,6 +27,9 @@ Entity     -> position, size, velocity, and movement
 Physics    -> configurable gravity
 Input      -> keyboard state queries
 Collision  -> overlap and separation calculations
+Timeline   -> pausable, rescalable clocks the simulation runs on
+DeltaTimer -> per-consumer "time since I last looked"
+Network    -> SDL-free protocol, player-state server, non-blocking client
 ```
 
 The intended order for each frame is:
@@ -37,7 +40,8 @@ input -> gravity (selected entities) -> entity update -> collision -> render
 
 ## Build
 
-`vendored/SDL` is a Git submodule. On a new clone, fetch it first:
+SDL3 and ZeroMQ are Git submodules under `vendored/`. On a new clone, fetch
+them first:
 
 ```bash
 git submodule update --init --recursive
@@ -119,6 +123,148 @@ Press `F1` while a game is running, then resize the window to compare modes.
 | Proportional scaling | The design resolution scales uniformly and keeps its aspect ratio. Unused space may appear at the sides or top and bottom. |
 
 Use `Engine::setScaleToggleKey()` to change or disable the default `F1` key.
+
+### Timelines
+
+The engine measures time on three scales, and owns a clock for each:
+
+| Scale | Clock | Counts |
+| --- | --- | --- |
+| Real time | `realTime()` | Nanoseconds off `steady_clock`. Never pauses, never scales. |
+| Game time | `gameTime()` | Game microseconds. Pausable and rescalable; the simulation runs on this. |
+| Loop iterations | `loopTime()` | One tic per pass through the main loop, however long that pass took. |
+
+Each frame the engine builds a `FrameTime` off the game timeline -- game
+seconds elapsed, plus absolute game time -- and hands it down.
+
+Everything whose motion comes from that `FrameTime` can therefore be frozen or
+stretched by one call, with no cooperation from any of it:
+
+```cpp
+engine.gameTime().togglePause();  // freezes everything on game time at once
+engine.gameTime().setScale(0.5);  // half speed, with no jump in position
+```
+
+Entities stay time-agnostic -- they own no clock and ask none what time it is,
+they are simply told how far to move:
+
+```cpp
+void MyGame::update(const FrameTime& time, Engine&)
+{
+    player_.update(time);                                  // velocity * dt
+    const double t = time.gameTimeUs / 1'000'000.0;        // absolute, no drift
+    platform_.setPosition(originX + amplitude * std::sin(t), platformY);
+}
+```
+
+A game that only implements the older `update(float deltaTime, Engine&)` keeps
+working untouched; the engine forwards to it.
+
+Timelines nest. Anchoring one to another gives a clock that inherits the
+parent's pauses and multiplies its scale, which is what a slow-motion layer or
+a per-client loop speed is made of:
+
+```cpp
+Timeline childTime(engine.gameTime(), 1000);  // anchor, tics of the anchor
+DeltaTimer childTimer(childTime, 250);        // one per consumer
+```
+
+`engine.realTime()` is never paused and never scaled -- anchor to it for menu
+animation or anything that has to keep running while the game is frozen. Input
+polling and rendering run on real time for the same reason: a loop that waited
+on a paused timeline could never read the key that unpauses it.
+
+`engine.loopTime()` counts frames rather than seconds, and takes the same
+pause, tic size and scale as the others -- a tic size of 2 is one tic every
+second iteration. Anchor to it when a simulation has to advance per frame
+rather than per second and reach the same state on every machine however fast
+each one runs: lockstep peer-to-peer sync, a reproducible replay, a fixed-step
+physics tick.
+
+The module (`TimeSource`, `Timeline`, `DeltaTimer`, `FrameTime`) has no SDL
+dependency and no global state, so a headless server can link `engine-time` on
+its own. Every `Timeline` method is thread-safe.
+
+### Networking
+
+The Section 2 networking module is separate from the individual games. It uses
+a headless ZeroMQ server and SDL client windows. Each client simulates its own
+character using the shared `Entity` class and game delta time, then sends its
+calculated position. The server checks session ownership and increasing sequence
+numbers, stores the position, and replies with all current player positions.
+Other clients draw those snapshots; the local character is drawn from its own
+simulation so delayed replies do not rewind its movement. New clients can join
+an active arena at any time.
+
+`network-core` does not choose sprites, colors, or a level layout. The
+standalone demo supplies its arena, speed, spawn points, and colors in
+`sandbox/NetworkDemoConfig.hpp`. `sandbox/NetworkDemoPlayer.hpp` handles local
+movement, diagonal normalization, and arena boundaries. The server receives
+initial spawn positions but has no character speed, gravity, or boundary rules.
+Individual games can apply their own gravity and collision rules before calling
+`NetworkClient::submitPosition(x, y)`.
+
+Protocol version 3 replaces `INPUT` messages with
+`[3, POSITION, playerId, sessionToken, sequence, x, y]`. Rebuild and restart both
+the server and clients together; version 2 executables are incompatible.
+Position values must be finite, but the server trusts clients to obey game rules.
+Coordinates use locale-independent decimal text with enough precision to preserve
+float values between clients and server.
+This version does not prevent teleporting or resolve player-to-player collisions.
+Server-controlled moving platforms and per-client server threads remain Section 4 work.
+
+Start the server in one terminal:
+
+```bash
+./build/network-server
+```
+
+Then start three clients in separate terminals:
+
+```bash
+./build/network-client
+./build/network-client
+./build/network-client
+```
+
+Use `WASD` or the arrow keys in each window. The window title shows connection
+state, player ID, and player count. The white outline marks the local player.
+Clients retry automatically if started before the server. Each frame the demo
+attempts to send its position, even when stationary or given zero game delta;
+only one request may be outstanding. These updates refresh presence and fetch
+snapshots. Connection recovery uses real time, independently of game time.
+The client also accepts an external nanosecond clock for tests.
+Invalid addresses and incompatible protocol replies put the client in `Error`
+and display the reason in the demo instead of retrying forever. After fixing an
+address or rebuilding incompatible binaries, restart the demo. A game can also
+explicitly call `start()` to retry an existing client's endpoint. Temporary
+connection loss continues to use automatic retries.
+The server removes clients inactive for three seconds when processing a request
+or explicitly calling `update()`. A retry reuses the same player while its session
+still exists; otherwise it joins as a new player. The demo adopts the stored
+position on rejoin. A client cannot update another player's position without that
+player's token.
+The defaults use local TCP port 5555. Pass an endpoint to use another address,
+for example:
+
+```bash
+./build/network-server 'tcp://*:6000'
+./build/network-client tcp://192.168.1.10:6000
+```
+
+### The Timeline Sandbox
+
+`timeline-sandbox` is an interactive bench for all of the above: pause, scale
+and tic size sliders, a child timeline, an adjustable frame-delta clamp and
+frame delay, and a graph of recent frame deltas.
+
+```bash
+cmake --build build --target timeline-sandbox
+./build/timeline-sandbox            # --frames N runs N frames and exits
+```
+
+`P` pauses, `1`/`2`/`3` select 0.5x, 1.0x and 2.0x, `WASD` moves. It is the only
+target that depends on Dear ImGui; the engine library must not.
 
 ### Multiple Keys At Once
 
