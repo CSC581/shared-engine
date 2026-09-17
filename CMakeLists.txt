@@ -160,8 +160,12 @@ target_link_libraries(network-server PRIVATE network-core)
 add_executable(network-client sandbox/NetworkClientDemo.cpp)
 target_link_libraries(network-client PRIVATE engine network-core)
 
-# Apex Ascent executable
-add_executable(apex-ascent individual-games/harsha/apexAscent.cpp)
+# Apex Ascent executable (gameplay + game-local animation module).
+add_executable(apex-ascent
+    individual-games/harsha/apexAscent.cpp
+    individual-games/harsha/animation/PlayerAnimation.cpp
+)
+target_include_directories(apex-ascent PRIVATE individual-games/harsha)
 target_link_libraries(apex-ascent PRIVATE engine)
 
 # Golf executable. Also builds standalone through
@@ -169,6 +173,17 @@ target_link_libraries(apex-ascent PRIVATE engine)
 # exists so a clean configure covers this game like every other one.
 add_executable(golf-game individual-games/skim253/main.cpp)
 target_link_libraries(golf-game PRIVATE engine)
+
+# Runtime art next to the binary so SDL_GetBasePath() + "media/apex-ascent/"
+# works regardless of the caller's working directory.
+add_custom_command(TARGET apex-ascent POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        $<TARGET_FILE_DIR:apex-ascent>/media/apex-ascent
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/individual-games/harsha/media/Spritesheets/Spritesheets
+        $<TARGET_FILE_DIR:apex-ascent>/media/apex-ascent
+    COMMENT "Copying Apex Ascent player sprites next to apex-ascent"
+)
 
 # Starfall Salvage executable
 add_executable(starfall-salvage

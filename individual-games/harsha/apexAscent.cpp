@@ -6,6 +6,7 @@
 #include "Game.hpp"
 #include "Input.hpp"
 #include "Physics.hpp"
+#include "animation/PlayerAnimation.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -67,6 +68,9 @@ private:
     // Last platform stood on; used to carry the player next frame.
     Entity* groundedMovingPlatform_ = nullptr;
 
+    // Milestone 4: climb-loop clips + facing driven by gameplay.
+    PlayerAnimation playerAnim_;
+
     float viewWidth_;
     float viewHeight_;
     float worldWidth_;
@@ -110,6 +114,11 @@ ApexAscent::ApexAscent(const Engine& engine)
     Physics::setGravity(gravity);
 
     camera_ = worldHeight_ - viewHeight_;
+
+    if (!playerAnim_.load(engine.getRenderer())) {
+        std::cerr << "Apex Ascent: player sprite load failed; falling back to rect draw "
+                     "(expected media/apex-ascent/Idle.png next to the binary).\n";
+    }
 
     std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
                  "release to leap. F1 to toggle scaling, Esc to quit.\n";
@@ -224,6 +233,15 @@ void ApexAscent::update(float deltaTime, Engine& engine)
     handleCollisions();
     updateCamera(deltaTime);
 
+    PlayerAnimation::AnimInput animInput;
+    animInput.onGround = isOnGround_;
+    animInput.charging = isCharging_;
+    animInput.velocityX = player_.getVelocityX();
+    animInput.velocityY = player_.getVelocityY();
+    // Prefer aim while charging; otherwise use horizontal velocity.
+    animInput.facingIntent = isCharging_ ? aimDirection_ : player_.getVelocityX();
+    playerAnim_.update(deltaTime, animInput);
+
     const int room = static_cast<int>((worldHeight_ - player_.getY()) / viewHeight_);
     if (room > highestRoomReached_) {
         highestRoomReached_ = room;
@@ -254,7 +272,10 @@ void ApexAscent::handleCollisions()
             playerBounds.x < platformBounds.x + platformBounds.width &&
             playerBounds.x + playerBounds.width > platformBounds.x;
 
-        if (player_.getVelocityY() > 0.0F && overlapsHorizontally &&
+        // vy >= 0 (not only > 0): resting contact has vy == 0 and feet on the
+        // surface with no AABB overlap, so MTV never fires; requiring a fall
+        // made isOnGround_ flicker every other frame (anim Land/air twitch).
+        if (player_.getVelocityY() >= 0.0F && overlapsHorizontally &&
             previousPlayerBottom_ <= platformBounds.y + landingTolerance &&
             playerBounds.y + playerBounds.height >= platformBounds.y) {
             player_.setPosition(player_.getX(), platformBounds.y - playerHeight);
@@ -346,7 +367,12 @@ void ApexAscent::render(SDL_Renderer* renderer) const
         }
     }
 
-    drawRect(player_.getBounds(), 240, 240, 255);
+    if (playerAnim_.isLoaded()) {
+        playerAnim_.draw(renderer, player_.getX(), player_.getY(), camera_, playerWidth,
+                         playerHeight);
+    } else {
+        drawRect(player_.getBounds(), 240, 240, 255);
+    }
 
     // Charge meter in screen space (not world space).
     const float meterWidth = 220.0F;
