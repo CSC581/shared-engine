@@ -6,7 +6,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -24,9 +23,6 @@ struct ServerConfig {
     std::size_t maxPlayers = 8;
     // In the supplied clock's units; the default assumes real nanoseconds.
     std::int64_t inactivityTimeoutTics = 3 * kNsPerSec;
-    // Empty disables persistence. The standalone server supplies a file path
-    // so clients can reclaim their positions after a server restart.
-    std::string stateFilePath;
 };
 
 // Single-threaded session/state store, independent of SDL and ZeroMQ.
@@ -52,9 +48,7 @@ private:
         std::int64_t lastHeard = 0;
     };
 
-    bool expireInactivePlayers(std::int64_t now);
-    void loadState();
-    void saveState() const;
+    void expireInactivePlayers(std::int64_t now);
     WorldSnapshot buildSnapshot() const;
     PlayerState spawnPlayer(PlayerId id) const;
 

@@ -244,16 +244,11 @@ or explicitly calling `update()`. A retry reuses the same player while its sessi
 still exists; otherwise it joins as a new player. The demo adopts the stored
 position on rejoin. A client cannot update another player's position without that
 player's token.
-The standalone server saves player IDs, session tokens, positions, and message
-sequences to `network-server-state.txt` after each accepted change. If it restarts,
-active clients reconnect with the same token and resume their saved position. The
-state file is local development data, so do not share it. Delete it to start a
-fresh world. Pass a second server argument to use another state-file path.
 The defaults use local TCP port 5555. Pass an endpoint to use another address,
 for example:
 
 ```bash
-./build/network-server 'tcp://*:6000' custom-server-state.txt
+./build/network-server 'tcp://*:6000'
 ./build/network-client tcp://192.168.1.10:6000
 ```
 
