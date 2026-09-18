@@ -157,6 +157,10 @@ target_link_libraries(timeline-sandbox PRIVATE engine imgui)
 add_executable(thread-example sandbox/ThreadExampleMain.cpp)
 target_link_libraries(thread-example PRIVATE Threads::Threads)
 
+# Section 3 M3: Game loop with per-frame platform vs character worker threads.
+add_executable(thread-loop-sandbox sandbox/ThreadLoopSandbox.cpp)
+target_link_libraries(thread-loop-sandbox PRIVATE engine Threads::Threads)
+
 # Standalone Section 2 proof. These do not modify or build into any person's
 # individual game: the server is headless and the client is a small SDL demo.
 add_executable(network-server sandbox/NetworkServerMain.cpp)
