@@ -353,6 +353,93 @@ int main()
     passed &= expect(spawnFourth.type == Network::ReplyType::Welcome && spawnServer.playerCount() == 3,
                      "joining remains possible when every configured spawn point is occupied");
 
+    // Concurrent workers share one NetworkServer. Distinct tokens join and
+    // submit positions while other threads call snapshot(); without the mutex
+    // this would race on the player maps and nextPlayerId_.
+    {
+        RealTimeClock concurrentClock;
+        Network::ServerConfig concurrentConfig;
+        concurrentConfig.spawnPoints = {
+            {10.0F, 10.0F}, {20.0F, 20.0F}, {30.0F, 30.0F}, {40.0F, 40.0F},
+            {50.0F, 50.0F}, {60.0F, 60.0F}, {70.0F, 70.0F}, {80.0F, 80.0F},
+        };
+        concurrentConfig.maxPlayers = 8;
+        Network::NetworkServer concurrentServer(concurrentClock, concurrentConfig);
+
+        constexpr int workerCount = 4;
+        constexpr int positionsPerWorker = 200;
+        std::atomic<int> failures{0};
+        std::vector<std::thread> workers;
+        workers.reserve(static_cast<std::size_t>(workerCount) + 1);
+
+        for (int worker = 0; worker < workerCount; ++worker) {
+            workers.emplace_back([&concurrentServer, &failures, worker] {
+                const Network::SessionToken token(32, static_cast<char>('a' + worker));
+                Network::Reply joinReply;
+                std::string joinError;
+                if (!Network::decodeReply(concurrentServer.handle(Network::encodeJoin(token)), joinReply,
+                                          joinError) ||
+                    joinReply.type != Network::ReplyType::Welcome || joinReply.playerId == 0) {
+                    failures.fetch_add(1);
+                    return;
+                }
+
+                const Network::PlayerId id = joinReply.playerId;
+                for (int i = 1; i <= positionsPerWorker; ++i) {
+                    Network::Reply positionReply;
+                    std::string positionError;
+                    const Network::PositionUpdate position{static_cast<float>(i), static_cast<float>(worker),
+                                                           static_cast<std::uint64_t>(i)};
+                    if (!Network::decodeReply(
+                            concurrentServer.handle(Network::encodePosition(id, token, position)),
+                            positionReply, positionError) ||
+                        positionReply.type != Network::ReplyType::Snapshot) {
+                        failures.fetch_add(1);
+                        return;
+                    }
+
+                    int matches = 0;
+                    for (const Network::PlayerState& player : positionReply.snapshot.players) {
+                        if (player.id == id) {
+                            ++matches;
+                            if (player.x != position.x || player.y != position.y) {
+                                failures.fetch_add(1);
+                                return;
+                            }
+                        }
+                    }
+                    if (matches != 1) {
+                        failures.fetch_add(1);
+                        return;
+                    }
+                }
+            });
+        }
+
+        workers.emplace_back([&concurrentServer, &failures] {
+            for (int i = 0; i < positionsPerWorker * workerCount; ++i) {
+                const Network::WorldSnapshot snap = concurrentServer.snapshot();
+                for (std::size_t left = 0; left < snap.players.size(); ++left) {
+                    for (std::size_t right = left + 1; right < snap.players.size(); ++right) {
+                        if (snap.players[left].id == snap.players[right].id) {
+                            failures.fetch_add(1);
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+
+        passed &= expect(failures.load() == 0,
+                         "concurrent handle/snapshot must not race or tear player state");
+        passed &= expect(concurrentServer.playerCount() == static_cast<std::size_t>(workerCount),
+                         "all concurrent joiners should remain registered");
+    }
+
     zmq::context_t context(1);
     zmq::socket_t serverSocket(context, zmq::socket_type::rep);
     serverSocket.bind("tcp://127.0.0.1:*");

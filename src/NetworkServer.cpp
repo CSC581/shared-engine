@@ -23,11 +23,14 @@ NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
 
 void NetworkServer::update()
 {
+    const std::lock_guard<std::mutex> lock(mutex_);
     expireInactivePlayers(clock_.now());
 }
 
 Message NetworkServer::handle(const Message& message)
 {
+    const std::lock_guard<std::mutex> lock(mutex_);
+
     const std::int64_t now = clock_.now();
     expireInactivePlayers(now);
 
@@ -89,11 +92,13 @@ Message NetworkServer::handle(const Message& message)
 
 WorldSnapshot NetworkServer::snapshot() const
 {
+    const std::lock_guard<std::mutex> lock(mutex_);
     return buildSnapshot();
 }
 
 std::size_t NetworkServer::playerCount() const
 {
+    const std::lock_guard<std::mutex> lock(mutex_);
     return players_.size();
 }
 
