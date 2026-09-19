@@ -234,6 +234,158 @@ bool reconnectsToSessionEndpoint()
                   "client should apply snapshots from the private session socket");
 }
 
+// Two dedicated REP workers share one NetworkServer. A deliberate stall on the
+// slow worker must not delay the fast client's round-trip (Section 4).
+bool perClientWorkersDoNotBlockEachOther()
+{
+    RealTimeClock clock;
+    Network::ServerConfig config;
+    config.spawnPoints = {{0.0F, 0.0F}, {40.0F, 0.0F}};
+    config.platforms = {{1, 0.0F, 0.0F, 80.0F, 0.0F, 40.0F, 20.0F, 10.0F}};
+    Network::NetworkServer server(clock, config);
+
+    const Network::SessionToken slowToken(32, 'a');
+    const Network::SessionToken fastToken(32, 'b');
+    Network::Reply slowJoin;
+    Network::Reply fastJoin;
+    std::string error;
+    if (!expect(Network::decodeReply(server.handle(Network::encodeJoin(slowToken)), slowJoin, error) &&
+                    slowJoin.type == Network::ReplyType::Welcome,
+                "slow client should join") ||
+        !expect(Network::decodeReply(server.handle(Network::encodeJoin(fastToken)), fastJoin, error) &&
+                    fastJoin.type == Network::ReplyType::Welcome,
+                "fast client should join")) {
+        return false;
+    }
+    if (!expect(!slowJoin.snapshot.platforms.empty(), "JOIN welcome should include server platforms")) {
+        return false;
+    }
+
+    zmq::context_t context(1);
+    auto bindRep = [&](zmq::socket_t& socket) {
+        socket.set(zmq::sockopt::linger, 0);
+        socket.set(zmq::sockopt::rcvtimeo, 2000);
+        socket.set(zmq::sockopt::sndtimeo, 2000);
+        socket.bind("tcp://127.0.0.1:*");
+        return socket.get(zmq::sockopt::last_endpoint);
+    };
+
+    zmq::socket_t slowRep(context, zmq::socket_type::rep);
+    zmq::socket_t fastRep(context, zmq::socket_type::rep);
+    const std::string slowEndpoint = bindRep(slowRep);
+    const std::string fastEndpoint = bindRep(fastRep);
+    // Short poll so workers can exit promptly when the test finishes.
+    slowRep.set(zmq::sockopt::rcvtimeo, 50);
+    fastRep.set(zmq::sockopt::rcvtimeo, 50);
+
+    std::atomic<bool> workersRunning{true};
+    std::thread slowWorker([&] {
+        while (workersRunning.load()) {
+            Network::Message request;
+            try {
+                request = receiveMessage(slowRep);
+            } catch (const zmq::error_t&) {
+                continue;
+            }
+            if (request.empty()) {
+                continue;
+            }
+            // Simulate a slow client / overloaded session thread.
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (!workersRunning.load()) {
+                break;
+            }
+            try {
+                sendMessage(slowRep, server.handle(request));
+            } catch (const zmq::error_t&) {
+                break;
+            }
+        }
+    });
+    std::thread fastWorker([&] {
+        while (workersRunning.load()) {
+            Network::Message request;
+            try {
+                request = receiveMessage(fastRep);
+            } catch (const zmq::error_t&) {
+                continue;
+            }
+            if (request.empty()) {
+                continue;
+            }
+            try {
+                sendMessage(fastRep, server.handle(request));
+            } catch (const zmq::error_t&) {
+                break;
+            }
+        }
+    });
+
+    auto makeReq = [&](const std::string& endpoint) {
+        zmq::socket_t client(context, zmq::socket_type::req);
+        client.set(zmq::sockopt::linger, 0);
+        client.set(zmq::sockopt::rcvtimeo, 2000);
+        client.set(zmq::sockopt::sndtimeo, 2000);
+        client.connect(endpoint);
+        return client;
+    };
+
+    zmq::socket_t slowClient = makeReq(slowEndpoint);
+    zmq::socket_t fastClient = makeReq(fastEndpoint);
+
+    std::atomic<bool> slowDone{false};
+    std::thread slowRequest([&] {
+        sendMessage(slowClient, Network::encodePosition(slowJoin.playerId, slowToken, {1.0F, 1.0F, 1}));
+        (void)receiveMessage(slowClient);
+        slowDone.store(true);
+    });
+
+    // Let the slow worker enter its sleep before measuring the fast path.
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    const auto fastStart = std::chrono::steady_clock::now();
+    sendMessage(fastClient, Network::encodePosition(fastJoin.playerId, fastToken, {2.0F, 2.0F, 1}));
+    const Network::Message fastReplyMessage = receiveMessage(fastClient);
+    const auto fastMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - fastStart)
+                            .count();
+
+    Network::Reply fastReply;
+    bool passed = expect(!fastReplyMessage.empty() &&
+                             Network::decodeReply(fastReplyMessage, fastReply, error) &&
+                             fastReply.type == Network::ReplyType::Snapshot,
+                         "fast worker should reply with a snapshot");
+    passed &= expect(fastMs < 150,
+                     "fast client round-trip must not wait on the slow worker (took " +
+                         std::to_string(fastMs) + " ms)");
+    passed &= expect(!fastReply.snapshot.platforms.empty(),
+                     "position snapshots should still carry server platforms");
+
+    slowRequest.join();
+    passed &= expect(slowDone.load(), "slow client should eventually complete");
+
+    workersRunning.store(false);
+    slowWorker.join();
+    fastWorker.join();
+    return passed;
+}
+
+bool welcomeEncodesSessionEndpoint()
+{
+    Network::WorldSnapshot snapshot;
+    snapshot.serverTick = 3;
+    snapshot.players = {{7, 1.0F, 2.0F}};
+    snapshot.platforms = {{9, 3.0F, 4.0F, 5.0F, 6.0F}};
+    const std::string endpoint = "tcp://127.0.0.1:59999";
+    Network::Reply reply;
+    std::string error;
+    return expect(Network::decodeReply(Network::encodeWelcome(7, snapshot, endpoint), reply, error) &&
+                      reply.type == Network::ReplyType::Welcome && reply.playerId == 7 &&
+                      reply.sessionEndpoint == endpoint && reply.snapshot.platforms.size() == 1 &&
+                      reply.snapshot.platforms[0].height == 6.0F,
+                  "WELCOME must round-trip session endpoint and platforms");
+}
+
 } // namespace
 
 int main()
@@ -258,6 +410,8 @@ int main()
     passed &= rejectsIncompatibleReply(Network::encodeError("unsupported protocol version"));
     passed &= clearsWorldWhileRetrying();
     passed &= reconnectsToSessionEndpoint();
+    passed &= welcomeEncodesSessionEndpoint();
+    passed &= perClientWorkersDoNotBlockEachOther();
 
     Network::Request decoded;
     std::string error;
