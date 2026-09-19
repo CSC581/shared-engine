@@ -152,10 +152,20 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3)
 add_executable(timeline-sandbox sandbox/TimelineSandbox.cpp)
 target_link_libraries(timeline-sandbox PRIVATE engine imgui)
 
+# Moodle ThreadExample (Project 2 Section 3 baseline): mutex + condition_variable
+# + join, with no engine/SDL. Source kept under sandbox/ so docs/ stays reference.
+add_executable(thread-example sandbox/ThreadExampleMain.cpp)
+target_link_libraries(thread-example PRIVATE Threads::Threads)
+
+# Section 3 M3/M4: Game loop with platform vs character worker threads
+# (M3 spawn+join evolved into M4 persistent threads + CV barrier).
+add_executable(thread-loop-sandbox sandbox/ThreadLoopSandbox.cpp)
+target_link_libraries(thread-loop-sandbox PRIVATE engine Threads::Threads)
+
 # Standalone Section 2 proof. These do not modify or build into any person's
 # individual game: the server is headless and the client is a small SDL demo.
 add_executable(network-server sandbox/NetworkServerMain.cpp)
-target_link_libraries(network-server PRIVATE network-core)
+target_link_libraries(network-server PRIVATE network-core Threads::Threads)
 
 add_executable(network-client sandbox/NetworkClientDemo.cpp)
 target_link_libraries(network-client PRIVATE engine network-core)

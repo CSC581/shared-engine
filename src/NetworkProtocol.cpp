@@ -88,9 +88,15 @@ bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& sna
     }
 
     constexpr std::size_t playerFieldCount = 3;
-    if (playerCount > (std::numeric_limits<std::size_t>::max() - index - 2) / playerFieldCount ||
-        message.size() != index + 2 + static_cast<std::size_t>(playerCount) * playerFieldCount) {
+    constexpr std::size_t platformFieldCount = 5;
+    if (playerCount > (std::numeric_limits<std::size_t>::max() - index - 2) / playerFieldCount) {
         error = "invalid snapshot player count";
+        return false;
+    }
+
+    const std::size_t playersEnd = index + 2 + static_cast<std::size_t>(playerCount) * playerFieldCount;
+    if (message.size() < playersEnd + 1) {
+        error = "invalid snapshot platform header";
         return false;
     }
 
@@ -112,6 +118,37 @@ bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& sna
         index += playerFieldCount;
     }
 
+    std::uint64_t platformCount = 0;
+    if (!parseUnsigned(message[index], platformCount)) {
+        error = "invalid snapshot platform count";
+        return false;
+    }
+    ++index;
+
+    if (platformCount > (std::numeric_limits<std::size_t>::max() - index) / platformFieldCount ||
+        message.size() != index + static_cast<std::size_t>(platformCount) * platformFieldCount) {
+        error = "invalid snapshot platform count";
+        return false;
+    }
+
+    snapshot.platforms.clear();
+    snapshot.platforms.reserve(static_cast<std::size_t>(platformCount));
+    for (std::uint64_t i = 0; i < platformCount; ++i) {
+        std::uint64_t id = 0;
+        PlatformState platform;
+        if (!parseUnsigned(message[index], id) || id == 0 || id > std::numeric_limits<std::uint32_t>::max() ||
+            !parseFloat(message[index + 1], platform.x) || !parseFloat(message[index + 2], platform.y) ||
+            !parseFloat(message[index + 3], platform.width) || !parseFloat(message[index + 4], platform.height) ||
+            platform.width <= 0.0F || platform.height <= 0.0F) {
+            error = "invalid platform in snapshot";
+            return false;
+        }
+
+        platform.id = static_cast<std::uint32_t>(id);
+        snapshot.platforms.push_back(platform);
+        index += platformFieldCount;
+    }
+
     return true;
 }
 
@@ -124,6 +161,15 @@ void appendSnapshot(Message& message, const WorldSnapshot& snapshot)
         message.push_back(std::to_string(player.id));
         message.push_back(formatFloat(player.x));
         message.push_back(formatFloat(player.y));
+    }
+
+    message.push_back(std::to_string(snapshot.platforms.size()));
+    for (const PlatformState& platform : snapshot.platforms) {
+        message.push_back(std::to_string(platform.id));
+        message.push_back(formatFloat(platform.x));
+        message.push_back(formatFloat(platform.y));
+        message.push_back(formatFloat(platform.width));
+        message.push_back(formatFloat(platform.height));
     }
 }
 
@@ -203,9 +249,9 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
     return true;
 }
 
-Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot)
+Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot, const std::string& sessionEndpoint)
 {
-    Message message{std::to_string(protocolVersion), "WELCOME", std::to_string(playerId)};
+    Message message{std::to_string(protocolVersion), "WELCOME", std::to_string(playerId), sessionEndpoint};
     appendSnapshot(message, snapshot);
     return message;
 }
@@ -256,14 +302,17 @@ bool decodeReply(const Message& message, Reply& reply, std::string& error)
     std::size_t snapshotIndex = 2;
     if (message[1] == "WELCOME") {
         std::uint64_t playerId = 0;
-        if (message.size() < 5 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
+        // [version, WELCOME, playerId, sessionEndpoint, ...snapshot...]
+        // Snapshot needs at least tick, playerCount, platformCount.
+        if (message.size() < 7 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
             playerId > std::numeric_limits<PlayerId>::max()) {
             error = "invalid WELCOME reply";
             return false;
         }
         reply.type = ReplyType::Welcome;
         reply.playerId = static_cast<PlayerId>(playerId);
-        snapshotIndex = 3;
+        reply.sessionEndpoint = message[3];
+        snapshotIndex = 4;
     } else if (message[1] == "SNAPSHOT") {
         reply.type = ReplyType::Snapshot;
     } else {

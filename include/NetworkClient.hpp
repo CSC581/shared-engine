@@ -11,6 +11,11 @@ namespace Network {
 
 // Non-blocking REQ client. Games simulate their own character and submit its
 // position; snapshots contain the latest positions stored by the server.
+//
+// The constructor endpoint is the handshake address. After WELCOME, if the
+// server supplies a sessionEndpoint the client reconnects there for POSITION
+// and LEAVE (Section 4 per-client worker). An empty sessionEndpoint means the
+// handshake socket is also the session socket (single-REP tests / demos).
 class NetworkClient {
 public:
     explicit NetworkClient(std::string endpoint = "tcp://127.0.0.1:5555");

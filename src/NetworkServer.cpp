@@ -5,10 +5,20 @@
 #include <stdexcept>
 
 namespace Network {
+namespace {
+
+float pathLengthOf(const PlatformPath& path)
+{
+    const float dx = path.endX - path.startX;
+    const float dy = path.endY - path.startY;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+} // namespace
 
 NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
     : clock_(clock),
-      config_(config)
+      config_(std::move(config))
 {
     if (config_.spawnPoints.empty() || config_.maxPlayers == 0 || config_.inactivityTimeoutTics <= 0) {
         throw std::invalid_argument("NetworkServer configuration is invalid");
@@ -19,16 +29,49 @@ NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
             throw std::invalid_argument("NetworkServer spawn point must be finite");
         }
     }
+
+    platforms_.reserve(config_.platforms.size());
+    for (const PlatformPath& path : config_.platforms) {
+        if (path.id == 0 || !std::isfinite(path.startX) || !std::isfinite(path.startY) ||
+            !std::isfinite(path.endX) || !std::isfinite(path.endY) || !std::isfinite(path.speed) ||
+            path.speed <= 0.0F || !std::isfinite(path.width) || !std::isfinite(path.height) ||
+            path.width <= 0.0F || path.height <= 0.0F) {
+            throw std::invalid_argument("NetworkServer platform path is invalid");
+        }
+
+        const float length = pathLengthOf(path);
+        if (length <= 0.0F) {
+            throw std::invalid_argument("NetworkServer platform path must have non-zero length");
+        }
+
+        ActivePlatform platform;
+        platform.path = path;
+        platform.pathLength = length;
+        platform.distance = 0.0F;
+        platform.velocity = path.speed;
+        platform.state.id = path.id;
+        platform.state.x = path.startX;
+        platform.state.y = path.startY;
+        platform.state.width = path.width;
+        platform.state.height = path.height;
+        platforms_.push_back(platform);
+    }
 }
 
 void NetworkServer::update()
 {
-    expireInactivePlayers(clock_.now());
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::int64_t now = clock_.now();
+    advancePlatforms(now);
+    expireInactivePlayers(now);
 }
 
 Message NetworkServer::handle(const Message& message)
 {
+    const std::lock_guard<std::mutex> lock(mutex_);
+
     const std::int64_t now = clock_.now();
+    advancePlatforms(now);
     expireInactivePlayers(now);
 
     Request request;
@@ -89,11 +132,13 @@ Message NetworkServer::handle(const Message& message)
 
 WorldSnapshot NetworkServer::snapshot() const
 {
+    const std::lock_guard<std::mutex> lock(mutex_);
     return buildSnapshot();
 }
 
 std::size_t NetworkServer::playerCount() const
 {
+    const std::lock_guard<std::mutex> lock(mutex_);
     return players_.size();
 }
 
@@ -110,6 +155,68 @@ void NetworkServer::expireInactivePlayers(std::int64_t now)
     }
 }
 
+void NetworkServer::advancePlatforms(std::int64_t now)
+{
+    if (platforms_.empty()) {
+        return;
+    }
+
+    if (!platformClockStarted_) {
+        lastPlatformUpdate_ = now;
+        platformClockStarted_ = true;
+        return;
+    }
+
+    const std::int64_t deltaTics = now - lastPlatformUpdate_;
+    if (deltaTics <= 0) {
+        return;
+    }
+    lastPlatformUpdate_ = now;
+
+    // TimeSource for the demo/server is real nanoseconds; ManualClock tests use
+    // the same unit convention (advance in ns). Speed is units per second.
+    const float dtSeconds = static_cast<float>(deltaTics) / static_cast<float>(kNsPerSec);
+    bool moved = false;
+
+    for (ActivePlatform& platform : platforms_) {
+        float travel = std::fabs(platform.velocity) * dtSeconds;
+        if (travel == 0.0F) {
+            continue;
+        }
+        moved = true;
+
+        while (travel > 0.0F) {
+            if (platform.velocity > 0.0F) {
+                const float room = platform.pathLength - platform.distance;
+                if (room <= 0.0F) {
+                    platform.velocity = -platform.path.speed;
+                    continue;
+                }
+                const float step = std::min(travel, room);
+                platform.distance += step;
+                travel -= step;
+            } else {
+                const float room = platform.distance;
+                if (room <= 0.0F) {
+                    platform.velocity = platform.path.speed;
+                    continue;
+                }
+                const float step = std::min(travel, room);
+                platform.distance -= step;
+                travel -= step;
+            }
+        }
+
+        const float t = platform.distance / platform.pathLength;
+        platform.state.x = platform.path.startX + (platform.path.endX - platform.path.startX) * t;
+        platform.state.y = platform.path.startY + (platform.path.endY - platform.path.startY) * t;
+    }
+
+    if (moved) {
+        ++serverTick_;
+    }
+}
+
 WorldSnapshot NetworkServer::buildSnapshot() const
 {
     WorldSnapshot result;
@@ -120,6 +227,11 @@ WorldSnapshot NetworkServer::buildSnapshot() const
     }
     std::sort(result.players.begin(), result.players.end(),
               [](const PlayerState& left, const PlayerState& right) { return left.id < right.id; });
+
+    result.platforms.reserve(platforms_.size());
+    for (const ActivePlatform& platform : platforms_) {
+        result.platforms.push_back(platform.state);
+    }
     return result;
 }
 

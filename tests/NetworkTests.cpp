@@ -176,6 +176,216 @@ bool clearsWorldWhileRetrying()
                   "a retrying client must clear its stale player ID and world snapshot");
 }
 
+// Handshake REP welcomes with a private session endpoint; POSITION must land on
+// the session worker socket, not the handshake socket.
+bool reconnectsToSessionEndpoint()
+{
+    zmq::context_t context(1);
+    zmq::socket_t handshake(context, zmq::socket_type::rep);
+    handshake.set(zmq::sockopt::linger, 0);
+    handshake.set(zmq::sockopt::rcvtimeo, 2000);
+    handshake.set(zmq::sockopt::sndtimeo, 2000);
+    handshake.bind("tcp://127.0.0.1:*");
+
+    zmq::socket_t session(context, zmq::socket_type::rep);
+    session.set(zmq::sockopt::linger, 0);
+    session.set(zmq::sockopt::rcvtimeo, 2000);
+    session.set(zmq::sockopt::sndtimeo, 2000);
+    session.bind("tcp://127.0.0.1:*");
+    const std::string sessionEndpoint = session.get(zmq::sockopt::last_endpoint);
+
+    ManualClock clock;
+    Network::NetworkClient client(clock, handshake.get(zmq::sockopt::last_endpoint));
+    client.start();
+    if (!expect(!receiveMessage(handshake).empty(), "handshake should receive JOIN")) {
+        return false;
+    }
+    sendMessage(handshake, Network::encodeWelcome(3, {1, {{3, 10.0F, 20.0F}}}, sessionEndpoint));
+
+    const auto connectedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.state() != Network::ConnectionState::Connected &&
+           std::chrono::steady_clock::now() < connectedDeadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!expect(client.state() == Network::ConnectionState::Connected && client.playerId() == 3,
+                "client should connect after session WELCOME")) {
+        return false;
+    }
+
+    client.submitPosition(55.0F, 66.0F);
+    handshake.set(zmq::sockopt::rcvtimeo, 50);
+    if (!expect(receiveMessage(handshake).empty(), "handshake must not receive POSITION after handoff")) {
+        return false;
+    }
+    const Network::Message positionMessage = receiveMessage(session);
+    if (!expect(!positionMessage.empty(), "session worker should receive POSITION")) {
+        return false;
+    }
+    sendMessage(session, Network::encodeSnapshot({2, {{3, 55.0F, 66.0F}}}));
+
+    const auto snapshotDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.snapshot().serverTick != 2 && std::chrono::steady_clock::now() < snapshotDeadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    float x = 0.0F;
+    return expect(containsPlayer(client.snapshot(), 3, &x) && x == 55.0F,
+                  "client should apply snapshots from the private session socket");
+}
+
+// Two dedicated REP workers share one NetworkServer. A deliberate stall on the
+// slow worker must not delay the fast client's round-trip (Section 4).
+bool perClientWorkersDoNotBlockEachOther()
+{
+    RealTimeClock clock;
+    Network::ServerConfig config;
+    config.spawnPoints = {{0.0F, 0.0F}, {40.0F, 0.0F}};
+    config.platforms = {{1, 0.0F, 0.0F, 80.0F, 0.0F, 40.0F, 20.0F, 10.0F}};
+    Network::NetworkServer server(clock, config);
+
+    const Network::SessionToken slowToken(32, 'a');
+    const Network::SessionToken fastToken(32, 'b');
+    Network::Reply slowJoin;
+    Network::Reply fastJoin;
+    std::string error;
+    if (!expect(Network::decodeReply(server.handle(Network::encodeJoin(slowToken)), slowJoin, error) &&
+                    slowJoin.type == Network::ReplyType::Welcome,
+                "slow client should join") ||
+        !expect(Network::decodeReply(server.handle(Network::encodeJoin(fastToken)), fastJoin, error) &&
+                    fastJoin.type == Network::ReplyType::Welcome,
+                "fast client should join")) {
+        return false;
+    }
+    if (!expect(!slowJoin.snapshot.platforms.empty(), "JOIN welcome should include server platforms")) {
+        return false;
+    }
+
+    zmq::context_t context(1);
+    auto bindRep = [&](zmq::socket_t& socket) {
+        socket.set(zmq::sockopt::linger, 0);
+        socket.set(zmq::sockopt::rcvtimeo, 2000);
+        socket.set(zmq::sockopt::sndtimeo, 2000);
+        socket.bind("tcp://127.0.0.1:*");
+        return socket.get(zmq::sockopt::last_endpoint);
+    };
+
+    zmq::socket_t slowRep(context, zmq::socket_type::rep);
+    zmq::socket_t fastRep(context, zmq::socket_type::rep);
+    const std::string slowEndpoint = bindRep(slowRep);
+    const std::string fastEndpoint = bindRep(fastRep);
+    // Short poll so workers can exit promptly when the test finishes.
+    slowRep.set(zmq::sockopt::rcvtimeo, 50);
+    fastRep.set(zmq::sockopt::rcvtimeo, 50);
+
+    std::atomic<bool> workersRunning{true};
+    std::thread slowWorker([&] {
+        while (workersRunning.load()) {
+            Network::Message request;
+            try {
+                request = receiveMessage(slowRep);
+            } catch (const zmq::error_t&) {
+                continue;
+            }
+            if (request.empty()) {
+                continue;
+            }
+            // Simulate a slow client / overloaded session thread.
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (!workersRunning.load()) {
+                break;
+            }
+            try {
+                sendMessage(slowRep, server.handle(request));
+            } catch (const zmq::error_t&) {
+                break;
+            }
+        }
+    });
+    std::thread fastWorker([&] {
+        while (workersRunning.load()) {
+            Network::Message request;
+            try {
+                request = receiveMessage(fastRep);
+            } catch (const zmq::error_t&) {
+                continue;
+            }
+            if (request.empty()) {
+                continue;
+            }
+            try {
+                sendMessage(fastRep, server.handle(request));
+            } catch (const zmq::error_t&) {
+                break;
+            }
+        }
+    });
+
+    auto makeReq = [&](const std::string& endpoint) {
+        zmq::socket_t client(context, zmq::socket_type::req);
+        client.set(zmq::sockopt::linger, 0);
+        client.set(zmq::sockopt::rcvtimeo, 2000);
+        client.set(zmq::sockopt::sndtimeo, 2000);
+        client.connect(endpoint);
+        return client;
+    };
+
+    zmq::socket_t slowClient = makeReq(slowEndpoint);
+    zmq::socket_t fastClient = makeReq(fastEndpoint);
+
+    std::atomic<bool> slowDone{false};
+    std::thread slowRequest([&] {
+        sendMessage(slowClient, Network::encodePosition(slowJoin.playerId, slowToken, {1.0F, 1.0F, 1}));
+        (void)receiveMessage(slowClient);
+        slowDone.store(true);
+    });
+
+    // Let the slow worker enter its sleep before measuring the fast path.
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    const auto fastStart = std::chrono::steady_clock::now();
+    sendMessage(fastClient, Network::encodePosition(fastJoin.playerId, fastToken, {2.0F, 2.0F, 1}));
+    const Network::Message fastReplyMessage = receiveMessage(fastClient);
+    const auto fastMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - fastStart)
+                            .count();
+
+    Network::Reply fastReply;
+    bool passed = expect(!fastReplyMessage.empty() &&
+                             Network::decodeReply(fastReplyMessage, fastReply, error) &&
+                             fastReply.type == Network::ReplyType::Snapshot,
+                         "fast worker should reply with a snapshot");
+    passed &= expect(fastMs < 150,
+                     "fast client round-trip must not wait on the slow worker (took " +
+                         std::to_string(fastMs) + " ms)");
+    passed &= expect(!fastReply.snapshot.platforms.empty(),
+                     "position snapshots should still carry server platforms");
+
+    slowRequest.join();
+    passed &= expect(slowDone.load(), "slow client should eventually complete");
+
+    workersRunning.store(false);
+    slowWorker.join();
+    fastWorker.join();
+    return passed;
+}
+
+bool welcomeEncodesSessionEndpoint()
+{
+    Network::WorldSnapshot snapshot;
+    snapshot.serverTick = 3;
+    snapshot.players = {{7, 1.0F, 2.0F}};
+    snapshot.platforms = {{9, 3.0F, 4.0F, 5.0F, 6.0F}};
+    const std::string endpoint = "tcp://127.0.0.1:59999";
+    Network::Reply reply;
+    std::string error;
+    return expect(Network::decodeReply(Network::encodeWelcome(7, snapshot, endpoint), reply, error) &&
+                      reply.type == Network::ReplyType::Welcome && reply.playerId == 7 &&
+                      reply.sessionEndpoint == endpoint && reply.snapshot.platforms.size() == 1 &&
+                      reply.snapshot.platforms[0].height == 6.0F,
+                  "WELCOME must round-trip session endpoint and platforms");
+}
+
 } // namespace
 
 int main()
@@ -199,10 +409,32 @@ int main()
     passed &= rejectsIncompatibleReply({"2", "ERROR", "unsupported protocol version"});
     passed &= rejectsIncompatibleReply(Network::encodeError("unsupported protocol version"));
     passed &= clearsWorldWhileRetrying();
+    passed &= reconnectsToSessionEndpoint();
+    passed &= welcomeEncodesSessionEndpoint();
+    passed &= perClientWorkersDoNotBlockEachOther();
 
     Network::Request decoded;
     std::string error;
     const std::string version = std::to_string(Network::protocolVersion);
+
+    // Platform fields round-trip after the player list (Section 4 snapshots).
+    {
+        Network::WorldSnapshot withPlatforms;
+        withPlatforms.serverTick = 9;
+        withPlatforms.players = {{1, 12.5F, 3000.25F}};
+        withPlatforms.platforms = {{2, 10.0F, 20.0F, 96.0F, 24.0F}};
+        Network::Reply platformReply;
+        passed &= expect(Network::decodeReply(Network::encodeSnapshot(withPlatforms), platformReply, error) &&
+                             platformReply.snapshot.platforms.size() == 1 &&
+                             platformReply.snapshot.platforms[0].id == 2 &&
+                             platformReply.snapshot.platforms[0].width == 96.0F &&
+                             platformReply.snapshot.players[0].y == 3000.25F,
+                         "snapshots must round-trip players and server platforms");
+        passed &= expect(Network::decodeReply(Network::encodeSnapshot({1, {{1, 1.0F, 2.0F}}, {}}), platformReply,
+                                              error) &&
+                             platformReply.snapshot.platforms.empty(),
+                         "empty platform lists remain valid");
+    }
 
     // Locale changes happen before the later threaded tests. Test both C++
     // punctuation and, where installed, the C locale used by the old stof path.
@@ -352,6 +584,118 @@ int main()
     Network::decodeReply(spawnServer.handle(Network::encodeJoin(tokenFive)), spawnFourth, error);
     passed &= expect(spawnFourth.type == Network::ReplyType::Welcome && spawnServer.playerCount() == 3,
                      "joining remains possible when every configured spawn point is occupied");
+
+    // Server advances platforms on the supplied clock (real ns in production).
+    {
+        ManualClock platformClock;
+        Network::ServerConfig platformConfig;
+        platformConfig.spawnPoints = {{0.0F, 0.0F}};
+        platformConfig.platforms = {{1, 0.0F, 10.0F, 100.0F, 10.0F, 50.0F, 40.0F, 12.0F}};
+        Network::NetworkServer platformServer(platformClock, platformConfig);
+        platformServer.update();
+        passed &= expect(platformServer.snapshot().platforms.size() == 1 &&
+                             platformServer.snapshot().platforms[0].x == 0.0F,
+                         "platforms start at the configured path origin");
+        platformClock.advance(kNsPerSec);
+        platformServer.update();
+        passed &= expect(std::fabs(platformServer.snapshot().platforms[0].x - 50.0F) < 0.01F,
+                         "one real-time second at 50 units/s should move halfway along a 100-unit path");
+        platformClock.advance(kNsPerSec);
+        platformServer.update();
+        passed &= expect(std::fabs(platformServer.snapshot().platforms[0].x - 100.0F) < 0.01F,
+                         "platform should reach the path end");
+        platformClock.advance(kNsPerSec);
+        platformServer.update();
+        passed &= expect(std::fabs(platformServer.snapshot().platforms[0].x - 50.0F) < 0.01F,
+                         "platform should ping-pong back toward the start");
+    }
+
+    // Concurrent workers share one NetworkServer. Distinct tokens join and
+    // submit positions while other threads call snapshot(); without the mutex
+    // this would race on the player maps and nextPlayerId_.
+    {
+        RealTimeClock concurrentClock;
+        Network::ServerConfig concurrentConfig;
+        concurrentConfig.spawnPoints = {
+            {10.0F, 10.0F}, {20.0F, 20.0F}, {30.0F, 30.0F}, {40.0F, 40.0F},
+            {50.0F, 50.0F}, {60.0F, 60.0F}, {70.0F, 70.0F}, {80.0F, 80.0F},
+        };
+        concurrentConfig.maxPlayers = 8;
+        Network::NetworkServer concurrentServer(concurrentClock, concurrentConfig);
+
+        constexpr int workerCount = 4;
+        constexpr int positionsPerWorker = 200;
+        std::atomic<int> failures{0};
+        std::vector<std::thread> workers;
+        workers.reserve(static_cast<std::size_t>(workerCount) + 1);
+
+        for (int worker = 0; worker < workerCount; ++worker) {
+            workers.emplace_back([&concurrentServer, &failures, worker] {
+                const Network::SessionToken token(32, static_cast<char>('a' + worker));
+                Network::Reply joinReply;
+                std::string joinError;
+                if (!Network::decodeReply(concurrentServer.handle(Network::encodeJoin(token)), joinReply,
+                                          joinError) ||
+                    joinReply.type != Network::ReplyType::Welcome || joinReply.playerId == 0) {
+                    failures.fetch_add(1);
+                    return;
+                }
+
+                const Network::PlayerId id = joinReply.playerId;
+                for (int i = 1; i <= positionsPerWorker; ++i) {
+                    Network::Reply positionReply;
+                    std::string positionError;
+                    const Network::PositionUpdate position{static_cast<float>(i), static_cast<float>(worker),
+                                                           static_cast<std::uint64_t>(i)};
+                    if (!Network::decodeReply(
+                            concurrentServer.handle(Network::encodePosition(id, token, position)),
+                            positionReply, positionError) ||
+                        positionReply.type != Network::ReplyType::Snapshot) {
+                        failures.fetch_add(1);
+                        return;
+                    }
+
+                    int matches = 0;
+                    for (const Network::PlayerState& player : positionReply.snapshot.players) {
+                        if (player.id == id) {
+                            ++matches;
+                            if (player.x != position.x || player.y != position.y) {
+                                failures.fetch_add(1);
+                                return;
+                            }
+                        }
+                    }
+                    if (matches != 1) {
+                        failures.fetch_add(1);
+                        return;
+                    }
+                }
+            });
+        }
+
+        workers.emplace_back([&concurrentServer, &failures] {
+            for (int i = 0; i < positionsPerWorker * workerCount; ++i) {
+                const Network::WorldSnapshot snap = concurrentServer.snapshot();
+                for (std::size_t left = 0; left < snap.players.size(); ++left) {
+                    for (std::size_t right = left + 1; right < snap.players.size(); ++right) {
+                        if (snap.players[left].id == snap.players[right].id) {
+                            failures.fetch_add(1);
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+
+        passed &= expect(failures.load() == 0,
+                         "concurrent handle/snapshot must not race or tear player state");
+        passed &= expect(concurrentServer.playerCount() == static_cast<std::size_t>(workerCount),
+                         "all concurrent joiners should remain registered");
+    }
 
     zmq::context_t context(1);
     zmq::socket_t serverSocket(context, zmq::socket_type::rep);

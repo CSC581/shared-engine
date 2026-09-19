@@ -2,6 +2,8 @@
 
 #include "FrameTime.hpp"
 
+#include <mutex>
+
 struct Rect {
     float x;
     float y;
@@ -9,9 +11,22 @@ struct Rect {
     float height;
 };
 
+// Thread safety: every public method may be called from any thread. std::mutex
+// is not recursive, so no public method may call another while holding the
+// lock — compound updates go through private *Locked helpers instead.
+//
+// A mutex is not copyable or movable, so move constructs / assigns copy the
+// numeric state into a fresh mutex on the destination. Do not move an Entity
+// that other threads are still touching.
 class Entity {
 public:
     Entity(float x, float y, float width, float height);
+
+    Entity(const Entity&) = delete;
+    Entity& operator=(const Entity&) = delete;
+
+    Entity(Entity&& other) noexcept;
+    Entity& operator=(Entity&& other) noexcept;
 
     void update(float deltaTime);
 
@@ -40,6 +55,9 @@ public:
     bool containsPoint(float x, float y) const;
 
 private:
+    void updateLocked(float deltaTime);
+
+    mutable std::mutex mutex_;
     float x_;
     float y_;
     float width_;
