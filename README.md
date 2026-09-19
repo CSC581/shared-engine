@@ -365,6 +365,15 @@ after 5.2s.
 the same reason the server needs it: an address bound on `0.0.0.0` is not one
 another machine can dial. Peer protocol version 3 — rebuild all peers together.
 
+### Apex Ascent Online Co-climb
+
+Apex Ascent online co-climb uses a separate server binary:
+
+```bash
+./build/apex-network-server
+./build/apex-ascent --join
+```
+
 ### The Timeline Sandbox
 
 `timeline-sandbox` is an interactive bench for all of the above: pause, scale

@@ -202,6 +202,7 @@ target_link_libraries(thread-loop-sandbox PRIVATE engine Threads::Threads)
 # Standalone Section 2 proof. These do not modify or build into any person's
 # individual game: the server is headless and the client is a small SDL demo.
 add_executable(network-server sandbox/NetworkServerMain.cpp)
+target_include_directories(network-server PRIVATE sandbox)
 target_link_libraries(network-server PRIVATE network-core Threads::Threads)
 
 add_executable(network-client sandbox/NetworkClientDemo.cpp)
@@ -220,6 +221,11 @@ add_executable(apex-ascent
 )
 target_include_directories(apex-ascent PRIVATE individual-games/harsha)
 target_link_libraries(apex-ascent PRIVATE engine network-core)
+
+# Headless Apex world server (tower coords). Separate from sandbox network-server.
+add_executable(apex-network-server individual-games/harsha/ApexNetworkServerMain.cpp)
+target_include_directories(apex-network-server PRIVATE individual-games/harsha)
+target_link_libraries(apex-network-server PRIVATE network-core Threads::Threads)
 
 # Golf executable. Also builds standalone through
 # individual-games/skim253/build.sh, which predates this target; the target

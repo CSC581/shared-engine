@@ -5,6 +5,7 @@
 #include "Entity.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
+#include "ApexNetworkConfig.hpp"
 #include "NetworkClient.hpp"
 #include "Physics.hpp"
 #include "animation/PlayerAnimation.hpp"
@@ -79,6 +80,7 @@ private:
     static constexpr int roomCount = 6;
 
     // Straight-line ping-pong path for one entry in platforms_.
+    // networkId != 0: online mode applies server snapshot poses (APX-M2).
     struct MovingPlatformPath {
         std::size_t platformIndex;
         float pointAX;
@@ -87,12 +89,15 @@ private:
         float pointBY;
         float speed;
         bool movingToB = true;
+        std::uint32_t networkId = 0;
+        bool serverPoseInitialized = false;
     };
 
     void buildLevel();
     void handleCollisions();
     void updateCamera(float deltaTime);
     void updateMovingPlatforms(float deltaTime);
+    void applyServerMovingPlatforms();
     void updateNetwork();
     bool isMovingPlatform(const Entity& platform) const;
 
@@ -131,6 +136,10 @@ private:
 
     // Mirrored from the engine for the HUD scale-mode label.
     Engine::ScaleMode currentScaleMode_;
+
+    // Online timeline proof (APX-M4); unused offline.
+    bool gameTimePaused_ = false;
+    double gameTimeScale_ = 1.0;
 };
 
 ApexAscent::ApexAscent(const Engine& engine, std::string joinEndpoint)
@@ -162,8 +171,9 @@ ApexAscent::ApexAscent(const Engine& engine, std::string joinEndpoint)
         client_ = std::make_unique<Network::NetworkClient>(engine.realTime(),
                                                            std::move(joinEndpoint));
         client_->start();
-        std::cout << "Apex Ascent (online): submitting local pose; peers are ghosts. "
-                     "A/D aim, Space charge. Esc quit.\n";
+        std::cout << "Apex Ascent (online): peers are ghosts; moving platform is server-owned.\n"
+                     "Start server with: ./apex-network-server\n"
+                     "A/D aim, Space charge. P pause, 1/2/3 = 0.5x/1x/2x game time. Esc quit.\n";
     } else {
         std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
                      "release to leap. F1 to toggle scaling, Esc to quit.\n"
@@ -197,18 +207,16 @@ void ApexAscent::buildLevel()
     platforms_.emplace_back(560.0F, room0Top + 460.0F, 220.0F, platformThickness);
     platforms_.emplace_back(220.0F, room0Top + 280.0F, 220.0F, platformThickness);
 
-    // Demo auto-moving platform; carries the player if they stand on it.
+    // Auto-moving platform (matches ApexNetwork::makeServerConfig for online).
     {
-        constexpr float movingPlatformWidth = 150.0F;
-        const float movingPlatformY = room0Top + 150.0F;
-        constexpr float pointAX = 300.0F;
-        constexpr float pointBX = 550.0F;
-        constexpr float movingPlatformSpeed = 150.0F;
-
+        const float movingPlatformY = ApexNetwork::movingPlatformY();
         const std::size_t movingIndex = platforms_.size();
-        platforms_.emplace_back(pointAX, movingPlatformY, movingPlatformWidth, platformThickness);
-        movingPlatformPaths_.push_back({movingIndex, pointAX, movingPlatformY,
-                                         pointBX, movingPlatformY, movingPlatformSpeed, true});
+        platforms_.emplace_back(ApexNetwork::movingPointAX, movingPlatformY,
+                                ApexNetwork::movingPlatformWidth, platformThickness);
+        movingPlatformPaths_.push_back({movingIndex, ApexNetwork::movingPointAX, movingPlatformY,
+                                         ApexNetwork::movingPointBX, movingPlatformY,
+                                         ApexNetwork::movingPlatformSpeed, true,
+                                         ApexNetwork::movingPlatformId, false});
     }
 
     // TODO: replace generated staircase with hand-designed rooms later.
@@ -227,6 +235,23 @@ void ApexAscent::buildLevel()
 
 void ApexAscent::handleInput(Engine& engine)
 {
+    // Online-only: local game timeline isolation (does not affect peers or server).
+    if (client_) {
+        Timeline& gameTime = engine.gameTime();
+        if (Input::isKeyJustPressed(SDL_SCANCODE_P)) {
+            gameTime.togglePause();
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_1)) {
+            gameTime.setScale(0.5);
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_2)) {
+            gameTime.setScale(1.0);
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_3)) {
+            gameTime.setScale(2.0);
+        }
+    }
+
     // Aim/charge only while grounded — no air control once jumping.
     float aim = 0.0F;
     if (Input::isKeyPressed(SDL_SCANCODE_A) || Input::isKeyPressed(SDL_SCANCODE_LEFT)){
@@ -264,10 +289,10 @@ void ApexAscent::updateNetwork()
         return;
     }
 
-    client_->poll();
+    // poll() is called at the start of update() so platform poses are fresh.
     if (client_->state() == Network::ConnectionState::Connected) {
         // Local climb is authoritative; never rewind from snapshot (server spawn
-        // is arena-demo coords and wrong for this tower).
+        // is only a join hint — we keep room-0 placement from the client).
         client_->submitPosition(player_.getX(), player_.getY());
     }
 }
@@ -275,6 +300,26 @@ void ApexAscent::updateNetwork()
 void ApexAscent::update(float deltaTime, Engine& engine)
 {
     currentScaleMode_ = engine.getScaleMode();
+
+    // Refresh snapshots before moving-platform carry (server poses).
+    // NetworkClient uses realTime, so pause/scale never freezes the link.
+    if (client_) {
+        client_->poll();
+
+        const Timeline& gameTime = engine.gameTime();
+        gameTimePaused_ = gameTime.isPaused();
+        gameTimeScale_ = gameTime.scale();
+
+        char title[128];
+        if (gameTimePaused_) {
+            std::snprintf(title, sizeof(title), "Apex Ascent (online) | PAUSED | #%u",
+                          static_cast<unsigned>(client_->playerId()));
+        } else {
+            std::snprintf(title, sizeof(title), "Apex Ascent (online) | %.1fx | #%u",
+                          gameTimeScale_, static_cast<unsigned>(client_->playerId()));
+        }
+        SDL_SetWindowTitle(engine.getWindow(), title);
+    }
 
     if (isCharging_) {
         chargePower_ += chargeSpeed * deltaTime;
@@ -300,7 +345,6 @@ void ApexAscent::update(float deltaTime, Engine& engine)
 
     handleCollisions();
     updateCamera(deltaTime);
-    updateNetwork();
 
     PlayerAnimation::AnimInput animInput;
     animInput.onGround = isOnGround_;
@@ -310,6 +354,8 @@ void ApexAscent::update(float deltaTime, Engine& engine)
     // Prefer aim while charging; otherwise use horizontal velocity.
     animInput.facingIntent = isCharging_ ? aimDirection_ : player_.getVelocityX();
     playerAnim_.update(deltaTime, animInput);
+
+    updateNetwork();
 
     const int room = static_cast<int>((worldHeight_ - player_.getY()) / viewHeight_);
     if (room > highestRoomReached_) {
@@ -391,7 +437,15 @@ void ApexAscent::updateCamera(float deltaTime)
 
 void ApexAscent::updateMovingPlatforms(float deltaTime)
 {
+    // Online + connected: server owns networked movers (no local path advance).
+    if (client_ && client_->state() == Network::ConnectionState::Connected) {
+        applyServerMovingPlatforms();
+        return;
+    }
+
     for (MovingPlatformPath& path : movingPlatformPaths_) {
+        path.serverPoseInitialized = false;
+
         Entity& platform = platforms_[path.platformIndex];
         const float prevX = platform.getX();
         const float prevY = platform.getY();
@@ -418,6 +472,41 @@ void ApexAscent::updateMovingPlatforms(float deltaTime)
     }
 }
 
+void ApexAscent::applyServerMovingPlatforms()
+{
+    const Network::WorldSnapshot& snapshot = client_->snapshot();
+
+    for (MovingPlatformPath& path : movingPlatformPaths_) {
+        if (path.networkId == 0) {
+            continue;
+        }
+
+        const Network::PlatformState* match = nullptr;
+        for (const Network::PlatformState& platform : snapshot.platforms) {
+            if (platform.id == path.networkId) {
+                match = &platform;
+                break;
+            }
+        }
+        if (match == nullptr) {
+            continue;
+        }
+
+        Entity& platform = platforms_[path.platformIndex];
+        const float prevX = platform.getX();
+        const float prevY = platform.getY();
+        platform.setPosition(match->x, match->y);
+        platform.setSize(match->width, match->height);
+
+        // First snapshot after connect only snaps pose; later frames carry by delta.
+        if (path.serverPoseInitialized && &platform == groundedMovingPlatform_) {
+            player_.setPosition(player_.getX() + (platform.getX() - prevX),
+                                 player_.getY() + (platform.getY() - prevY));
+        }
+        path.serverPoseInitialized = true;
+    }
+}
+
 void ApexAscent::render(SDL_Renderer* renderer) const
 {
     // World draw shifted by camera.
@@ -436,7 +525,7 @@ void ApexAscent::render(SDL_Renderer* renderer) const
         }
     }
 
-    // Remote climbers: snapshot poses only (no collision with local player).
+    // Remote climbers: tinted sprites when on-screen; HUD cue when above/below.
     if (client_ && client_->state() == Network::ConnectionState::Connected) {
         for (const Network::PlayerState& remote : client_->snapshot().players) {
             if (remote.id == client_->playerId()) {
@@ -446,10 +535,34 @@ void ApexAscent::render(SDL_Renderer* renderer) const
             Uint8 green = 0;
             Uint8 blue = 0;
             ghostColor(remote.id, red, green, blue);
-            drawRect({remote.x, remote.y, playerWidth, playerHeight}, red, green, blue);
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-            const SDL_FRect outline{remote.x, remote.y - camera_, playerWidth, playerHeight};
-            SDL_RenderRect(renderer, &outline);
+
+            const float screenTop = remote.y - camera_;
+            const float screenBottom = screenTop + playerHeight;
+            if (screenBottom > 0.0F && screenTop < viewHeight_) {
+                if (playerAnim_.isLoaded()) {
+                    // Pose-only protocol: idle tinted sprite until a future shared
+                    // presentation channel exists (keep anim out of network-core).
+                    playerAnim_.drawGhost(renderer, remote.x, remote.y, camera_, playerWidth,
+                                          playerHeight, PlayerAnimation::Clip::Idle, 0, true, red,
+                                          green, blue);
+                } else {
+                    drawRect({remote.x, remote.y, playerWidth, playerHeight}, red, green, blue);
+                }
+            } else {
+                char cue[48];
+                const float cueX = std::fmax(20.0F, std::fmin(remote.x, viewWidth_ - 120.0F));
+                if (screenBottom <= 0.0F) {
+                    std::snprintf(cue, sizeof(cue), "^ #%u above",
+                                  static_cast<unsigned>(remote.id));
+                    SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+                    SDL_RenderDebugText(renderer, cueX, 8.0F, cue);
+                } else {
+                    std::snprintf(cue, sizeof(cue), "v #%u below",
+                                  static_cast<unsigned>(remote.id));
+                    SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+                    SDL_RenderDebugText(renderer, cueX, viewHeight_ - 24.0F, cue);
+                }
+            }
         }
     }
 
@@ -491,13 +604,24 @@ void ApexAscent::render(SDL_Renderer* renderer) const
                           client_->error().c_str());
             SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
         } else {
-            std::snprintf(netHud, sizeof(netHud), "Net: %s | you #%u | %zu climbers",
+            std::snprintf(netHud, sizeof(netHud),
+                          "Net: %s | you #%u | %zu climbers | server platforms",
                           connectionLabel(client_->state()),
                           static_cast<unsigned>(client_->playerId()),
                           client_->snapshot().players.size());
             SDL_SetRenderDrawColor(renderer, 180, 220, 255, 255);
         }
         SDL_RenderDebugText(renderer, 20.0F, 60.0F, netHud);
+
+        char timeHud[96];
+        if (gameTimePaused_) {
+            std::snprintf(timeHud, sizeof(timeHud), "Game time: PAUSED  (P  1=0.5x  2=1x  3=2x)");
+        } else {
+            std::snprintf(timeHud, sizeof(timeHud), "Game time: %.1fx  (P  1=0.5x  2=1x  3=2x)",
+                          gameTimeScale_);
+        }
+        SDL_SetRenderDrawColor(renderer, 200, 230, 180, 255);
+        SDL_RenderDebugText(renderer, 20.0F, 80.0F, timeHud);
     }
 }
 
