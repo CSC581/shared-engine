@@ -157,7 +157,8 @@ target_link_libraries(timeline-sandbox PRIVATE engine imgui)
 add_executable(thread-example sandbox/ThreadExampleMain.cpp)
 target_link_libraries(thread-example PRIVATE Threads::Threads)
 
-# Section 3 M3: Game loop with per-frame platform vs character worker threads.
+# Section 3 M3/M4: Game loop with platform vs character worker threads
+# (M3 spawn+join evolved into M4 persistent threads + CV barrier).
 add_executable(thread-loop-sandbox sandbox/ThreadLoopSandbox.cpp)
 target_link_libraries(thread-loop-sandbox PRIVATE engine Threads::Threads)
 

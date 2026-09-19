@@ -1,9 +1,12 @@
-// Section 3 Milestone 3: multithreaded update via per-frame spawn + join.
+// Section 3 Milestone 4: persistent worker threads + condition_variable barrier.
 //
-// Main thread: SDL events, Input, handleInput, collide, render.
-// Worker A:    advance the ping-pong platform (Entity writes only).
+// Same gameplay as M3, but threads live for the whole run (ThreadExample-style
+// wait/notify) instead of spawn+join every frame.
+//
+// Main thread: SDL events, Input, handleInput, publish frame, wait, carry,
+//              collide, render.
+// Worker A:    advance the ping-pong platform.
 // Worker B:    gravity + player Entity::update.
-// After join:  carry the player if grounded, then collide.
 //
 // Build: cmake --build build --target thread-loop-sandbox
 // Run:   ./build/thread-loop-sandbox
@@ -18,9 +21,10 @@
 
 #include <atomic>
 #include <cmath>
-#include <cstdio>
+#include <condition_variable>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <thread>
 
 namespace {
@@ -44,6 +48,8 @@ constexpr float platformSpeed = 160.0F;
 constexpr float platformLeft = 120.0F;
 constexpr float platformRight = 640.0F;
 
+constexpr int workerCount = 2;
+
 void fillRect(SDL_Renderer* renderer, const Rect& bounds, Uint8 r, Uint8 g, Uint8 b)
 {
     SDL_SetRenderDrawColor(renderer, r, g, b, 255);
@@ -59,6 +65,27 @@ public:
           platform_(platformLeft, platformY, platformWidth, platformHeight)
     {
         Physics::setGravity(gravity);
+
+        // Persistent workers — created once, like ThreadExample's two threads.
+        platformThread_ = std::thread([this] { platformLoop(); });
+        characterThread_ = std::thread([this] { characterLoop(); });
+    }
+
+    ~ThreadLoopSandbox() override
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            quit_ = true;
+        }
+        // Wake anyone blocked in wait (workers or a late update).
+        cv_.notify_all();
+
+        if (platformThread_.joinable()) {
+            platformThread_.join();
+        }
+        if (characterThread_.joinable()) {
+            characterThread_.join();
+        }
     }
 
     void handleInput(Engine& engine) override
@@ -85,32 +112,27 @@ public:
 
     void update(float deltaTime, Engine&) override
     {
-        // Snapshot of this frame's platform motion, filled by the platform
-        // worker and applied to the player only after both workers join.
-        float platformDx = 0.0F;
-        float platformDy = 0.0F;
-
-        std::thread platformWorker([this, deltaTime, &platformDx, &platformDy] {
-            advancePlatform(deltaTime, platformDx, platformDy);
-            platformWorkerFrames_.fetch_add(1, std::memory_order_relaxed);
-        });
-
-        std::thread characterWorker([this, deltaTime] {
-            // Horizontal intent was sampled on main; integrate on this thread.
-            player_.setVelocityX(moveAxis_ * moveSpeed);
-            if (!onGround_) {
-                Physics::applyGravity(player_, deltaTime);
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (quit_) {
+                return;
             }
-            player_.update(deltaTime);
-            characterWorkerFrames_.fetch_add(1, std::memory_order_relaxed);
-        });
 
-        platformWorker.join();
-        characterWorker.join();
+            // Publish this frame's work (ThreadExample: flip state + notify).
+            frameDt_ = deltaTime;
+            workersDone_ = 0;
+            ++frameId_;
+            cv_.notify_all();
 
-        // Carry after join so only one thread writes the player for ride motion.
+            // Wait until both workers finished this frameId (busy ≈ not done).
+            cv_.wait(lock, [this] {
+                return quit_ || workersDone_ == workerCount;
+            });
+        }
+
+        // Carry after the barrier so only main writes the player for ride motion.
         if (groundedOnMoving_) {
-            player_.setPosition(player_.getX() + platformDx, player_.getY() + platformDy);
+            player_.setPosition(player_.getX() + platformDx_, player_.getY() + platformDy_);
         }
 
         resolveCollisions();
@@ -127,17 +149,84 @@ public:
             renderer,
             16.0F,
             16.0F,
-            "M3 spawn+join | A/D move  Space jump  Esc quit");
+            "M4 persistent+CV | A/D move  Space jump  Esc quit");
         SDL_RenderDebugTextFormat(
             renderer,
             16.0F,
             36.0F,
-            "platform frames: %d   character frames: %d",
+            "platform frames: %d   character frames: %d   frameId: %llu",
             platformWorkerFrames_.load(std::memory_order_relaxed),
-            characterWorkerFrames_.load(std::memory_order_relaxed));
+            characterWorkerFrames_.load(std::memory_order_relaxed),
+            static_cast<unsigned long long>(frameId_.load(std::memory_order_relaxed)));
     }
 
 private:
+    void platformLoop()
+    {
+        std::uint64_t lastFrame = 0;
+        while (true) {
+            float dt = 0.0F;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                // ThreadExample thread 1: wait until there is work (or quit).
+                cv_.wait(lock, [this, lastFrame] {
+                    return quit_ || frameId_ != lastFrame;
+                });
+                if (quit_) {
+                    return;
+                }
+                lastFrame = frameId_;
+                dt = frameDt_;
+            }
+
+            advancePlatform(dt, platformDx_, platformDy_);
+            platformWorkerFrames_.fetch_add(1, std::memory_order_relaxed);
+            markWorkerDone();
+        }
+    }
+
+    void characterLoop()
+    {
+        std::uint64_t lastFrame = 0;
+        while (true) {
+            float dt = 0.0F;
+            float moveAxis = 0.0F;
+            bool onGround = false;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this, lastFrame] {
+                    return quit_ || frameId_ != lastFrame;
+                });
+                if (quit_) {
+                    return;
+                }
+                lastFrame = frameId_;
+                dt = frameDt_;
+                // Snapshot main-thread input/state under the barrier lock.
+                moveAxis = moveAxis_;
+                onGround = onGround_;
+            }
+
+            player_.setVelocityX(moveAxis * moveSpeed);
+            if (!onGround) {
+                Physics::applyGravity(player_, dt);
+            }
+            player_.update(dt);
+            characterWorkerFrames_.fetch_add(1, std::memory_order_relaxed);
+            markWorkerDone();
+        }
+    }
+
+    void markWorkerDone()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++workersDone_;
+        if (workersDone_ == workerCount) {
+            // ThreadExample: notify the waiter (main) that work is finished.
+            cv_.notify_all();
+        }
+    }
+
     void advancePlatform(float deltaTime, float& outDx, float& outDy)
     {
         const float prevX = platform_.getX();
@@ -164,18 +253,15 @@ private:
         onGround_ = false;
         groundedOnMoving_ = false;
 
-        // Floor support.
         if (landOn(floor_)) {
             onGround_ = true;
         }
 
-        // Moving platform support (after carry, so feet meet the top).
         if (landOn(platform_)) {
             onGround_ = true;
             groundedOnMoving_ = true;
         }
 
-        // Side push out of the platform body if overlapping horizontally mid-air.
         float pushX = 0.0F;
         float pushY = 0.0F;
         if (Collision::getSeparation(player_, platform_, pushX, pushY)) {
@@ -215,7 +301,20 @@ private:
     bool groundedOnMoving_ = false;
     bool movingToRight_ = true;
 
-    // Prove both workers ran (increments once per frame each).
+    float platformDx_ = 0.0F;
+    float platformDy_ = 0.0F;
+
+    // Frame barrier (shared mutex + CV, same tools as ThreadExample).
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool quit_ = false;
+    float frameDt_ = 0.0F;
+    int workersDone_ = 0;
+    std::atomic<std::uint64_t> frameId_{0};
+
+    std::thread platformThread_;
+    std::thread characterThread_;
+
     mutable std::atomic<int> platformWorkerFrames_{0};
     mutable std::atomic<int> characterWorkerFrames_{0};
 };
@@ -225,7 +324,7 @@ private:
 int main()
 {
     try {
-        Engine engine("Thread Loop Sandbox (M3)", windowWidth, windowHeight);
+        Engine engine("Thread Loop Sandbox (M4)", windowWidth, windowHeight);
         engine.setClearColor(28, 32, 40);
         ThreadLoopSandbox game;
         engine.run(game);
