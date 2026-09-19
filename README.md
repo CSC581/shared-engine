@@ -233,8 +233,12 @@ Then start three clients in separate terminals:
 ./build/network-client
 ```
 
-Use `WASD` or the arrow keys in each window. The window title shows connection
-state, player ID, and player count. The white outline marks the local player.
+Use `WASD` or the arrow keys in each window. `P` pauses this client's game
+timeline; `1` / `2` / `3` set 0.5× / 1× / 2×. Local movement uses game time;
+network poll and server platforms use real time, so one client's pause or
+scale does not stall the others (Section 4). The window title shows connection
+state, player ID, player count, and pause/scale. The white outline marks the
+local player.
 Clients retry automatically if started before the server. Each frame the demo
 attempts to send its position, even when stationary or given zero game delta;
 only one request may be outstanding. These updates refresh presence and fetch

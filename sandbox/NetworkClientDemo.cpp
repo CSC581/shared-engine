@@ -4,10 +4,11 @@
 #include "NetworkClient.hpp"
 #include "NetworkDemoConfig.hpp"
 #include "NetworkDemoPlayer.hpp"
+#include "TimeSource.hpp"
 
 #include <SDL3/SDL.h>
 
-#include <algorithm>
+#include <sstream>
 #include <string>
 
 namespace {
@@ -29,16 +30,32 @@ const char* stateLabel(Network::ConnectionState state)
 
 class NetworkClientDemo final : public Game {
 public:
-    explicit NetworkClientDemo(std::string endpoint)
-        : client_(std::move(endpoint))
+    // realTime must outlive this demo (use Engine::realTime()). Network I/O and
+    // reconnect timers stay on real time so pause/scale never freeze the link.
+    NetworkClientDemo(std::string endpoint, const TimeSource& realTime)
+        : client_(realTime, std::move(endpoint))
     {
         client_.start();
     }
 
     ~NetworkClientDemo() override { client_.leave(); }
 
-    void handleInput(Engine&) override
+    void handleInput(Engine& engine) override
     {
+        Timeline& gameTime = engine.gameTime();
+        if (Input::isKeyJustPressed(SDL_SCANCODE_P)) {
+            gameTime.togglePause();
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_1)) {
+            gameTime.setScale(0.5);
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_2)) {
+            gameTime.setScale(1.0);
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_3)) {
+            gameTime.setScale(2.0);
+        }
+
         horizontal_ = static_cast<int>(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D));
         vertical_ = static_cast<int>(Input::getAxis(SDL_SCANCODE_W, SDL_SCANCODE_S));
         if (horizontal_ == 0 && vertical_ == 0) {
@@ -49,23 +66,34 @@ public:
 
     void update(float deltaTime, Engine& engine) override
     {
+        // Always poll on the real-time clock inside NetworkClient, independent
+        // of pause/scale on gameTime (Section 4 client isolation).
         client_.poll();
         if (client_.state() == Network::ConnectionState::Connected) {
             // Use the server position only on join/rejoin. Later snapshot echoes
             // may be older than our local simulation and must not rewind it.
             if (localPlayer_.synchronize(client_.snapshot(), client_.playerId())) {
+                // Movement uses game dt: 0 while paused, half/double when scaled.
                 localPlayer_.update(horizontal_, vertical_, deltaTime);
                 const Rect bounds = localPlayer_.bounds();
+                // Keep submitting while paused so the session does not idle-out;
+                // sequence still advances, pose stays put.
                 client_.submitPosition(bounds.x, bounds.y);
             }
         } else {
             localPlayer_.reset();
         }
 
-        const std::string title = std::string("Network Client | ") + stateLabel(client_.state()) +
-                                  " | Player " + std::to_string(client_.playerId()) + " | " +
-                                  std::to_string(client_.snapshot().players.size()) + " players";
-        SDL_SetWindowTitle(engine.getWindow(), title.c_str());
+        const Timeline& gameTime = engine.gameTime();
+        std::ostringstream title;
+        title << "Network Client | " << stateLabel(client_.state()) << " | Player "
+              << client_.playerId() << " | " << client_.snapshot().players.size() << " players | ";
+        if (gameTime.isPaused()) {
+            title << "PAUSED";
+        } else {
+            title << gameTime.scale() << "x";
+        }
+        SDL_SetWindowTitle(engine.getWindow(), title.str().c_str());
     }
 
     void render(SDL_Renderer* renderer) const override
@@ -77,7 +105,10 @@ public:
 
         SDL_SetRenderDrawColor(renderer, 180, 205, 230, 255);
         SDL_RenderDebugTextFormat(renderer, 32.0F, 18.0F,
-                                  "%s | WASD move | platforms are server-owned", stateLabel(client_.state()));
+                                  "%s | WASD move | P pause | 1/2/3 = 0.5x 1x 2x",
+                                  stateLabel(client_.state()));
+        SDL_RenderDebugText(renderer, 32.0F, 34.0F,
+                            "Platforms are server-owned (real time); local move uses game time");
 
         if (!client_.error().empty()) {
             SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
@@ -128,7 +159,7 @@ int main(int argc, char* argv[])
     const std::string endpoint = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
     Engine engine("Network Client", NetworkDemo::windowWidth, NetworkDemo::windowHeight);
     engine.setScaleToggleKey(SDL_SCANCODE_UNKNOWN);
-    NetworkClientDemo game(endpoint);
+    NetworkClientDemo game(endpoint, engine.realTime());
     engine.run(game);
     return 0;
 }
