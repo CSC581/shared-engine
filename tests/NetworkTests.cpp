@@ -263,6 +263,25 @@ int main()
     std::string error;
     const std::string version = std::to_string(Network::protocolVersion);
 
+    // Platform fields round-trip after the player list (Section 4 snapshots).
+    {
+        Network::WorldSnapshot withPlatforms;
+        withPlatforms.serverTick = 9;
+        withPlatforms.players = {{1, 12.5F, 3000.25F}};
+        withPlatforms.platforms = {{2, 10.0F, 20.0F, 96.0F, 24.0F}};
+        Network::Reply platformReply;
+        passed &= expect(Network::decodeReply(Network::encodeSnapshot(withPlatforms), platformReply, error) &&
+                             platformReply.snapshot.platforms.size() == 1 &&
+                             platformReply.snapshot.platforms[0].id == 2 &&
+                             platformReply.snapshot.platforms[0].width == 96.0F &&
+                             platformReply.snapshot.players[0].y == 3000.25F,
+                         "snapshots must round-trip players and server platforms");
+        passed &= expect(Network::decodeReply(Network::encodeSnapshot({1, {{1, 1.0F, 2.0F}}, {}}), platformReply,
+                                              error) &&
+                             platformReply.snapshot.platforms.empty(),
+                         "empty platform lists remain valid");
+    }
+
     // Locale changes happen before the later threaded tests. Test both C++
     // punctuation and, where installed, the C locale used by the old stof path.
     const std::locale savedCppLocale = std::locale();
@@ -411,6 +430,31 @@ int main()
     Network::decodeReply(spawnServer.handle(Network::encodeJoin(tokenFive)), spawnFourth, error);
     passed &= expect(spawnFourth.type == Network::ReplyType::Welcome && spawnServer.playerCount() == 3,
                      "joining remains possible when every configured spawn point is occupied");
+
+    // Server advances platforms on the supplied clock (real ns in production).
+    {
+        ManualClock platformClock;
+        Network::ServerConfig platformConfig;
+        platformConfig.spawnPoints = {{0.0F, 0.0F}};
+        platformConfig.platforms = {{1, 0.0F, 10.0F, 100.0F, 10.0F, 50.0F, 40.0F, 12.0F}};
+        Network::NetworkServer platformServer(platformClock, platformConfig);
+        platformServer.update();
+        passed &= expect(platformServer.snapshot().platforms.size() == 1 &&
+                             platformServer.snapshot().platforms[0].x == 0.0F,
+                         "platforms start at the configured path origin");
+        platformClock.advance(kNsPerSec);
+        platformServer.update();
+        passed &= expect(std::fabs(platformServer.snapshot().platforms[0].x - 50.0F) < 0.01F,
+                         "one real-time second at 50 units/s should move halfway along a 100-unit path");
+        platformClock.advance(kNsPerSec);
+        platformServer.update();
+        passed &= expect(std::fabs(platformServer.snapshot().platforms[0].x - 100.0F) < 0.01F,
+                         "platform should reach the path end");
+        platformClock.advance(kNsPerSec);
+        platformServer.update();
+        passed &= expect(std::fabs(platformServer.snapshot().platforms[0].x - 50.0F) < 0.01F,
+                         "platform should ping-pong back toward the start");
+    }
 
     // Concurrent workers share one NetworkServer. Distinct tokens join and
     // submit positions while other threads call snapshot(); without the mutex

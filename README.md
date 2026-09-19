@@ -213,7 +213,11 @@ Position values must be finite, but the server trusts clients to obey game rules
 Coordinates use locale-independent decimal text with enough precision to preserve
 float values between clients and server.
 This version does not prevent teleporting or resolve player-to-player collisions.
-Server-controlled moving platforms and per-client server threads remain Section 4 work.
+Design decisions for Sections 2 and 4 (mutex, per-client workers, session
+identity, planned server platforms, and trade-offs) are recorded in
+[docs/networking-design.md](docs/networking-design.md).
+Server-controlled moving platforms are authored on the server (S4-M3); clients
+draw them from snapshots. See [docs/networking-design.md](docs/networking-design.md).
 
 Start the server in one terminal:
 

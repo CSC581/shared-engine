@@ -7,6 +7,7 @@
 #include <zmq_addon.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <future>
 #include <iostream>
@@ -118,14 +119,22 @@ int main(int argc, char* argv[])
         RealTimeClock clock;
         Network::NetworkServer server(clock, NetworkDemo::makeServerConfig());
 
+        // Keep platforms moving on real time even when no client is mid-request.
+        std::thread([&server] {
+            while (true) {
+                server.update();
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            }
+        }).detach();
+
         std::mutex endpointsMutex;
         std::unordered_map<Network::SessionToken, std::string> endpointsByToken;
 
         std::cout << "Network server handshake listening on " << handshakeEndpoint << '\n';
         std::cout << "Each JOIN spawns a dedicated per-client REP worker (no Router/Dealer).\n";
+        std::cout << "Moving platforms are server-authored on real time.\n";
 
         while (true) {
-            server.update();
             const Network::Message requestMessage = receiveMessage(handshake);
             if (requestMessage.empty()) {
                 continue;

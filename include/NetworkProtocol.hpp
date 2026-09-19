@@ -26,10 +26,20 @@ struct PlayerState {
     float y = 0.0F;
 };
 
+struct PlatformState {
+    std::uint32_t id = 0;
+    float x = 0.0F;
+    float y = 0.0F;
+    float width = 0.0F;
+    float height = 0.0F;
+};
+
 struct WorldSnapshot {
     // Revision of stored positions and membership, not elapsed simulation time.
     std::uint64_t serverTick = 0;
     std::vector<PlayerState> players;
+    // Server-authored moving platforms (Section 4); empty when unused.
+    std::vector<PlatformState> platforms;
 };
 
 enum class ConnectionState {

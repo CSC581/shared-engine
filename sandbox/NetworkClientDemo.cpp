@@ -76,7 +76,8 @@ public:
         SDL_RenderRect(renderer, &arena);
 
         SDL_SetRenderDrawColor(renderer, 180, 205, 230, 255);
-        SDL_RenderDebugTextFormat(renderer, 32.0F, 18.0F, "%s | WASD or arrows to move", stateLabel(client_.state()));
+        SDL_RenderDebugTextFormat(renderer, 32.0F, 18.0F,
+                                  "%s | WASD move | platforms are server-owned", stateLabel(client_.state()));
 
         if (!client_.error().empty()) {
             SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
@@ -84,6 +85,15 @@ public:
         } else if (client_.state() != Network::ConnectionState::Connected) {
             SDL_SetRenderDrawColor(renderer, 255, 205, 100, 255);
             SDL_RenderDebugText(renderer, 32.0F, 510.0F, "Connecting to server...");
+        }
+
+        for (const Network::PlatformState& platform : client_.snapshot().platforms) {
+            const SDL_FRect rect{NetworkDemo::arenaX + platform.x, NetworkDemo::arenaY + platform.y,
+                                 platform.width, platform.height};
+            SDL_SetRenderDrawColor(renderer, 90, 140, 110, 255);
+            SDL_RenderFillRect(renderer, &rect);
+            SDL_SetRenderDrawColor(renderer, 200, 230, 210, 255);
+            SDL_RenderRect(renderer, &rect);
         }
 
         for (const Network::PlayerState& player : client_.snapshot().players) {
