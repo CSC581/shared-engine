@@ -203,9 +203,9 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
     return true;
 }
 
-Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot)
+Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot, const std::string& sessionEndpoint)
 {
-    Message message{std::to_string(protocolVersion), "WELCOME", std::to_string(playerId)};
+    Message message{std::to_string(protocolVersion), "WELCOME", std::to_string(playerId), sessionEndpoint};
     appendSnapshot(message, snapshot);
     return message;
 }
@@ -256,14 +256,16 @@ bool decodeReply(const Message& message, Reply& reply, std::string& error)
     std::size_t snapshotIndex = 2;
     if (message[1] == "WELCOME") {
         std::uint64_t playerId = 0;
-        if (message.size() < 5 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
+        // [version, WELCOME, playerId, sessionEndpoint, ...snapshot...]
+        if (message.size() < 6 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
             playerId > std::numeric_limits<PlayerId>::max()) {
             error = "invalid WELCOME reply";
             return false;
         }
         reply.type = ReplyType::Welcome;
         reply.playerId = static_cast<PlayerId>(playerId);
-        snapshotIndex = 3;
+        reply.sessionEndpoint = message[3];
+        snapshotIndex = 4;
     } else if (message[1] == "SNAPSHOT") {
         reply.type = ReplyType::Snapshot;
     } else {

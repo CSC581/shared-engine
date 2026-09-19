@@ -176,6 +176,64 @@ bool clearsWorldWhileRetrying()
                   "a retrying client must clear its stale player ID and world snapshot");
 }
 
+// Handshake REP welcomes with a private session endpoint; POSITION must land on
+// the session worker socket, not the handshake socket.
+bool reconnectsToSessionEndpoint()
+{
+    zmq::context_t context(1);
+    zmq::socket_t handshake(context, zmq::socket_type::rep);
+    handshake.set(zmq::sockopt::linger, 0);
+    handshake.set(zmq::sockopt::rcvtimeo, 2000);
+    handshake.set(zmq::sockopt::sndtimeo, 2000);
+    handshake.bind("tcp://127.0.0.1:*");
+
+    zmq::socket_t session(context, zmq::socket_type::rep);
+    session.set(zmq::sockopt::linger, 0);
+    session.set(zmq::sockopt::rcvtimeo, 2000);
+    session.set(zmq::sockopt::sndtimeo, 2000);
+    session.bind("tcp://127.0.0.1:*");
+    const std::string sessionEndpoint = session.get(zmq::sockopt::last_endpoint);
+
+    ManualClock clock;
+    Network::NetworkClient client(clock, handshake.get(zmq::sockopt::last_endpoint));
+    client.start();
+    if (!expect(!receiveMessage(handshake).empty(), "handshake should receive JOIN")) {
+        return false;
+    }
+    sendMessage(handshake, Network::encodeWelcome(3, {1, {{3, 10.0F, 20.0F}}}, sessionEndpoint));
+
+    const auto connectedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.state() != Network::ConnectionState::Connected &&
+           std::chrono::steady_clock::now() < connectedDeadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!expect(client.state() == Network::ConnectionState::Connected && client.playerId() == 3,
+                "client should connect after session WELCOME")) {
+        return false;
+    }
+
+    client.submitPosition(55.0F, 66.0F);
+    handshake.set(zmq::sockopt::rcvtimeo, 50);
+    if (!expect(receiveMessage(handshake).empty(), "handshake must not receive POSITION after handoff")) {
+        return false;
+    }
+    const Network::Message positionMessage = receiveMessage(session);
+    if (!expect(!positionMessage.empty(), "session worker should receive POSITION")) {
+        return false;
+    }
+    sendMessage(session, Network::encodeSnapshot({2, {{3, 55.0F, 66.0F}}}));
+
+    const auto snapshotDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.snapshot().serverTick != 2 && std::chrono::steady_clock::now() < snapshotDeadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    float x = 0.0F;
+    return expect(containsPlayer(client.snapshot(), 3, &x) && x == 55.0F,
+                  "client should apply snapshots from the private session socket");
+}
+
 } // namespace
 
 int main()
@@ -199,6 +257,7 @@ int main()
     passed &= rejectsIncompatibleReply({"2", "ERROR", "unsupported protocol version"});
     passed &= rejectsIncompatibleReply(Network::encodeError("unsupported protocol version"));
     passed &= clearsWorldWhileRetrying();
+    passed &= reconnectsToSessionEndpoint();
 
     Network::Request decoded;
     std::string error;

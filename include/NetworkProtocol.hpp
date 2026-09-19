@@ -8,7 +8,7 @@
 // of text fields so they never depend on C++ struct layout or byte order.
 namespace Network {
 
-constexpr int protocolVersion = 3;
+constexpr int protocolVersion = 4;
 
 using PlayerId = std::uint32_t;
 using SessionToken = std::string;
@@ -62,6 +62,9 @@ enum class ReplyType {
 struct Reply {
     ReplyType type = ReplyType::Error;
     PlayerId playerId = 0;
+    // Non-empty on WELCOME when the server assigned a private session socket
+    // (Section 4 per-client worker). Empty means stay on the current socket.
+    std::string sessionEndpoint;
     WorldSnapshot snapshot{};
     std::string error;
 };
@@ -71,7 +74,10 @@ Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, cons
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken);
 bool decodeRequest(const Message& message, Request& request, std::string& error);
 
-Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot);
+// sessionEndpoint is the private REQ/REP address for this client after JOIN.
+// Pass empty for in-process / single-socket tests.
+Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot,
+                      const std::string& sessionEndpoint = {});
 Message encodeSnapshot(const WorldSnapshot& snapshot);
 Message encodeError(const std::string& error);
 Message encodeGoodbye();

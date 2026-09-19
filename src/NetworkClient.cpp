@@ -73,7 +73,7 @@ Message receiveMessage(zmq::socket_t& socket, bool& received)
 struct NetworkClient::Impl {
     explicit Impl(std::string endpointValue, const TimeSource* timeSource = nullptr)
         : clock(timeSource ? *timeSource : realClock),
-          endpoint(std::move(endpointValue))
+          handshakeEndpoint(std::move(endpointValue))
     {
     }
 
@@ -83,15 +83,34 @@ struct NetworkClient::Impl {
             socket.reset();
             socket = std::make_unique<zmq::socket_t>(context, zmq::socket_type::req);
             socket->set(zmq::sockopt::linger, 0);
-            socket->connect(endpoint);
+            socket->connect(handshakeEndpoint);
         } catch (const zmq::error_t& exception) {
             fail(std::string("Cannot connect: ") + exception.what() + ". Check the server address.");
             return;
         }
+        sessionEndpoint.clear();
         waitingForReply = false;
         state = ConnectionState::Connecting;
         error.clear();
         sendJoin();
+    }
+
+    // Move the REQ socket onto the private per-client worker address. The JOIN
+    // already succeeded on the handshake socket; do not send another.
+    bool connectSession(const std::string& endpoint)
+    {
+        try {
+            socket.reset();
+            socket = std::make_unique<zmq::socket_t>(context, zmq::socket_type::req);
+            socket->set(zmq::sockopt::linger, 0);
+            socket->connect(endpoint);
+        } catch (const zmq::error_t& exception) {
+            scheduleRetry(std::string("Cannot connect to session endpoint: ") + exception.what());
+            return false;
+        }
+        sessionEndpoint = endpoint;
+        waitingForReply = false;
+        return true;
     }
 
     void fail(const std::string& message)
@@ -102,6 +121,7 @@ struct NetworkClient::Impl {
         error = message;
         playerId = 0;
         snapshot = {};
+        sessionEndpoint.clear();
     }
 
     void sendJoin()
@@ -125,6 +145,7 @@ struct NetworkClient::Impl {
         // replaces it after this client has joined the server again.
         playerId = 0;
         snapshot = {};
+        sessionEndpoint.clear();
         nextRetryAt = clock.now() + retryDelayNs;
     }
 
@@ -132,7 +153,10 @@ struct NetworkClient::Impl {
     std::unique_ptr<zmq::socket_t> socket;
     RealTimeClock realClock;
     const TimeSource& clock;
-    std::string endpoint;
+    // Well-known handshake address from the constructor.
+    std::string handshakeEndpoint;
+    // Private worker address after WELCOME; empty until assigned.
+    std::string sessionEndpoint;
     SessionToken sessionToken = makeSessionToken();
     ConnectionState state = ConnectionState::Disconnected;
     PlayerId playerId = 0;
@@ -189,7 +213,7 @@ void NetworkClient::poll()
     }
     if (!received) {
         if (now - impl_->requestSentAt >= retryDelayNs) {
-            impl_->scheduleRetry("waiting for server at " + impl_->endpoint);
+            impl_->scheduleRetry("waiting for server at " + impl_->handshakeEndpoint);
         }
         return;
     }
@@ -220,8 +244,11 @@ void NetworkClient::poll()
 
     if (reply.type == ReplyType::Welcome) {
         impl_->playerId = reply.playerId;
-        impl_->state = ConnectionState::Connected;
         impl_->error.clear();
+        if (!reply.sessionEndpoint.empty() && !impl_->connectSession(reply.sessionEndpoint)) {
+            return;
+        }
+        impl_->state = ConnectionState::Connected;
     }
 
     impl_->snapshot = std::move(reply.snapshot);

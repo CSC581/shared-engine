@@ -204,9 +204,11 @@ initial spawn positions but has no character speed, gravity, or boundary rules.
 Individual games can apply their own gravity and collision rules before calling
 `NetworkClient::submitPosition(x, y)`.
 
-Protocol version 3 replaces `INPUT` messages with
-`[3, POSITION, playerId, sessionToken, sequence, x, y]`. Rebuild and restart both
-the server and clients together; version 2 executables are incompatible.
+Protocol version 4 adds a session endpoint field on `WELCOME` so the handshake
+socket can hand each client off to a dedicated per-client REP worker (Section 4).
+Rebuild and restart both the server and clients together; version 3 executables
+are incompatible. Protocol version 3 previously replaced `INPUT` messages with
+`[3, POSITION, playerId, sessionToken, sequence, x, y]`.
 Position values must be finite, but the server trusts clients to obey game rules.
 Coordinates use locale-independent decimal text with enough precision to preserve
 float values between clients and server.
