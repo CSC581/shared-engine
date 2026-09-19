@@ -219,7 +219,7 @@ add_executable(apex-ascent
     individual-games/harsha/animation/PlayerAnimation.cpp
 )
 target_include_directories(apex-ascent PRIVATE individual-games/harsha)
-target_link_libraries(apex-ascent PRIVATE engine)
+target_link_libraries(apex-ascent PRIVATE engine network-core)
 
 # Golf executable. Also builds standalone through
 # individual-games/skim253/build.sh, which predates this target; the target

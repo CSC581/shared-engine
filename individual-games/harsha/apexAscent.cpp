@@ -5,6 +5,7 @@
 #include "Entity.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
+#include "NetworkClient.hpp"
 #include "Physics.hpp"
 #include "animation/PlayerAnimation.hpp"
 
@@ -14,13 +15,45 @@
 #include <cstdio>
 #include <exception>
 #include <iostream>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace {
 
+const char* connectionLabel(Network::ConnectionState state)
+{
+    switch (state) {
+    case Network::ConnectionState::Connecting:
+        return "Connecting";
+    case Network::ConnectionState::Connected:
+        return "Connected";
+    case Network::ConnectionState::Error:
+        return "Error";
+    case Network::ConnectionState::Disconnected:
+        return "Disconnected";
+    }
+    return "Unknown";
+}
+
+// Distinct tints for remote climbers (ghosts); local player keeps the sprite.
+void ghostColor(Network::PlayerId playerId, Uint8& red, Uint8& green, Uint8& blue)
+{
+    static constexpr Uint8 colors[][3] = {
+        {80, 220, 255}, {255, 110, 130}, {255, 210, 80}, {150, 240, 140},
+        {190, 140, 255}, {255, 160, 90}, {100, 170, 255}, {245, 120, 220},
+    };
+    const auto& color = colors[(playerId - 1) % (sizeof(colors) / sizeof(colors[0]))];
+    red = color[0];
+    green = color[1];
+    blue = color[2];
+}
+
 class ApexAscent : public Game {
 public:
-    explicit ApexAscent(const Engine& engine);
+    // joinEndpoint empty = offline. Non-empty starts NetworkClient on real time.
+    ApexAscent(const Engine& engine, std::string joinEndpoint = {});
+    ~ApexAscent() override;
 
     void handleInput(Engine& engine) override;
     void update(float deltaTime, Engine& engine) override;
@@ -60,6 +93,7 @@ private:
     void handleCollisions();
     void updateCamera(float deltaTime);
     void updateMovingPlatforms(float deltaTime);
+    void updateNetwork();
     bool isMovingPlatform(const Entity& platform) const;
 
     Entity player_;
@@ -70,6 +104,9 @@ private:
 
     // Milestone 4: climb-loop clips + facing driven by gameplay.
     PlayerAnimation playerAnim_;
+
+    // Optional online presence (APX-M1). Platforms stay local until APX-M2.
+    std::unique_ptr<Network::NetworkClient> client_;
 
     float viewWidth_;
     float viewHeight_;
@@ -96,7 +133,7 @@ private:
     Engine::ScaleMode currentScaleMode_;
 };
 
-ApexAscent::ApexAscent(const Engine& engine)
+ApexAscent::ApexAscent(const Engine& engine, std::string joinEndpoint)
     : player_(0.0F, 0.0F, playerWidth, playerHeight),
       viewWidth_(static_cast<float>(engine.getWidth())),
       viewHeight_(static_cast<float>(engine.getHeight())),
@@ -120,8 +157,25 @@ ApexAscent::ApexAscent(const Engine& engine)
                      "(expected media/apex-ascent/Idle.png next to the binary).\n";
     }
 
-    std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
-                 "release to leap. F1 to toggle scaling, Esc to quit.\n";
+    if (!joinEndpoint.empty()) {
+        // Keep room-0 spawn; ignore server arena spawn points (demo coords).
+        client_ = std::make_unique<Network::NetworkClient>(engine.realTime(),
+                                                           std::move(joinEndpoint));
+        client_->start();
+        std::cout << "Apex Ascent (online): submitting local pose; peers are ghosts. "
+                     "A/D aim, Space charge. Esc quit.\n";
+    } else {
+        std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
+                     "release to leap. F1 to toggle scaling, Esc to quit.\n"
+                     "Optional: ./apex-ascent --join [tcp://host:port]\n";
+    }
+}
+
+ApexAscent::~ApexAscent()
+{
+    if (client_) {
+        client_->leave();
+    }
 }
 
 void ApexAscent::buildLevel()
@@ -204,6 +258,20 @@ void ApexAscent::handleInput(Engine& engine)
     }
 }
 
+void ApexAscent::updateNetwork()
+{
+    if (!client_) {
+        return;
+    }
+
+    client_->poll();
+    if (client_->state() == Network::ConnectionState::Connected) {
+        // Local climb is authoritative; never rewind from snapshot (server spawn
+        // is arena-demo coords and wrong for this tower).
+        client_->submitPosition(player_.getX(), player_.getY());
+    }
+}
+
 void ApexAscent::update(float deltaTime, Engine& engine)
 {
     currentScaleMode_ = engine.getScaleMode();
@@ -232,6 +300,7 @@ void ApexAscent::update(float deltaTime, Engine& engine)
 
     handleCollisions();
     updateCamera(deltaTime);
+    updateNetwork();
 
     PlayerAnimation::AnimInput animInput;
     animInput.onGround = isOnGround_;
@@ -367,6 +436,23 @@ void ApexAscent::render(SDL_Renderer* renderer) const
         }
     }
 
+    // Remote climbers: snapshot poses only (no collision with local player).
+    if (client_ && client_->state() == Network::ConnectionState::Connected) {
+        for (const Network::PlayerState& remote : client_->snapshot().players) {
+            if (remote.id == client_->playerId()) {
+                continue;
+            }
+            Uint8 red = 0;
+            Uint8 green = 0;
+            Uint8 blue = 0;
+            ghostColor(remote.id, red, green, blue);
+            drawRect({remote.x, remote.y, playerWidth, playerHeight}, red, green, blue);
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            const SDL_FRect outline{remote.x, remote.y - camera_, playerWidth, playerHeight};
+            SDL_RenderRect(renderer, &outline);
+        }
+    }
+
     if (playerAnim_.isLoaded()) {
         playerAnim_.draw(renderer, player_.getX(), player_.getY(), camera_, playerWidth,
                          playerHeight);
@@ -397,18 +483,58 @@ void ApexAscent::render(SDL_Renderer* renderer) const
     char scaleHud[64];
     std::snprintf(scaleHud, sizeof(scaleHud), "Scale: %s (F1 to toggle)", modeLabel);
     SDL_RenderDebugText(renderer, 20.0F, 40.0F, scaleHud);
+
+    if (client_) {
+        char netHud[160];
+        if (!client_->error().empty()) {
+            std::snprintf(netHud, sizeof(netHud), "Net: %s — %s", connectionLabel(client_->state()),
+                          client_->error().c_str());
+            SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
+        } else {
+            std::snprintf(netHud, sizeof(netHud), "Net: %s | you #%u | %zu climbers",
+                          connectionLabel(client_->state()),
+                          static_cast<unsigned>(client_->playerId()),
+                          client_->snapshot().players.size());
+            SDL_SetRenderDrawColor(renderer, 180, 220, 255, 255);
+        }
+        SDL_RenderDebugText(renderer, 20.0F, 60.0F, netHud);
+    }
 }
 
 } // namespace
 
-int main()
+namespace {
+
+std::string parseJoinEndpoint(int argc, char* argv[])
+{
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--join") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                return argv[i + 1];
+            }
+            return "tcp://127.0.0.1:5555";
+        }
+        // Bare endpoint for convenience: ./apex-ascent tcp://127.0.0.1:5555
+        if (arg.rfind("tcp://", 0) == 0) {
+            return arg;
+        }
+    }
+    return {};
+}
+
+} // namespace
+
+int main(int argc, char* argv[])
 {
     try {
+        const std::string joinEndpoint = parseJoinEndpoint(argc, argv);
+
         // 900x900 design resolution (fits ordinary screens in Constant mode).
-        Engine engine("Apex Ascent", 900, 900);
+        Engine engine(joinEndpoint.empty() ? "Apex Ascent" : "Apex Ascent (online)", 900, 900);
         engine.setClearColor(18, 20, 32);
 
-        ApexAscent game(engine);
+        ApexAscent game(engine, joinEndpoint);
         engine.run(game);
         return 0;
     } catch (const std::exception& error) {
