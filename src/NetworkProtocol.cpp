@@ -249,6 +249,34 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
     return true;
 }
 
+std::string rewriteTcpEndpointHost(const std::string& endpoint, const std::string& host)
+{
+    constexpr const char* kPrefix = "tcp://";
+    constexpr std::size_t kPrefixLen = 6;
+    if (host.empty() || endpoint.size() <= kPrefixLen ||
+        endpoint.compare(0, kPrefixLen, kPrefix) != 0) {
+        return {};
+    }
+
+    const std::size_t colon = endpoint.rfind(':');
+    if (colon == std::string::npos || colon <= kPrefixLen) {
+        return {};
+    }
+
+    const std::string port = endpoint.substr(colon + 1);
+    if (port.empty() || !std::all_of(port.begin(), port.end(), [](unsigned char c) {
+            return c >= '0' && c <= '9';
+        })) {
+        return {};
+    }
+
+    // Bracket IPv6 advertise hosts so "tcp://::1:5555" stays unambiguous.
+    if (host.find(':') != std::string::npos && !(host.front() == '[' && host.back() == ']')) {
+        return std::string(kPrefix) + '[' + host + "]:" + port;
+    }
+    return std::string(kPrefix) + host + ':' + port;
+}
+
 Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot, const std::string& sessionEndpoint)
 {
     Message message{std::to_string(protocolVersion), "WELCOME", std::to_string(playerId), sessionEndpoint};

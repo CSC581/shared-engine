@@ -84,6 +84,11 @@ Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, cons
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken);
 bool decodeRequest(const Message& message, Request& request, std::string& error);
 
+// Replace the host in a tcp://host:port endpoint while keeping the port.
+// Used so workers can bind on 0.0.0.0 but WELCOME advertises a reachable host.
+// Returns empty string if endpoint/host is not a usable tcp://…:port pair.
+std::string rewriteTcpEndpointHost(const std::string& endpoint, const std::string& host);
+
 // sessionEndpoint is the private REQ/REP address for this client after JOIN.
 // Pass empty for in-process / single-socket tests.
 Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot,

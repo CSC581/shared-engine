@@ -386,6 +386,24 @@ bool welcomeEncodesSessionEndpoint()
                   "WELCOME must round-trip session endpoint and platforms");
 }
 
+bool rewriteTcpEndpointHostKeepsPort()
+{
+    bool passed = true;
+    passed &= expect(Network::rewriteTcpEndpointHost("tcp://0.0.0.0:54321", "192.168.1.10") ==
+                         "tcp://192.168.1.10:54321",
+                     "advertise host should replace bind host and keep the port");
+    passed &= expect(Network::rewriteTcpEndpointHost("tcp://127.0.0.1:5555", "127.0.0.1") ==
+                         "tcp://127.0.0.1:5555",
+                     "same-machine advertise should round-trip loopback");
+    passed &= expect(Network::rewriteTcpEndpointHost("tcp://0.0.0.0:9", "::1") == "tcp://[::1]:9",
+                     "IPv6 advertise hosts need brackets");
+    passed &= expect(Network::rewriteTcpEndpointHost("not-an-endpoint", "host").empty(),
+                     "non-tcp endpoints should be rejected");
+    passed &= expect(Network::rewriteTcpEndpointHost("tcp://0.0.0.0:54321", "").empty(),
+                     "empty advertise host should be rejected");
+    return passed;
+}
+
 } // namespace
 
 int main()
@@ -411,6 +429,7 @@ int main()
     passed &= clearsWorldWhileRetrying();
     passed &= reconnectsToSessionEndpoint();
     passed &= welcomeEncodesSessionEndpoint();
+    passed &= rewriteTcpEndpointHostKeepsPort();
     passed &= perClientWorkersDoNotBlockEachOther();
 
     Network::Request decoded;

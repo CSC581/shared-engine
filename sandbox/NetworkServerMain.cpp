@@ -62,9 +62,8 @@ void runClientWorker(zmq::context_t& context, Network::NetworkServer& server,
         socket.set(zmq::sockopt::linger, 0);
         // Wake periodically so a cancelled worker (failed JOIN) can exit.
         socket.set(zmq::sockopt::rcvtimeo, 500);
-        // Bind on loopback with an ephemeral port so the welcome can advertise a
-        // concrete address clients on this machine can connect to.
-        socket.bind("tcp://127.0.0.1:*");
+        // Bind on all interfaces; main rewrites the host for WELCOME via --advertise.
+        socket.bind("tcp://0.0.0.0:*");
         const std::string endpoint = socket.get(zmq::sockopt::last_endpoint);
         endpointReady.set_value(endpoint);
 
@@ -108,7 +107,24 @@ void runClientWorker(zmq::context_t& context, Network::NetworkServer& server,
 
 int main(int argc, char* argv[])
 {
-    const std::string handshakeEndpoint = argc > 1 ? argv[1] : "tcp://*:5555";
+    std::string handshakeEndpoint = "tcp://*:5555";
+    std::string advertiseHost = "127.0.0.1";
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--advertise") {
+            if (i + 1 >= argc) {
+                std::cerr << "network-server: --advertise requires a host\n";
+                return 1;
+            }
+            advertiseHost = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--", 0) == 0) {
+            std::cerr << "network-server: unknown option " << arg << '\n';
+            return 1;
+        }
+        handshakeEndpoint = arg;
+    }
 
     try {
         zmq::context_t context(1);
@@ -131,6 +147,7 @@ int main(int argc, char* argv[])
         std::unordered_map<Network::SessionToken, std::string> endpointsByToken;
 
         std::cout << "Network server handshake listening on " << handshakeEndpoint << '\n';
+        std::cout << "Session endpoints advertise host " << advertiseHost << '\n';
         std::cout << "Each JOIN spawns a dedicated per-client REP worker (no Router/Dealer).\n";
         std::cout << "Moving platforms are server-authored on real time.\n";
 
@@ -180,8 +197,11 @@ int main(int argc, char* argv[])
                         token, std::ref(endpointsMutex), std::ref(endpointsByToken))
                 .detach();
 
-            const std::string sessionEndpoint = endpointFuture.get();
-            if (sessionEndpoint.empty()) {
+            const std::string boundEndpoint = endpointFuture.get();
+            const std::string sessionEndpoint =
+                Network::rewriteTcpEndpointHost(boundEndpoint, advertiseHost);
+            if (boundEndpoint.empty() || sessionEndpoint.empty()) {
+                alive->store(false);
                 sendMessage(handshake, Network::encodeError("could not start client worker"));
                 continue;
             }
