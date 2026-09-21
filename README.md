@@ -202,11 +202,13 @@ rebuild server and clients together.
 ```
 
 `WASD` or arrows move. `P` pauses this client; `1` / `2` / `3` set 0.5× / 1× /
-2×. Defaults: `tcp://*:5555` / `tcp://127.0.0.1:5555`. Optional endpoints:
+2×. Defaults: `tcp://*:5555` / `tcp://127.0.0.1:5555`. Optional endpoints and
+advertise host (required when the client is on another machine):
 
 ```bash
 ./build/network-server 'tcp://*:6000'
-./build/network-client tcp://192.168.1.10:6000
+./build/network-server tcp://*:5555 --advertise 192.168.1.10
+./build/network-client tcp://192.168.1.10:5555
 ```
 
 ### The Timeline Sandbox
