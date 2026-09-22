@@ -1,8 +1,11 @@
 #include "Entity.hpp"
 #include "Physics.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <iostream>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -19,6 +22,10 @@ bool expect(bool condition, const char* message)
 
     return condition;
 }
+
+constexpr int readerCount = 4;
+constexpr int readsPerReader = 100'000;
+constexpr int writerIterations = 50'000;
 
 } // namespace
 
@@ -68,6 +75,42 @@ int main()
     stationary.update(1.0F);
     passed &= expect(nearlyEqual(stationary.getX(), 0.0F) && nearlyEqual(stationary.getY(), 0.0F),
                      "an entity with no velocity should remain still");
+
+    // Concurrent readers + one writer. setPosition writes x and y under one
+    // lock; getBounds must never return a torn pair where x != y.
+    {
+        Entity shared(0.0F, 0.0F, 10.0F, 10.0F);
+        std::atomic<int> tornReads{0};
+
+        std::vector<std::thread> threads;
+        threads.reserve(readerCount + 1);
+
+        for (int reader = 0; reader < readerCount; ++reader) {
+            threads.emplace_back([&shared, &tornReads] {
+                for (int i = 0; i < readsPerReader; ++i) {
+                    const Rect bounds = shared.getBounds();
+                    if (bounds.x != bounds.y) {
+                        tornReads.fetch_add(1);
+                        return;
+                    }
+                }
+            });
+        }
+
+        threads.emplace_back([&shared] {
+            for (int i = 0; i < writerIterations; ++i) {
+                const float value = static_cast<float>(i);
+                shared.setPosition(value, value);
+            }
+        });
+
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+
+        passed &= expect(tornReads.load() == 0,
+                         "getBounds must not tear under concurrent setPosition");
+    }
 
     if (passed) {
         std::cout << "Entity and Physics tests passed.\n";

@@ -187,69 +187,28 @@ its own. Every `Timeline` method is thread-safe.
 
 ### Networking
 
-The Section 2 networking module is separate from the individual games. It uses
-a headless ZeroMQ server and SDL client windows. Each client simulates its own
-character using the shared `Entity` class and game delta time, then sends its
-calculated position. The server checks session ownership and increasing sequence
-numbers, stores the position, and replies with all current player positions.
-Other clients draw those snapshots; the local character is drawn from its own
-simulation so delayed replies do not rewind its movement. New clients can join
-an active arena at any time.
-
-`network-core` does not choose sprites, colors, or a level layout. The
-standalone demo supplies its arena, speed, spawn points, and colors in
-`sandbox/NetworkDemoConfig.hpp`. `sandbox/NetworkDemoPlayer.hpp` handles local
-movement, diagonal normalization, and arena boundaries. The server receives
-initial spawn positions but has no character speed, gravity, or boundary rules.
-Individual games can apply their own gravity and collision rules before calling
-`NetworkClient::submitPosition(x, y)`.
-
-Protocol version 3 replaces `INPUT` messages with
-`[3, POSITION, playerId, sessionToken, sequence, x, y]`. Rebuild and restart both
-the server and clients together; version 2 executables are incompatible.
-Position values must be finite, but the server trusts clients to obey game rules.
-Coordinates use locale-independent decimal text with enough precision to preserve
-float values between clients and server.
-This version does not prevent teleporting or resolve player-to-player collisions.
-Server-controlled moving platforms and per-client server threads remain Section 4 work.
-
-Start the server in one terminal:
+Headless ZeroMQ server plus SDL clients, separate from the individual games.
+Each client simulates its own character and submits its position; the server
+stores membership and poses and replies with a world snapshot (other players
+plus server-owned moving platforms). Local movement uses game time; network
+I/O and platforms use real time. A JOIN handshake hands each client a private
+REP worker so one slow client does not stall the others (no Router/Dealer).
+Demo layout lives in `sandbox/NetworkDemoConfig.hpp`. Protocol version 4 —
+rebuild server and clients together.
 
 ```bash
 ./build/network-server
+./build/network-client   # repeat in other terminals
 ```
 
-Then start three clients in separate terminals:
-
-```bash
-./build/network-client
-./build/network-client
-./build/network-client
-```
-
-Use `WASD` or the arrow keys in each window. The window title shows connection
-state, player ID, and player count. The white outline marks the local player.
-Clients retry automatically if started before the server. Each frame the demo
-attempts to send its position, even when stationary or given zero game delta;
-only one request may be outstanding. These updates refresh presence and fetch
-snapshots. Connection recovery uses real time, independently of game time.
-The client also accepts an external nanosecond clock for tests.
-Invalid addresses and incompatible protocol replies put the client in `Error`
-and display the reason in the demo instead of retrying forever. After fixing an
-address or rebuilding incompatible binaries, restart the demo. A game can also
-explicitly call `start()` to retry an existing client's endpoint. Temporary
-connection loss continues to use automatic retries.
-The server removes clients inactive for three seconds when processing a request
-or explicitly calling `update()`. A retry reuses the same player while its session
-still exists; otherwise it joins as a new player. The demo adopts the stored
-position on rejoin. A client cannot update another player's position without that
-player's token.
-The defaults use local TCP port 5555. Pass an endpoint to use another address,
-for example:
+`WASD` or arrows move. `P` pauses this client; `1` / `2` / `3` set 0.5× / 1× /
+2×. Defaults: `tcp://*:5555` / `tcp://127.0.0.1:5555`. Optional endpoints and
+advertise host (required when the client is on another machine):
 
 ```bash
 ./build/network-server 'tcp://*:6000'
-./build/network-client tcp://192.168.1.10:6000
+./build/network-server tcp://*:5555 --advertise 192.168.1.10
+./build/network-client tcp://192.168.1.10:5555
 ```
 
 ### The Timeline Sandbox

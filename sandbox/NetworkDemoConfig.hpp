@@ -40,6 +40,11 @@ inline Network::ServerConfig makeServerConfig()
         {48.0F, 48.0F}, {309.0F, 48.0F}, {570.0F, 48.0F}, {832.0F, 48.0F},
         {48.0F, 372.0F}, {309.0F, 372.0F}, {570.0F, 372.0F}, {832.0F, 372.0F},
     };
+    // Arena-local poses; server advances these on real time for all clients.
+    config.platforms = {
+        {1, 120.0F, 220.0F, 520.0F, 220.0F, 110.0F, 120.0F, 22.0F},
+        {2, 640.0F, 80.0F, 640.0F, 300.0F, 90.0F, 100.0F, 22.0F},
+    };
     return config;
 }
 
