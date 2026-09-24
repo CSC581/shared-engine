@@ -30,7 +30,19 @@ Collision  -> overlap and separation calculations
 Timeline   -> pausable, rescalable clocks the simulation runs on
 DeltaTimer -> per-consumer "time since I last looked"
 Network    -> SDL-free protocol, player-state server, non-blocking client
+Peer       -> SDL-free peer mesh: introductions, rosters, direct player data
+Multiplayer-> one interface over both, so a game picks its architecture
 ```
+
+The two networking modules speak different protocols but share their plumbing,
+in three header-only pieces that keep the layers apart:
+
+| Header | Job |
+| --- | --- |
+| `WireFormat` | Values to text fields and back. No ZeroMQ, so a protocol can be encoded, decoded and tested with no transport at all. |
+| `ZmqMessage` | Those fields onto a ZeroMQ socket and off again. The only place ZeroMQ appears outside the modules that dial sockets. |
+| `Endpoint` | `tcp://host:port` rewriting, so an address bound on `0.0.0.0` becomes one another machine can dial. |
+
 
 The intended order for each frame is:
 
@@ -210,6 +222,148 @@ advertise host (required when the client is on another machine):
 ./build/network-server tcp://*:5555 --advertise 192.168.1.10
 ./build/network-client tcp://192.168.1.10:5555
 ```
+
+### Choosing A Network Architecture
+
+A game does not have to pick between client-server and peer-to-peer at the time
+it is written. `Multiplayer::Session` is one interface implemented over both,
+so the choice is a field in a config:
+
+```cpp
+Multiplayer::Config config;
+config.mode = Multiplayer::Mode::PeerToPeer;   // or Mode::ClientServer
+auto session = Multiplayer::Session::open(config, engine.realTime());
+```
+
+and the rest of the game reads the same either way:
+
+```cpp
+session->update();                          // once a frame, pause or no pause
+session->publishLocalPlayer(x, y);          // where my player is
+for (const auto& player : session->remotePlayers()) { draw(player); }
+for (const auto& platform : session->platforms()) { draw(platform); }
+```
+
+That is the whole surface. No join, no handshake, no roster, no snapshot, no
+sequence numbers, no sockets — those belong to an architecture, and the point
+is that the game is not written against one. `remotePlayers()` never contains
+the local player in either mode, so a game draws them all and its own character
+without filtering.
+
+#### A Player Is More Than A Position
+
+A game's player has a score, a facing, health, an animation state. Those are
+carried as attributes: string fields the engine relays and never interprets.
+
+```cpp
+Multiplayer::AttributeWriter fields;
+fields.addInt(score_).addFloat(facing_).addBool(carryingFlag_);
+session->publishLocalPlayer(x_, y_, fields.fields());
+```
+
+and on the other side:
+
+```cpp
+Multiplayer::AttributeReader fields(player.attributes);
+std::int64_t score = 0;
+if (fields.readInt(score) && fields.readFloat(facing)) { /* draw them */ }
+```
+
+They are strings because the wire is strings, and because an engine with a type
+for them would be an engine that knows what one game's fields mean. A game adds
+a field by changing its own encode and decode; the server, the peer module and
+this interface do not change with it. `AttributeWriter` exists because the
+obvious way to build those strings is wrong twice over: `std::to_string(float)`
+rounds to six significant figures, and both it and `std::stof` follow the global
+locale, so a machine set to decimal commas writes `1,5` and every other machine
+rejects it.
+
+Both architectures carry a player's name and up to `Net::maxAttributeCount`
+fields of `Net::maxAttributeLength` printable characters. Reading is total: a
+reader that runs past the end, or meets a field that is not the type asked for,
+returns false rather than inventing a value — the data came from another
+machine, so a game has to be able to decide what to do about nonsense.
+
+| Mode | Players travel | Shared objects come from | Needs |
+| --- | --- | --- | --- |
+| `ClientServer` | via the server | the server | a `network-server` process |
+| `PeerToPeer` | peer to peer, directly | an authority, or nowhere | a peer address to bootstrap from |
+
+If the authority becomes unreachable, the world objects it sent stop moving but
+stay where they were, and `status()` says they are no longer being refreshed. A
+level does not cease to exist because a server blinked, and a game whose floor
+vanished would drop every player through the world. Remote players are the
+opposite case and do disappear: a player nobody is steering any more is a
+ghost.
+
+Pass `--host` in peer-to-peer mode to carry the authority in this process
+instead of running `network-server` separately.
+
+In `PeerToPeer` the server is optional and owns world objects only: point every
+peer at one for moving platforms and the players still go peer to peer, or
+leave `serverEndpoint` empty for a session with no server process anywhere.
+Identity differs the way the architectures do — the server assigns an id, while
+peers choose their own and must not collide.
+
+```bash
+./build/network-server                                    # client-server needs this
+./build/multiplayer-demo --mode client-server
+./build/multiplayer-demo --mode client-server             # again, for a second player
+
+./build/multiplayer-demo --mode peer-to-peer --id 1 --port 7200
+./build/multiplayer-demo --mode peer-to-peer --id 2 --port 7202 --peer tcp://127.0.0.1:7200
+./build/multiplayer-demo --mode peer-to-peer --id 1 --port 7200 --server none   # no server at all
+```
+
+### Peer-To-Peer
+
+Peers talk to each other directly. `peer-core` is a separate library from
+`network-core`: the client-server protocol is a conversation with an authority,
+while peer messages are announcements nobody replies to, so they are different
+protocols rather than one protocol with half its fields unused.
+
+| Piece | Job |
+| --- | --- |
+| `PeerProtocol` | `HELLO` / `ROSTER` / `STATE` / `LEAVE`, encoded as text fields. |
+| `PeerSession` | The mesh. A `PUB` socket to announce on and a `REP` socket to be introduced on, with background threads for each. |
+
+Every peer runs the same code and binds two consecutive ports: one to be
+introduced on, one to broadcast on. A joining peer sends `HELLO` to any single
+peer already running and gets that peer's whole roster back, so one address is
+enough to reach a mesh of any size — the rest introduce themselves.
+
+This is the hybrid design Section 5 asks for: player data goes straight from
+peer to peer and never through a server, while a shared authority owns the
+moving platforms so they are in the same place on every screen. That authority
+can be a separate `network-server` process, or one of the players can carry it
+with `--host` (a listen-server). Each peer keeps its own game timeline, so `P`
+and `1`/`2`/`3` change that peer's speed and nobody else's.
+
+```bash
+# dedicated authority
+./build/network-server
+./build/multiplayer-demo --mode peer-to-peer --id 1 --port 7200
+./build/multiplayer-demo --mode peer-to-peer --id 2 --port 7202 --peer tcp://127.0.0.1:7200
+
+# or one of the players hosts it instead
+./build/multiplayer-demo --mode peer-to-peer --id 1 --port 7200 --host
+```
+
+Peers decide someone is gone by hearing nothing from them, so a session
+announces itself with `PING` twice a second whatever the game is doing. That
+keeps liveness out of the game: a paused game, a game between levels and a
+player standing still are all still in the session, and `publishLocalPlayer`
+can be called as often or as rarely as the game likes. A peer that has said
+nothing for five seconds — ten missed announcements — is presumed gone.
+
+Leaving is announced with `LEAVE` and noticed within a frame; the timeout is
+the backstop for the cases that announce nothing, a killed process or a pulled
+cable. Measured: a clean exit disappears in under 250ms, a `SIGKILL`ed peer
+after 5.2s.
+
+`--advertise HOST` is required when the peers are on different machines, for
+the same reason the server needs it: an address bound on `0.0.0.0` is not one
+another machine can dial. Peer protocol version 3 — rebuild all peers together.
 
 ### The Timeline Sandbox
 

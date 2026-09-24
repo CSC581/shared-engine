@@ -29,12 +29,21 @@ public:
     NetworkClient(NetworkClient&&) noexcept;
     NetworkClient& operator=(NetworkClient&&) noexcept;
 
+    // The name other players see. Sent once, at JOIN, so it must be set
+    // before start(); changing it afterwards takes effect on the next rejoin.
+    void setPlayerName(std::string name);
+
     // Starts connecting, or explicitly retries after a terminal Error.
     void start();
     void poll();
     // Call every frame, even while stationary, to refresh presence and snapshots.
     // While awaiting a reply, submissions are skipped; no stale positions queue up.
-    void submitPosition(float x, float y);
+    //
+    // `data` is whatever this game needs to say about its player beyond where
+    // it is. The networking module never looks inside it: it carries it, the
+    // server stores it, and every other client reads it back in
+    // WorldSnapshot::players. Format and meaning belong to the game.
+    void submitPosition(float x, float y, const std::string& data = {});
     void leave();
 
     ConnectionState state() const;

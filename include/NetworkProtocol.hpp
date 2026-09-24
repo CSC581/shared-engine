@@ -8,7 +8,7 @@
 // of text fields so they never depend on C++ struct layout or byte order.
 namespace Network {
 
-constexpr int protocolVersion = 4;
+constexpr int protocolVersion = 5;
 
 using PlayerId = std::uint32_t;
 using SessionToken = std::string;
@@ -18,12 +18,22 @@ struct PositionUpdate {
     float x = 0.0F;
     float y = 0.0F;
     std::uint64_t sequence = 0;
+    // See PlayerState::data.
+    std::string data;
 };
 
 struct PlayerState {
     PlayerId id = 0;
+    // Chosen by the player at JOIN and stored by the server. May be empty.
+    std::string name;
     float x = 0.0F;
     float y = 0.0F;
+    // Whatever this particular game needs to say about a player beyond where
+    // it is. One opaque field: the game decides what goes in it and how, and
+    // the server stores and relays it without ever looking inside. That is
+    // what keeps one game's rules out of the shared engine — and why a game
+    // can add a field without this header changing.
+    std::string data;
 };
 
 struct PlatformState {
@@ -59,6 +69,8 @@ struct Request {
     RequestType type = RequestType::Join;
     PlayerId playerId = 0;
     SessionToken sessionToken;
+    // Supplied on JOIN.
+    std::string playerName;
     PositionUpdate position{};
 };
 
@@ -79,7 +91,7 @@ struct Reply {
     std::string error;
 };
 
-Message encodeJoin(const SessionToken& sessionToken);
+Message encodeJoin(const SessionToken& sessionToken, const std::string& playerName = {});
 Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position);
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken);
 bool decodeRequest(const Message& message, Request& request, std::string& error);
