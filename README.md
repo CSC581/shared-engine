@@ -363,7 +363,8 @@ after 5.2s.
 
 `--advertise HOST` is required when the peers are on different machines, for
 the same reason the server needs it: an address bound on `0.0.0.0` is not one
-another machine can dial. Peer protocol version 3 — rebuild all peers together.
+another machine can dial. Duplicate peer IDs are rejected during introduction.
+Peer protocol version 4 — rebuild all peers together.
 
 ### The Timeline Sandbox
 

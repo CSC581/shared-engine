@@ -34,6 +34,20 @@ void refreshPlatforms(const Network::NetworkClient& authority, std::vector<Platf
     }
 }
 
+AuthorityState authorityStateOf(Network::ConnectionState state)
+{
+    switch (state) {
+    case Network::ConnectionState::Connected:
+        return AuthorityState::Ready;
+    case Network::ConnectionState::Error:
+        return AuthorityState::Failed;
+    case Network::ConnectionState::Connecting:
+    case Network::ConnectionState::Disconnected:
+        return AuthorityState::Connecting;
+    }
+    return AuthorityState::Connecting;
+}
+
 // ---------------------------------------------------------------------------
 // Client-server: join a server, tell it where this player is, and read back
 // the world it keeps. Identity comes from the server.
@@ -93,6 +107,8 @@ public:
         }
         return State::Connecting;
     }
+
+    AuthorityState authorityState() const override { return authorityStateOf(client_.state()); }
 
     std::string status() const override
     {
@@ -212,7 +228,6 @@ public:
         state.sequence = ++sequence_;
         state.x = x;
         state.y = y;
-        state.ready = true;
         state.data = data;
         mesh_->publishState(state);
 
@@ -249,6 +264,11 @@ public:
         // player in it, not a failure — and a game can already move, draw and
         // be joined.
         return mesh_ ? State::Ready : State::Connecting;
+    }
+
+    AuthorityState authorityState() const override
+    {
+        return authority_ ? authorityStateOf(authority_->state()) : AuthorityState::NotConfigured;
     }
 
     std::string status() const override

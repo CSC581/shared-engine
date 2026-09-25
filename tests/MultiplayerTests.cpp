@@ -261,6 +261,8 @@ bool testClientServer()
 
     bool passed = expect(one->mode() == Multiplayer::Mode::ClientServer, "mode should be reported back");
     passed &= exerciseAsAGameWould(*one, *two, "client-server", true);
+    passed &= expect(one->authorityState() == Multiplayer::AuthorityState::Ready,
+                     "client-server mode should report its server as ready");
     return passed;
 }
 
@@ -293,6 +295,8 @@ bool testPeerToPeer()
     // The same checks as client-server, against a completely different
     // architecture, with no change to the checks themselves.
     passed &= exerciseAsAGameWould(*one, *two, "peer-to-peer", true);
+    passed &= expect(one->authorityState() == Multiplayer::AuthorityState::Ready,
+                     "hybrid peer-to-peer mode should report its platform authority as ready");
 
     // Player data must not be reaching peers via the authority. Both peers
     // poll it for platforms, so it does know their poses — the claim is that
@@ -326,6 +330,8 @@ bool testPeerToPeerWithNoServerAtAll()
     bool passed = exerciseAsAGameWould(*one, *two, "peer-to-peer (serverless)", false);
     passed &= expect(one->platforms().empty(),
                      "a session with no authority should report no shared objects");
+    passed &= expect(one->authorityState() == Multiplayer::AuthorityState::NotConfigured,
+                     "a serverless peer session should say that no authority is configured");
     return passed;
 }
 
@@ -375,6 +381,17 @@ bool testBothModesBehaveBeforeConnecting()
     clash->publishLocalPlayer(1.0F, 2.0F);
     passed &= expect(clash->remotePlayers().empty(),
                      "a failed peer should stay usable enough to draw an empty screen");
+
+    Multiplayer::Config waiting = peer;
+    waiting.peerId = 3;
+    waiting.basePort = 57432;
+    waiting.serverEndpoint = "tcp://127.0.0.1:57499";
+    std::unique_ptr<Multiplayer::Session> hybrid = Multiplayer::Session::open(waiting, clock);
+    hybrid->update();
+    passed &= expect(hybrid->state() == Multiplayer::State::Ready,
+                     "the peer mesh should still be usable while its authority connects");
+    passed &= expect(hybrid->authorityState() != Multiplayer::AuthorityState::Ready,
+                     "authorityState should reveal that shared world objects are not ready");
 
     return passed;
 }

@@ -197,7 +197,7 @@ heard again.
 
 ## 4. How an individual game uses it
 
-The whole surface is six calls. A game never mentions `Network`, `Peer`, ZeroMQ,
+The whole surface is seven calls. A game never mentions `Network`, `Peer`, ZeroMQ,
 joins, handshakes, rosters, snapshots or sequence numbers.
 
 ### Opening a session
@@ -241,6 +241,11 @@ void MyGame::render(SDL_Renderer* renderer) const
     draw(x_, y_);                              // this player, drawn by the game
 }
 ```
+
+`state()` describes whether the player session itself is usable. In hybrid
+peer-to-peer mode, `authorityState()` separately describes the optional source
+of shared world objects. This lets a game show a useful message when players
+can see one another but the platform authority is still connecting.
 
 `remotePlayers()` never contains the local player, in either mode, so a game
 draws them all and its own character without filtering and without drawing
@@ -286,8 +291,9 @@ contain anything — tabs, newlines, packed binary — with nothing to escape.
 
 - **Call `update()` every frame, including while paused.** Otherwise what other
   players are doing stops arriving while this one is not doing anything.
-- **Ids must be unique** across a peer-to-peer session. Nobody assigns them, so
-  nobody can catch a collision.
+- **Ids must be unique** across a peer-to-peer session. The introduction
+  handshake rejects a duplicate ID and reports it through `status()`, but the
+  game still needs to choose a different ID before it can join.
 - **`--advertise` is required off-localhost.** An address bound on `0.0.0.0` is
   not one another machine can dial.
 - **Platforms may be stale.** If the authority becomes unreachable they stop
@@ -316,7 +322,8 @@ greeting each other simultaneously would otherwise each be blocked in a request
 while the other waited to be answered.
 
 **Everything off the wire is validated.** Ids, names, endpoints, float fields
-and blob lengths are all checked before use; `PeerTests` and `NetworkTests`
+and blob lengths are all checked before use; duplicate peer IDs are refused
+during introduction. `PeerTests` and `NetworkTests`
 both contain rejection suites. `tcp://` and `ipc://` are the only transports
 accepted, because endpoints are handed straight to `zmq_connect`.
 
