@@ -356,13 +356,20 @@ five seconds in less than five seconds, and making the timeout configurable so
 the test could hurry it along would be a knob that exists for the test rather
 than for any game.
 
-End to end, with assertions:
+For a manual end-to-end check, first start the dedicated authority in one
+terminal:
 
 ```bash
-./sandbox/run-multiplayer-demo.sh 3 6
+./build/network-server
 ```
 
-Runs three players three ways — client-server, peer-to-peer with a dedicated
-authority, and peer-to-peer with a listen-server — and checks that every player
-saw every other player and the shared world in each case. The only difference
-between the runs is the flags.
+Then start two peer-to-peer players in separate terminals:
+
+```bash
+./build/multiplayer-demo --mode peer-to-peer --id 1 --port 7200
+./build/multiplayer-demo --mode peer-to-peer --id 2 --port 7202 --peer tcp://127.0.0.1:7200
+```
+
+Both windows should show the other player and the same moving platforms. To
+test a listen-server instead, stop `network-server`, add `--host` to the first
+peer command, and run the second peer command unchanged.
