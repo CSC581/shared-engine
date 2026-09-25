@@ -2,9 +2,7 @@
 
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
-
-#include <zmq.hpp>
-#include <zmq_addon.hpp>
+#include "ZmqMessage.hpp"
 
 #include <cmath>
 #include <iomanip>
@@ -12,7 +10,6 @@
 #include <random>
 #include <sstream>
 #include <utility>
-#include <vector>
 
 namespace Network {
 namespace {
@@ -29,43 +26,6 @@ SessionToken makeSessionToken()
         token << std::setw(8) << static_cast<std::uint32_t>(random());
     }
     return token.str();
-}
-
-std::vector<zmq::const_buffer> makeBuffers(const Message& message)
-{
-    std::vector<zmq::const_buffer> buffers;
-    buffers.reserve(message.size());
-    for (const std::string& field : message) {
-        buffers.push_back(zmq::buffer(field));
-    }
-    return buffers;
-}
-
-bool sendMessage(zmq::socket_t& socket, const Message& message)
-{
-    const std::vector<zmq::const_buffer> buffers = makeBuffers(message);
-    try {
-        return zmq::send_multipart(socket, buffers, zmq::send_flags::dontwait).has_value();
-    } catch (const zmq::error_t&) {
-        return false;
-    }
-}
-
-Message receiveMessage(zmq::socket_t& socket, bool& received)
-{
-    std::vector<zmq::message_t> raw;
-    const auto result = zmq::recv_multipart(socket, std::back_inserter(raw), zmq::recv_flags::dontwait);
-    received = result.has_value();
-    if (!received) {
-        return {};
-    }
-
-    Message message;
-    message.reserve(raw.size());
-    for (const zmq::message_t& field : raw) {
-        message.push_back(field.to_string());
-    }
-    return message;
 }
 
 } // namespace
@@ -126,7 +86,7 @@ struct NetworkClient::Impl {
 
     void sendJoin()
     {
-        if (!socket || !sendMessage(*socket, encodeJoin(sessionToken))) {
+        if (!socket || !Net::send(*socket, encodeJoin(sessionToken, playerName), zmq::send_flags::dontwait)) {
             scheduleRetry("could not send JOIN request");
             return;
         }
@@ -158,6 +118,7 @@ struct NetworkClient::Impl {
     // Private worker address after WELCOME; empty until assigned.
     std::string sessionEndpoint;
     SessionToken sessionToken = makeSessionToken();
+    std::string playerName;
     ConnectionState state = ConnectionState::Disconnected;
     PlayerId playerId = 0;
     WorldSnapshot snapshot;
@@ -206,7 +167,7 @@ void NetworkClient::poll()
     bool received = false;
     Message message;
     try {
-        message = receiveMessage(*impl_->socket, received);
+        message = Net::receive(*impl_->socket, received, zmq::recv_flags::dontwait);
     } catch (const zmq::error_t& exception) {
         impl_->scheduleRetry(std::string("Could not receive server reply: ") + exception.what());
         return;
@@ -254,7 +215,12 @@ void NetworkClient::poll()
     impl_->snapshot = std::move(reply.snapshot);
 }
 
-void NetworkClient::submitPosition(float x, float y)
+void NetworkClient::setPlayerName(std::string name)
+{
+    impl_->playerName = std::move(name);
+}
+
+void NetworkClient::submitPosition(float x, float y, const std::string& data)
 {
     if (impl_->state != ConnectionState::Connected || impl_->waitingForReply) {
         return;
@@ -265,8 +231,9 @@ void NetworkClient::submitPosition(float x, float y)
         return;
     }
 
-    const PositionUpdate position{x, y, impl_->nextSequence++};
-    if (!sendMessage(*impl_->socket, encodePosition(impl_->playerId, impl_->sessionToken, position))) {
+    const PositionUpdate position{x, y, impl_->nextSequence++, data};
+    if (!Net::send(*impl_->socket, encodePosition(impl_->playerId, impl_->sessionToken, position),
+                   zmq::send_flags::dontwait)) {
         impl_->scheduleRetry("could not send position update");
         return;
     }
@@ -279,7 +246,8 @@ void NetworkClient::submitPosition(float x, float y)
 void NetworkClient::leave()
 {
     if (impl_->state == ConnectionState::Connected && !impl_->waitingForReply) {
-        sendMessage(*impl_->socket, encodeLeave(impl_->playerId, impl_->sessionToken));
+        Net::send(*impl_->socket, encodeLeave(impl_->playerId, impl_->sessionToken),
+                  zmq::send_flags::dontwait);
     }
     impl_->socket.reset();
     impl_->state = ConnectionState::Disconnected;

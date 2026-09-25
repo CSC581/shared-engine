@@ -49,6 +49,29 @@ add_library(network-core STATIC
 target_include_directories(network-core PUBLIC include)
 target_link_libraries(network-core PUBLIC engine-time cppzmq-static)
 
+# SDL-free peer-to-peer module (Section 5): peer protocol and mesh transport.
+# A separate library from network-core rather than an addition to it — the two
+# speak different protocols, and a peer links the server's client only when it
+# wants a shared-world authority, which the hybrid design does.
+add_library(peer-core STATIC
+    src/PeerProtocol.cpp
+    src/PeerSession.cpp
+)
+
+target_include_directories(peer-core PUBLIC include)
+target_link_libraries(peer-core PUBLIC cppzmq-static Threads::Threads)
+
+# One multiplayer interface over both networking architectures, so a game
+# chooses between client-server and peer-to-peer by filling in a config rather
+# than by being rewritten. Links both modules because it implements the same
+# interface twice, once on each; a game links this instead of either.
+add_library(multiplayer STATIC
+    src/Multiplayer.cpp
+)
+
+target_include_directories(multiplayer PUBLIC include)
+target_link_libraries(multiplayer PUBLIC network-core peer-core)
+
 # SDL-free geometry code (Entity, Physics, Collision), so tests built on it
 # stay independently testable with no SDL dependency.
 add_library(engine-geometry STATIC
@@ -114,6 +137,20 @@ target_link_libraries(network-tests PRIVATE network-core engine-geometry)
 
 add_test(NAME network-tests COMMAND network-tests)
 
+# Section 5: peer message parsing and a real three-peer TCP mesh.
+add_executable(peer-tests tests/PeerTests.cpp)
+target_link_libraries(peer-tests PRIVATE peer-core)
+
+add_test(NAME peer-tests COMMAND peer-tests)
+
+# The engine's multiplayer choice: the same game-level sequence of calls run
+# against both architectures, so "a game can switch by changing a config" is
+# checked rather than asserted.
+add_executable(multiplayer-tests tests/MultiplayerTests.cpp)
+target_link_libraries(multiplayer-tests PRIVATE multiplayer)
+
+add_test(NAME multiplayer-tests COMMAND multiplayer-tests)
+
 # Dear ImGui, for the timeline sandbox and nothing else. Fetched rather than
 # vendored as a submodule: it is a development tool for one target, not a
 # dependency of the engine or of any game, and the engine library must never
@@ -169,6 +206,12 @@ target_link_libraries(network-server PRIVATE network-core Threads::Threads)
 
 add_executable(network-client sandbox/NetworkClientDemo.cpp)
 target_link_libraries(network-client PRIVATE engine network-core)
+
+# The engine's multiplayer choice, demonstrated: one game, one --mode flag,
+# either architecture. Links `multiplayer` and neither networking module
+# directly, which is the point being made.
+add_executable(multiplayer-demo sandbox/MultiplayerDemo.cpp)
+target_link_libraries(multiplayer-demo PRIVATE engine multiplayer)
 
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent

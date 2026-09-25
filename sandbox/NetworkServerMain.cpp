@@ -2,9 +2,7 @@
 #include "NetworkDemoConfig.hpp"
 #include "NetworkProtocol.hpp"
 #include "TimeSource.hpp"
-
-#include <zmq.hpp>
-#include <zmq_addon.hpp>
+#include "ZmqMessage.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -18,7 +16,6 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
-#include <vector>
 
 namespace {
 
@@ -27,32 +24,6 @@ std::atomic<bool> g_running{true};
 void onSignal(int)
 {
     g_running.store(false);
-}
-
-Network::Message receiveMessage(zmq::socket_t& socket)
-{
-    std::vector<zmq::message_t> raw;
-    const auto received = zmq::recv_multipart(socket, std::back_inserter(raw));
-    if (!received.has_value()) {
-        return {};
-    }
-
-    Network::Message message;
-    message.reserve(raw.size());
-    for (const zmq::message_t& field : raw) {
-        message.push_back(field.to_string());
-    }
-    return message;
-}
-
-void sendMessage(zmq::socket_t& socket, const Network::Message& message)
-{
-    std::vector<zmq::const_buffer> buffers;
-    buffers.reserve(message.size());
-    for (const std::string& field : message) {
-        buffers.push_back(zmq::buffer(field));
-    }
-    zmq::send_multipart(socket, buffers);
 }
 
 // One blocking REP loop per connected client. A slow client only stalls this
@@ -77,12 +48,13 @@ void runClientWorker(zmq::context_t& context, Network::NetworkServer& server,
 
         while (alive->load() && g_running.load()) {
             Network::Message requestMessage;
+            bool received = false;
             try {
-                requestMessage = receiveMessage(socket);
+                requestMessage = Net::receive(socket, received);
             } catch (const zmq::error_t&) {
                 continue;
             }
-            if (requestMessage.empty()) {
+            if (!received) {
                 continue;
             }
 
@@ -90,7 +62,7 @@ void runClientWorker(zmq::context_t& context, Network::NetworkServer& server,
             std::string error;
             const bool decoded = Network::decodeRequest(requestMessage, request, error);
             const Network::Message reply = server.handle(requestMessage);
-            sendMessage(socket, reply);
+            Net::send(socket, reply);
 
             if (decoded && request.type == Network::RequestType::Leave) {
                 break;
@@ -174,24 +146,25 @@ int main(int argc, char* argv[])
 
         while (g_running.load()) {
             Network::Message requestMessage;
+            bool received = false;
             try {
-                requestMessage = receiveMessage(handshake);
+                requestMessage = Net::receive(handshake, received);
             } catch (const zmq::error_t&) {
                 continue;
             }
-            if (requestMessage.empty()) {
+            if (!received) {
                 continue;
             }
 
             Network::Request request;
             std::string error;
             if (!Network::decodeRequest(requestMessage, request, error)) {
-                sendMessage(handshake, Network::encodeError(error));
+                Net::send(handshake, Network::encodeError(error));
                 continue;
             }
 
             if (request.type != Network::RequestType::Join) {
-                sendMessage(handshake, Network::encodeError("handshake accepts JOIN only"));
+                Net::send(handshake, Network::encodeError("handshake accepts JOIN only"));
                 continue;
             }
 
@@ -205,11 +178,11 @@ int main(int argc, char* argv[])
                     std::string welcomeError;
                     if (!Network::decodeReply(handled, welcome, welcomeError) ||
                         welcome.type != Network::ReplyType::Welcome) {
-                        sendMessage(handshake, handled);
+                        Net::send(handshake, handled);
                         continue;
                     }
-                    sendMessage(handshake,
-                                Network::encodeWelcome(welcome.playerId, welcome.snapshot, existing->second));
+                    Net::send(handshake, Network::encodeWelcome(welcome.playerId, welcome.snapshot,
+                                                                existing->second));
                     continue;
                 }
             }
@@ -234,7 +207,7 @@ int main(int argc, char* argv[])
                 Network::rewriteTcpEndpointHost(boundEndpoint, advertiseHost);
             if (boundEndpoint.empty() || sessionEndpoint.empty()) {
                 alive->store(false);
-                sendMessage(handshake, Network::encodeError("could not start client worker"));
+                Net::send(handshake, Network::encodeError("could not start client worker"));
                 continue;
             }
 
@@ -244,7 +217,7 @@ int main(int argc, char* argv[])
             if (!Network::decodeReply(handled, welcome, welcomeError) ||
                 welcome.type != Network::ReplyType::Welcome) {
                 alive->store(false);
-                sendMessage(handshake, handled);
+                Net::send(handshake, handled);
                 continue;
             }
 
@@ -254,8 +227,8 @@ int main(int argc, char* argv[])
             }
 
             std::cout << "Client player " << welcome.playerId << " -> " << sessionEndpoint << '\n';
-            sendMessage(handshake,
-                        Network::encodeWelcome(welcome.playerId, welcome.snapshot, sessionEndpoint));
+            Net::send(handshake,
+                      Network::encodeWelcome(welcome.playerId, welcome.snapshot, sessionEndpoint));
         }
     } catch (const std::exception& exception) {
         std::cerr << "Network server error: " << exception.what() << '\n';

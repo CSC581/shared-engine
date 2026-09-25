@@ -1,55 +1,21 @@
 #include "NetworkProtocol.hpp"
 
+#include "Endpoint.hpp"
+#include "WireFormat.hpp"
+
+#include <utility>
+
 #include <algorithm>
 #include <cctype>
-#include <cmath>
 #include <limits>
-#include <iomanip>
-#include <locale>
-#include <sstream>
-#include <stdexcept>
 
 namespace Network {
 namespace {
 
-bool parseUnsigned(const std::string& text, std::uint64_t& value)
-{
-    if (text.empty() || !std::all_of(text.begin(), text.end(), [](unsigned char c) {
-            return c >= '0' && c <= '9';
-        })) {
-        return false;
-    }
-    try {
-        std::size_t parsed = 0;
-        value = std::stoull(text, &parsed);
-        return parsed == text.size();
-    } catch (const std::exception&) {
-        return false;
-    }
-}
-
-bool parseFloat(const std::string& text, float& value)
-{
-    std::istringstream input(text);
-    input.imbue(std::locale::classic());
-    // Parsing through double preserves subnormal floats on older libc++ builds.
-    double parsed = 0.0;
-    input >> std::noskipws >> parsed;
-    if (input.fail() || !input.eof() || !std::isfinite(parsed) ||
-        std::fabs(parsed) > std::numeric_limits<float>::max()) {
-        return false;
-    }
-    value = static_cast<float>(parsed);
-    return parsed == 0.0 || value != 0.0F;
-}
-
-std::string formatFloat(float value)
-{
-    std::ostringstream output;
-    output.imbue(std::locale::classic());
-    output << std::setprecision(std::numeric_limits<double>::max_digits10) << static_cast<double>(value);
-    return output.str();
-}
+// Field encoding is shared with the peer protocol; see WireFormat.hpp.
+using Net::formatFloat;
+using Net::parseFloat;
+using Net::parseUnsigned;
 
 bool parseVersion(const Message& message, std::string& error)
 {
@@ -87,35 +53,40 @@ bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& sna
         return false;
     }
 
-    constexpr std::size_t playerFieldCount = 3;
     constexpr std::size_t platformFieldCount = 5;
-    if (playerCount > (std::numeric_limits<std::size_t>::max() - index - 2) / playerFieldCount) {
+    if (playerCount > message.size()) {
         error = "invalid snapshot player count";
-        return false;
-    }
-
-    const std::size_t playersEnd = index + 2 + static_cast<std::size_t>(playerCount) * playerFieldCount;
-    if (message.size() < playersEnd + 1) {
-        error = "invalid snapshot platform header";
         return false;
     }
 
     snapshot.players.clear();
     snapshot.players.reserve(static_cast<std::size_t>(playerCount));
 
+    // Players are variable length now that each carries a name and whatever
+    // game-defined fields it has, so the reader walks them rather than
+    // indexing by a fixed stride.
     index += 2;
     for (std::uint64_t i = 0; i < playerCount; ++i) {
         std::uint64_t id = 0;
         PlayerState player;
-        if (!parseUnsigned(message[index], id) || id == 0 || id > std::numeric_limits<PlayerId>::max() ||
-            !parseFloat(message[index + 1], player.x) || !parseFloat(message[index + 2], player.y)) {
+        if (message.size() < index + 5 || !parseUnsigned(message[index], id) || id == 0 ||
+            id > std::numeric_limits<PlayerId>::max() || !Net::isValidName(message[index + 1]) ||
+            !parseFloat(message[index + 2], player.x) || !parseFloat(message[index + 3], player.y) ||
+            !Net::isValidPlayerData(message[index + 4])) {
             error = "invalid player in snapshot";
             return false;
         }
 
         player.id = static_cast<PlayerId>(id);
-        snapshot.players.push_back(player);
-        index += playerFieldCount;
+        player.name = message[index + 1];
+        player.data = message[index + 4];
+        index += 5;
+        snapshot.players.push_back(std::move(player));
+    }
+
+    if (index >= message.size()) {
+        error = "invalid snapshot platform header";
+        return false;
     }
 
     std::uint64_t platformCount = 0;
@@ -159,8 +130,10 @@ void appendSnapshot(Message& message, const WorldSnapshot& snapshot)
 
     for (const PlayerState& player : snapshot.players) {
         message.push_back(std::to_string(player.id));
+        message.push_back(player.name);
         message.push_back(formatFloat(player.x));
         message.push_back(formatFloat(player.y));
+        message.push_back(player.data);
     }
 
     message.push_back(std::to_string(snapshot.platforms.size()));
@@ -175,15 +148,17 @@ void appendSnapshot(Message& message, const WorldSnapshot& snapshot)
 
 } // namespace
 
-Message encodeJoin(const SessionToken& sessionToken)
+Message encodeJoin(const SessionToken& sessionToken, const std::string& playerName)
 {
-    return {std::to_string(protocolVersion), "JOIN", sessionToken};
+    return {std::to_string(protocolVersion), "JOIN", sessionToken, playerName};
 }
 
 Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position)
 {
-    return {std::to_string(protocolVersion), "POSITION", std::to_string(playerId), sessionToken,
-            std::to_string(position.sequence), formatFloat(position.x), formatFloat(position.y)};
+    return {std::to_string(protocolVersion), "POSITION",       std::to_string(playerId),
+            sessionToken,                    std::to_string(position.sequence),
+            formatFloat(position.x),         formatFloat(position.y),
+            position.data};
 }
 
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken)
@@ -198,13 +173,16 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
     }
 
     if (message[1] == "JOIN") {
-        if (message.size() != 3 || !isValidSessionToken(message[2])) {
-            error = "JOIN requires a valid session token";
+        if (message.size() != 4 || !isValidSessionToken(message[2]) || !Net::isValidName(message[3])) {
+            error = "JOIN requires a valid session token and name";
             return false;
         }
         request = {};
         request.type = RequestType::Join;
         request.sessionToken = message[2];
+        // Sent once, at JOIN, rather than on every position update: a name
+        // does not change and there is no sense paying for it every frame.
+        request.playerName = message[3];
         return true;
     }
 
@@ -232,7 +210,7 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
         return true;
     }
 
-    if (message[1] != "POSITION" || message.size() != 7) {
+    if (message[1] != "POSITION" || message.size() != 8) {
         error = "unknown request command";
         return false;
     }
@@ -244,6 +222,12 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
         return false;
     }
 
+    if (!Net::isValidPlayerData(message[7])) {
+        error = "player data is too large";
+        return false;
+    }
+    request.position.data = message[7];
+
     request.type = RequestType::Position;
     request.position.sequence = sequence;
     return true;
@@ -251,30 +235,9 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
 
 std::string rewriteTcpEndpointHost(const std::string& endpoint, const std::string& host)
 {
-    constexpr const char* kPrefix = "tcp://";
-    constexpr std::size_t kPrefixLen = 6;
-    if (host.empty() || endpoint.size() <= kPrefixLen ||
-        endpoint.compare(0, kPrefixLen, kPrefix) != 0) {
-        return {};
-    }
-
-    const std::size_t colon = endpoint.rfind(':');
-    if (colon == std::string::npos || colon <= kPrefixLen) {
-        return {};
-    }
-
-    const std::string port = endpoint.substr(colon + 1);
-    if (port.empty() || !std::all_of(port.begin(), port.end(), [](unsigned char c) {
-            return c >= '0' && c <= '9';
-        })) {
-        return {};
-    }
-
-    // Bracket IPv6 advertise hosts so "tcp://::1:5555" stays unambiguous.
-    if (host.find(':') != std::string::npos && !(host.front() == '[' && host.back() == ']')) {
-        return std::string(kPrefix) + '[' + host + "]:" + port;
-    }
-    return std::string(kPrefix) + host + ':' + port;
+    // Kept as part of the Network API; the implementation is shared with the
+    // peer-to-peer module through Endpoint.hpp so there is only ever one.
+    return Net::rewriteTcpEndpointHost(endpoint, host);
 }
 
 Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot, const std::string& sessionEndpoint)

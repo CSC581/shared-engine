@@ -2,10 +2,10 @@
 #include "NetworkProtocol.hpp"
 #include "NetworkServer.hpp"
 #include "TimeSource.hpp"
-#include "../sandbox/NetworkDemoPlayer.hpp"
+#include "WireFormat.hpp"
+#include "ZmqMessage.hpp"
 
-#include <zmq.hpp>
-#include <zmq_addon.hpp>
+#include "../sandbox/NetworkDemoPlayer.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -29,40 +29,22 @@ bool expect(bool condition, const std::string& message)
     return condition;
 }
 
+// Blocking receive for the tests: they always expect a message, so a helper
+// that drops the "did anything arrive" flag keeps the call sites readable.
 Network::Message receiveMessage(zmq::socket_t& socket)
 {
-    std::vector<zmq::message_t> raw;
-    const auto result = zmq::recv_multipart(socket, std::back_inserter(raw));
-    if (!result.has_value()) {
-        return {};
-    }
-
-    Network::Message message;
-    message.reserve(raw.size());
-    for (const zmq::message_t& field : raw) {
-        message.push_back(field.to_string());
-    }
-    return message;
-}
-
-void sendMessage(zmq::socket_t& socket, const Network::Message& message)
-{
-    std::vector<zmq::const_buffer> buffers;
-    buffers.reserve(message.size());
-    for (const std::string& field : message) {
-        buffers.push_back(zmq::buffer(field));
-    }
-    zmq::send_multipart(socket, buffers);
+    bool received = false;
+    return Net::receive(socket, received);
 }
 
 Network::Reply request(zmq::socket_t& client, zmq::socket_t& serverSocket,
                        Network::NetworkServer& server, const Network::Message& message, bool& passed)
 {
-    sendMessage(client, message);
+    Net::send(client, message);
 
     const Network::Message requestMessage = receiveMessage(serverSocket);
     passed &= expect(!requestMessage.empty(), "server should receive a TCP request");
-    sendMessage(serverSocket, server.handle(requestMessage));
+    Net::send(serverSocket, server.handle(requestMessage));
 
     Network::Reply reply;
     std::string error;
@@ -103,7 +85,7 @@ bool rejectsIncompatibleReply(const Network::Message& message)
     if (!expect(!receiveMessage(socket).empty(), "test server should receive JOIN")) {
         return false;
     }
-    sendMessage(socket, message);
+    Net::send(socket, message);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (client.state() != Network::ConnectionState::Error && std::chrono::steady_clock::now() < deadline) {
         client.poll();
@@ -122,7 +104,7 @@ bool rejectsIncompatibleReply(const Network::Message& message)
     if (!expect(!receiveMessage(socket).empty(), "explicit retry should send a new JOIN")) {
         return false;
     }
-    sendMessage(socket, Network::encodeWelcome(1, {1, {{1, 10, 20}}}));
+    Net::send(socket, Network::encodeWelcome(1, {1, {{1, {}, 10, 20, {}}}}));
     const auto retryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (client.state() != Network::ConnectionState::Connected && std::chrono::steady_clock::now() < retryDeadline) {
         client.poll();
@@ -148,7 +130,7 @@ bool clearsWorldWhileRetrying()
     if (!expect(!receiveMessage(socket).empty(), "test server should receive initial JOIN")) {
         return false;
     }
-    sendMessage(socket, Network::encodeWelcome(7, {4, {{7, 10, 20}, {8, 30, 40}}}));
+    Net::send(socket, Network::encodeWelcome(7, {4, {{7, {}, 10, 20, {}}, {8, {}, 30, 40, {}}}}));
 
     const auto connectedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (client.state() != Network::ConnectionState::Connected && std::chrono::steady_clock::now() < connectedDeadline) {
@@ -164,7 +146,7 @@ bool clearsWorldWhileRetrying()
     if (!expect(!receiveMessage(socket).empty(), "test server should receive POSITION")) {
         return false;
     }
-    sendMessage(socket, Network::encodeError("temporary server problem"));
+    Net::send(socket, Network::encodeError("temporary server problem"));
 
     const auto retryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (client.state() != Network::ConnectionState::Connecting && std::chrono::steady_clock::now() < retryDeadline) {
@@ -200,7 +182,7 @@ bool reconnectsToSessionEndpoint()
     if (!expect(!receiveMessage(handshake).empty(), "handshake should receive JOIN")) {
         return false;
     }
-    sendMessage(handshake, Network::encodeWelcome(3, {1, {{3, 10.0F, 20.0F}}}, sessionEndpoint));
+    Net::send(handshake, Network::encodeWelcome(3, {1, {{3, {}, 10.0F, 20.0F, {}}}}, sessionEndpoint));
 
     const auto connectedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (client.state() != Network::ConnectionState::Connected &&
@@ -222,7 +204,7 @@ bool reconnectsToSessionEndpoint()
     if (!expect(!positionMessage.empty(), "session worker should receive POSITION")) {
         return false;
     }
-    sendMessage(session, Network::encodeSnapshot({2, {{3, 55.0F, 66.0F}}}));
+    Net::send(session, Network::encodeSnapshot({2, {{3, {}, 55.0F, 66.0F, {}}}}));
 
     const auto snapshotDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (client.snapshot().serverTick != 2 && std::chrono::steady_clock::now() < snapshotDeadline) {
@@ -296,7 +278,7 @@ bool perClientWorkersDoNotBlockEachOther()
                 break;
             }
             try {
-                sendMessage(slowRep, server.handle(request));
+                Net::send(slowRep, server.handle(request));
             } catch (const zmq::error_t&) {
                 break;
             }
@@ -314,7 +296,7 @@ bool perClientWorkersDoNotBlockEachOther()
                 continue;
             }
             try {
-                sendMessage(fastRep, server.handle(request));
+                Net::send(fastRep, server.handle(request));
             } catch (const zmq::error_t&) {
                 break;
             }
@@ -335,7 +317,7 @@ bool perClientWorkersDoNotBlockEachOther()
 
     std::atomic<bool> slowDone{false};
     std::thread slowRequest([&] {
-        sendMessage(slowClient, Network::encodePosition(slowJoin.playerId, slowToken, {1.0F, 1.0F, 1}));
+        Net::send(slowClient, Network::encodePosition(slowJoin.playerId, slowToken, {1.0F, 1.0F, 1}));
         (void)receiveMessage(slowClient);
         slowDone.store(true);
     });
@@ -344,7 +326,7 @@ bool perClientWorkersDoNotBlockEachOther()
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
     const auto fastStart = std::chrono::steady_clock::now();
-    sendMessage(fastClient, Network::encodePosition(fastJoin.playerId, fastToken, {2.0F, 2.0F, 1}));
+    Net::send(fastClient, Network::encodePosition(fastJoin.playerId, fastToken, {2.0F, 2.0F, 1}));
     const Network::Message fastReplyMessage = receiveMessage(fastClient);
     const auto fastMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - fastStart)
@@ -374,7 +356,7 @@ bool welcomeEncodesSessionEndpoint()
 {
     Network::WorldSnapshot snapshot;
     snapshot.serverTick = 3;
-    snapshot.players = {{7, 1.0F, 2.0F}};
+    snapshot.players = {{7, {}, 1.0F, 2.0F, {}}};
     snapshot.platforms = {{9, 3.0F, 4.0F, 5.0F, 6.0F}};
     const std::string endpoint = "tcp://127.0.0.1:59999";
     Network::Reply reply;
@@ -440,7 +422,7 @@ int main()
     {
         Network::WorldSnapshot withPlatforms;
         withPlatforms.serverTick = 9;
-        withPlatforms.players = {{1, 12.5F, 3000.25F}};
+        withPlatforms.players = {{1, {}, 12.5F, 3000.25F, {}}};
         withPlatforms.platforms = {{2, 10.0F, 20.0F, 96.0F, 24.0F}};
         Network::Reply platformReply;
         passed &= expect(Network::decodeReply(Network::encodeSnapshot(withPlatforms), platformReply, error) &&
@@ -449,7 +431,7 @@ int main()
                              platformReply.snapshot.platforms[0].width == 96.0F &&
                              platformReply.snapshot.players[0].y == 3000.25F,
                          "snapshots must round-trip players and server platforms");
-        passed &= expect(Network::decodeReply(Network::encodeSnapshot({1, {{1, 1.0F, 2.0F}}, {}}), platformReply,
+        passed &= expect(Network::decodeReply(Network::encodeSnapshot({1, {{1, {}, 1.0F, 2.0F, {}}}, {}}), platformReply,
                                               error) &&
                              platformReply.snapshot.platforms.empty(),
                          "empty platform lists remain valid");
@@ -466,11 +448,11 @@ int main()
     const auto localePosition = Network::encodePosition(1, tokenOne, {12.5F, 3000.25F, 1});
     passed &= expect(localePosition[5] == "12.5" && localePosition[6] == "3000.25",
                      "wire coordinates should always use dots and no thousands separators");
-    passed &= expect(Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12.5", "3000.25"}, decoded, error) &&
+    passed &= expect(Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12.5", "3000.25", "0"}, decoded, error) &&
                          decoded.position.x == 12.5F && decoded.position.y == 3000.25F,
                      "dot-decimal messages should parse even under a comma locale");
     Network::Reply localeReply;
-    const auto localeSnapshot = Network::encodeSnapshot({1, {{1, 12.5F, 3000.25F}}});
+    const auto localeSnapshot = Network::encodeSnapshot({1, {{1, {}, 12.5F, 3000.25F, {}}}});
     std::locale::global(savedCppLocale);
     std::setlocale(LC_NUMERIC, "C");
     passed &= expect(Network::decodeRequest(localePosition, decoded, error) && decoded.position.x == 12.5F,
@@ -485,26 +467,65 @@ int main()
         passed &= expect(Network::decodeRequest(message, decoded, error) && decoded.position.x == coordinate,
                          "finite float coordinate should round trip without precision loss: " + message[5]);
     }
-    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12,5", "0"}, decoded, error),
+    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12,5", "0", "0"}, decoded, error),
                      "comma-decimal wire coordinates must be rejected consistently");
     std::setlocale(LC_NUMERIC, savedNumericLocale.c_str());
     passed &= expect(!Network::decodeRequest({"99", "JOIN", tokenOne}, decoded, error), "unsupported version should fail");
     passed &= expect(!Network::decodeRequest({"2", "JOIN", tokenOne}, decoded, error),
                      "previous direction-based protocol should be rejected");
-    passed &= expect(!Network::decodeRequest({version, "JOIN", "not-a-token"}, decoded, error) &&
-                         error == "JOIN requires a valid session token",
+    passed &= expect(!Network::decodeRequest({version, "JOIN", "not-a-token", ""}, decoded, error) &&
+                         error == "JOIN requires a valid session token and name",
                      "invalid session token should fail");
+    // Game-defined attributes, and the name that now rides along with JOIN.
+    passed &= expect(Network::decodeRequest({version, "JOIN", tokenOne, "Ada"}, decoded, error) &&
+                         decoded.playerName == "Ada",
+                     "JOIN should carry a player name: " + error);
+    passed &= expect(Network::decodeRequest({version, "JOIN", tokenOne, ""}, decoded, error) &&
+                         decoded.playerName.empty(),
+                     "an empty name should be allowed: not every game names players");
+    passed &= expect(!Network::decodeRequest({version, "JOIN", tokenOne, std::string(25, 'x')}, decoded, error),
+                     "a name past the length cap should be rejected");
+    passed &= expect(!Network::decodeRequest({version, "JOIN", tokenOne, "bad\nname"}, decoded, error),
+                     "a name with control characters should be rejected");
+
+    const Network::Message withData =
+        Network::encodePosition(1, tokenOne, {1.0F, 2.0F, 1, "strokes=4\tclub=7iron"});
+    passed &= expect(Network::decodeRequest(withData, decoded, error) &&
+                         decoded.position.data == "strokes=4\tclub=7iron",
+                     "POSITION should round-trip a game's own data byte for byte: " + error);
+    passed &= expect(!Network::decodeRequest(
+                         {version, "POSITION", "1", tokenOne, "1", "1", "2",
+                          std::string(Net::maxPlayerDataLength + 1, 'x')},
+                         decoded, error),
+                     "player data past the size cap should be rejected");
+    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "1", "2", "", "x"},
+                                             decoded, error),
+                     "fields past the end of a POSITION should be rejected");
+
+    // And the same on the way back out, inside a snapshot.
+    Network::WorldSnapshot named;
+    named.serverTick = 1;
+    named.players = {{1, "Ada", 5.0F, 6.0F, "strokes=4"}, {2, "", 7.0F, 8.0F, {}}};
+    Network::Reply namedReply;
+    passed &= expect(Network::decodeReply(Network::encodeSnapshot(named), namedReply, error) &&
+                         namedReply.snapshot.players.size() == 2 &&
+                         namedReply.snapshot.players[0].name == "Ada" &&
+                         namedReply.snapshot.players[0].data == "strokes=4" &&
+                         namedReply.snapshot.players[1].name.empty() &&
+                         namedReply.snapshot.players[1].data.empty(),
+                     "a snapshot should carry each player's name and data: " + error);
+
     passed &= expect(!Network::decodeRequest({version, "NOT_A_COMMAND", "1", tokenOne}, decoded, error) &&
                          error == "unknown request command", "unknown command should fail");
     for (const std::string coordinate : {"nan", "inf", "-inf", "12oops"}) {
-        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", coordinate, "0"},
+        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", coordinate, "0", "0"},
                                                  decoded, error) && error == "invalid position update",
                          "invalid x position should fail");
-        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "0", coordinate},
+        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "0", coordinate, "0"},
                                                  decoded, error), "invalid y position should fail");
     }
     for (const std::string sequence : {"0", "-1", "18446744073709551616"}) {
-        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, sequence, "1", "2"},
+        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, sequence, "1", "2", "0"},
                                                  decoded, error), "invalid sequence should fail");
     }
     passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "5"}, decoded, error),
@@ -516,7 +537,7 @@ int main()
 
     // Exercise the same local simulation the SDL demo uses, without a window.
     NetworkDemo::Player localPlayer;
-    const Network::WorldSnapshot initial{1, {{1, 48.0F, 48.0F}}};
+    const Network::WorldSnapshot initial{1, {{1, {}, 48.0F, 48.0F, {}}}};
     passed &= expect(localPlayer.synchronize(initial, 1), "local player should initialize from its join snapshot");
     localPlayer.update(1, 0, 0.5F);
     const float localX = 48.0F + NetworkDemo::playerSpeed * 0.5F;
@@ -815,7 +836,7 @@ int main()
             for (const zmq::message_t& field : raw) {
                 message.push_back(field.to_string());
             }
-            sendMessage(delayedSocket, delayedServer.handle(message));
+            Net::send(delayedSocket, delayedServer.handle(message));
         }
     });
     delayedServerReady.wait();

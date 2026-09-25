@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 
 namespace Network {
 namespace {
@@ -96,7 +97,10 @@ Message NetworkServer::handle(const Message& message)
         }
 
         const PlayerId id = nextPlayerId_++;
-        players_.emplace(id, ActivePlayer{spawnPlayer(id), request.sessionToken, {}, now});
+        PlayerState spawned = spawnPlayer(id);
+        // Stored once at JOIN and relayed in every snapshot afterwards.
+        spawned.name = request.playerName;
+        players_.emplace(id, ActivePlayer{std::move(spawned), request.sessionToken, {}, now});
         playerIdsByToken_.emplace(request.sessionToken, id);
         ++serverTick_;
         return encodeWelcome(id, buildSnapshot());
@@ -124,6 +128,10 @@ Message NetworkServer::handle(const Message& message)
 
     player->second.state.x = request.position.x;
     player->second.state.y = request.position.y;
+    // Whatever this game chose to say about its player. Stored and relayed
+    // verbatim: the server has no idea what is in it, which is exactly why a
+    // game can change what it sends without the server being touched.
+    player->second.state.data = std::move(request.position.data);
     player->second.lastSequence = request.position.sequence;
     player->second.lastHeard = now;
     ++serverTick_;
