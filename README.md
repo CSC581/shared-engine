@@ -205,7 +205,7 @@ stores membership and poses and replies with a world snapshot (other players
 plus server-owned moving platforms). Local movement uses game time; network
 I/O and platforms use real time. A JOIN handshake hands each client a private
 REP worker so one slow client does not stall the others (no Router/Dealer).
-Demo layout lives in `sandbox/NetworkDemoConfig.hpp`. Protocol version 4 —
+Demo layout lives in `sandbox/NetworkDemoConfig.hpp`. Protocol version 5 —
 rebuild server and clients together.
 
 ```bash
@@ -372,6 +372,14 @@ Apex Ascent online co-climb uses a separate server binary:
 ```bash
 ./build/apex-network-server
 ./build/apex-ascent --join
+```
+
+For clients on another machine, advertise the server host and join that
+reachable address:
+
+```bash
+./build/apex-network-server 'tcp://*:5555' --advertise 192.168.1.10
+./build/apex-ascent --join tcp://192.168.1.10:5555
 ```
 
 ### The Timeline Sandbox

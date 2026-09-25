@@ -43,7 +43,14 @@ Use `./build/apex-network-server` (tower world), not the sandbox
 `network-server` (arena demo). Rebuild server and clients together after a
 protocol bump. Defaults: `tcp://*:5555` / `tcp://127.0.0.1:5555`.
 
-Online: peers are tinted Idle ghost sprites; the amber moving platform is
+Across machines, pass the server's reachable host separately from its bind:
+
+```bash
+./build/apex-network-server 'tcp://*:5555' --advertise 192.168.1.10
+./build/apex-ascent --join tcp://192.168.1.10:5555
+```
+
+Online: peers are tinted animated ghost sprites; the amber moving platform is
 server-authored; pause/scale only affects your local climb.
 
 ## Layout

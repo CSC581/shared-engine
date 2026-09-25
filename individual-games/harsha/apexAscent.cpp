@@ -16,7 +16,9 @@
 #include <cstdio>
 #include <exception>
 #include <iostream>
+#include <locale>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -48,6 +50,42 @@ void ghostColor(Network::PlayerId playerId, Uint8& red, Uint8& green, Uint8& blu
     red = color[0];
     green = color[1];
     blue = color[2];
+}
+
+struct RemoteAnimation {
+    PlayerAnimation::Clip clip = PlayerAnimation::Clip::Idle;
+    int frame = 0;
+    bool facingRight = true;
+};
+
+std::string encodeAnimation(const PlayerAnimation& animation)
+{
+    return std::to_string(static_cast<int>(animation.currentClip())) + ' ' +
+           std::to_string(animation.currentFrame()) + ' ' +
+           (animation.facingRight() ? "1" : "0");
+}
+
+bool decodeAnimation(const std::string& data, RemoteAnimation& animation)
+{
+    std::istringstream input(data);
+    input.imbue(std::locale::classic());
+
+    int clip = 0;
+    int frame = 0;
+    int facing = 0;
+    if (!(input >> clip >> frame >> facing)) {
+        return false;
+    }
+    input >> std::ws;
+    if (!input.eof() || clip < 0 || clip >= static_cast<int>(PlayerAnimation::Clip::Count) ||
+        frame < 0 || frame > 100 || (facing != 0 && facing != 1)) {
+        return false;
+    }
+
+    animation.clip = static_cast<PlayerAnimation::Clip>(clip);
+    animation.frame = frame;
+    animation.facingRight = facing == 1;
+    return true;
 }
 
 class ApexAscent : public Game {
@@ -293,7 +331,7 @@ void ApexAscent::updateNetwork()
     if (client_->state() == Network::ConnectionState::Connected) {
         // Local climb is authoritative; never rewind from snapshot (server spawn
         // is only a join hint — we keep room-0 placement from the client).
-        client_->submitPosition(player_.getX(), player_.getY());
+        client_->submitPosition(player_.getX(), player_.getY(), encodeAnimation(playerAnim_));
     }
 }
 
@@ -540,11 +578,11 @@ void ApexAscent::render(SDL_Renderer* renderer) const
             const float screenBottom = screenTop + playerHeight;
             if (screenBottom > 0.0F && screenTop < viewHeight_) {
                 if (playerAnim_.isLoaded()) {
-                    // Pose-only protocol: idle tinted sprite until a future shared
-                    // presentation channel exists (keep anim out of network-core).
+                    RemoteAnimation animation;
+                    decodeAnimation(remote.data, animation);
                     playerAnim_.drawGhost(renderer, remote.x, remote.y, camera_, playerWidth,
-                                          playerHeight, PlayerAnimation::Clip::Idle, 0, true, red,
-                                          green, blue);
+                                          playerHeight, animation.clip, animation.frame,
+                                          animation.facingRight, red, green, blue);
                 } else {
                     drawRect({remote.x, remote.y, playerWidth, playerHeight}, red, green, blue);
                 }
