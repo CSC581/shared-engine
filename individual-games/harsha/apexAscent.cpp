@@ -5,17 +5,20 @@
 #include "Entity.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
+#include "ApexListenServer.hpp"
 #include "ApexNetworkConfig.hpp"
-#include "NetworkClient.hpp"
+#include "Multiplayer.hpp"
 #include "Physics.hpp"
 #include "animation/PlayerAnimation.hpp"
 
 #include <SDL3/SDL.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <locale>
 #include <memory>
 #include <sstream>
@@ -24,23 +27,21 @@
 
 namespace {
 
-const char* connectionLabel(Network::ConnectionState state)
+const char* connectionLabel(Multiplayer::State state)
 {
     switch (state) {
-    case Network::ConnectionState::Connecting:
+    case Multiplayer::State::Connecting:
         return "Connecting";
-    case Network::ConnectionState::Connected:
-        return "Connected";
-    case Network::ConnectionState::Error:
-        return "Error";
-    case Network::ConnectionState::Disconnected:
-        return "Disconnected";
+    case Multiplayer::State::Ready:
+        return "Ready";
+    case Multiplayer::State::Failed:
+        return "Failed";
     }
     return "Unknown";
 }
 
 // Distinct tints for remote climbers (ghosts); local player keeps the sprite.
-void ghostColor(Network::PlayerId playerId, Uint8& red, Uint8& green, Uint8& blue)
+void ghostColor(Multiplayer::PlayerId playerId, Uint8& red, Uint8& green, Uint8& blue)
 {
     static constexpr Uint8 colors[][3] = {
         {80, 220, 255}, {255, 110, 130}, {255, 210, 80}, {150, 240, 140},
@@ -90,9 +91,7 @@ bool decodeAnimation(const std::string& data, RemoteAnimation& animation)
 
 class ApexAscent : public Game {
 public:
-    // joinEndpoint empty = offline. Non-empty starts NetworkClient on real time.
-    ApexAscent(const Engine& engine, std::string joinEndpoint = {});
-    ~ApexAscent() override;
+    ApexAscent(const Engine& engine, std::unique_ptr<Multiplayer::Session> session = {});
 
     void handleInput(Engine& engine) override;
     void update(float deltaTime, Engine& engine) override;
@@ -148,8 +147,9 @@ private:
     // Milestone 4: climb-loop clips + facing driven by gameplay.
     PlayerAnimation playerAnim_;
 
-    // Optional online presence (APX-M1). Platforms stay local until APX-M2.
-    std::unique_ptr<Network::NetworkClient> client_;
+    // Optional online presence. The game uses the same surface for either
+    // client-server or peer-to-peer deployment.
+    std::unique_ptr<Multiplayer::Session> session_;
 
     float viewWidth_;
     float viewHeight_;
@@ -180,8 +180,9 @@ private:
     double gameTimeScale_ = 1.0;
 };
 
-ApexAscent::ApexAscent(const Engine& engine, std::string joinEndpoint)
+ApexAscent::ApexAscent(const Engine& engine, std::unique_ptr<Multiplayer::Session> session)
     : player_(0.0F, 0.0F, playerWidth, playerHeight),
+      session_(std::move(session)),
       viewWidth_(static_cast<float>(engine.getWidth())),
       viewHeight_(static_cast<float>(engine.getHeight())),
       worldWidth_(viewWidth_),
@@ -204,25 +205,14 @@ ApexAscent::ApexAscent(const Engine& engine, std::string joinEndpoint)
                      "(expected media/apex-ascent/Idle.png next to the binary).\n";
     }
 
-    if (!joinEndpoint.empty()) {
-        // Keep room-0 spawn; ignore server arena spawn points (demo coords).
-        client_ = std::make_unique<Network::NetworkClient>(engine.realTime(),
-                                                           std::move(joinEndpoint));
-        client_->start();
-        std::cout << "Apex Ascent (online): peers are ghosts; moving platform is server-owned.\n"
-                     "Start server with: ./apex-network-server\n"
+    if (session_) {
+        std::cout << "Apex Ascent (" << Multiplayer::modeName(session_->mode())
+                  << "): peers are animated ghosts; moving platform is authority-owned.\n"
                      "A/D aim, Space charge. P pause, 1/2/3 = 0.5x/1x/2x game time. Esc quit.\n";
     } else {
         std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
                      "release to leap. F1 to toggle scaling, Esc to quit.\n"
                      "Optional: ./apex-ascent --join [tcp://host:port]\n";
-    }
-}
-
-ApexAscent::~ApexAscent()
-{
-    if (client_) {
-        client_->leave();
     }
 }
 
@@ -274,7 +264,7 @@ void ApexAscent::buildLevel()
 void ApexAscent::handleInput(Engine& engine)
 {
     // Online-only: local game timeline isolation (does not affect peers or server).
-    if (client_) {
+    if (session_) {
         Timeline& gameTime = engine.gameTime();
         if (Input::isKeyJustPressed(SDL_SCANCODE_P)) {
             gameTime.togglePause();
@@ -323,15 +313,15 @@ void ApexAscent::handleInput(Engine& engine)
 
 void ApexAscent::updateNetwork()
 {
-    if (!client_) {
+    if (!session_) {
         return;
     }
 
-    // poll() is called at the start of update() so platform poses are fresh.
-    if (client_->state() == Network::ConnectionState::Connected) {
+    // update() is called at the start of the frame so platform poses are fresh.
+    if (session_->state() == Multiplayer::State::Ready) {
         // Local climb is authoritative; never rewind from snapshot (server spawn
         // is only a join hint — we keep room-0 placement from the client).
-        client_->submitPosition(player_.getX(), player_.getY(), encodeAnimation(playerAnim_));
+        session_->publishLocalPlayer(player_.getX(), player_.getY(), encodeAnimation(playerAnim_));
     }
 }
 
@@ -341,8 +331,8 @@ void ApexAscent::update(float deltaTime, Engine& engine)
 
     // Refresh snapshots before moving-platform carry (server poses).
     // NetworkClient uses realTime, so pause/scale never freezes the link.
-    if (client_) {
-        client_->poll();
+    if (session_) {
+        session_->update();
 
         const Timeline& gameTime = engine.gameTime();
         gameTimePaused_ = gameTime.isPaused();
@@ -351,10 +341,10 @@ void ApexAscent::update(float deltaTime, Engine& engine)
         char title[128];
         if (gameTimePaused_) {
             std::snprintf(title, sizeof(title), "Apex Ascent (online) | PAUSED | #%u",
-                          static_cast<unsigned>(client_->playerId()));
+                          static_cast<unsigned>(session_->localPlayerId()));
         } else {
             std::snprintf(title, sizeof(title), "Apex Ascent (online) | %.1fx | #%u",
-                          gameTimeScale_, static_cast<unsigned>(client_->playerId()));
+                          gameTimeScale_, static_cast<unsigned>(session_->localPlayerId()));
         }
         SDL_SetWindowTitle(engine.getWindow(), title);
     }
@@ -476,7 +466,7 @@ void ApexAscent::updateCamera(float deltaTime)
 void ApexAscent::updateMovingPlatforms(float deltaTime)
 {
     // Online + connected: server owns networked movers (no local path advance).
-    if (client_ && client_->state() == Network::ConnectionState::Connected) {
+    if (session_ && session_->state() == Multiplayer::State::Ready) {
         applyServerMovingPlatforms();
         return;
     }
@@ -512,15 +502,13 @@ void ApexAscent::updateMovingPlatforms(float deltaTime)
 
 void ApexAscent::applyServerMovingPlatforms()
 {
-    const Network::WorldSnapshot& snapshot = client_->snapshot();
-
     for (MovingPlatformPath& path : movingPlatformPaths_) {
         if (path.networkId == 0) {
             continue;
         }
 
-        const Network::PlatformState* match = nullptr;
-        for (const Network::PlatformState& platform : snapshot.platforms) {
+        const Multiplayer::Platform* match = nullptr;
+        for (const Multiplayer::Platform& platform : session_->platforms()) {
             if (platform.id == path.networkId) {
                 match = &platform;
                 break;
@@ -564,11 +552,8 @@ void ApexAscent::render(SDL_Renderer* renderer) const
     }
 
     // Remote climbers: tinted sprites when on-screen; HUD cue when above/below.
-    if (client_ && client_->state() == Network::ConnectionState::Connected) {
-        for (const Network::PlayerState& remote : client_->snapshot().players) {
-            if (remote.id == client_->playerId()) {
-                continue;
-            }
+    if (session_ && session_->state() == Multiplayer::State::Ready) {
+        for (const Multiplayer::Player& remote : session_->remotePlayers()) {
             Uint8 red = 0;
             Uint8 green = 0;
             Uint8 blue = 0;
@@ -635,18 +620,18 @@ void ApexAscent::render(SDL_Renderer* renderer) const
     std::snprintf(scaleHud, sizeof(scaleHud), "Scale: %s (F1 to toggle)", modeLabel);
     SDL_RenderDebugText(renderer, 20.0F, 40.0F, scaleHud);
 
-    if (client_) {
+    if (session_) {
         char netHud[160];
-        if (!client_->error().empty()) {
-            std::snprintf(netHud, sizeof(netHud), "Net: %s — %s", connectionLabel(client_->state()),
-                          client_->error().c_str());
+        if (session_->state() != Multiplayer::State::Ready) {
+            std::snprintf(netHud, sizeof(netHud), "Net: %s — %s",
+                          connectionLabel(session_->state()), session_->status().c_str());
             SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
         } else {
             std::snprintf(netHud, sizeof(netHud),
-                          "Net: %s | you #%u | %zu climbers | server platforms",
-                          connectionLabel(client_->state()),
-                          static_cast<unsigned>(client_->playerId()),
-                          client_->snapshot().players.size());
+                          "Net: %s | you #%u | %zu climbers | authority platforms",
+                          connectionLabel(session_->state()),
+                          static_cast<unsigned>(session_->localPlayerId()),
+                          session_->remotePlayers().size() + 1);
             SDL_SetRenderDrawColor(renderer, 180, 220, 255, 255);
         }
         SDL_RenderDebugText(renderer, 20.0F, 60.0F, netHud);
@@ -667,22 +652,155 @@ void ApexAscent::render(SDL_Renderer* renderer) const
 
 namespace {
 
-std::string parseJoinEndpoint(int argc, char* argv[])
+struct ApexOptions {
+    Multiplayer::Config network;
+    bool online = false;
+    bool hostAuthority = false;
+    bool help = false;
+};
+
+void printUsage()
 {
-    for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
+    std::cout <<
+        R"(Apex Ascent
+
+  ./build/apex-ascent                              Offline
+  ./build/apex-ascent --join [SERVER]              Legacy client-server shortcut
+  ./build/apex-ascent --mode client-server         Client-server online mode
+  ./build/apex-ascent --mode peer-to-peer [options]
+
+Network options:
+  --mode MODE       client-server or peer-to-peer
+  --name TEXT       Display name
+  --server ENDPOINT Dedicated/listen authority for shared platforms
+
+Peer-to-peer options:
+  --id N            Unique peer id, 1..4294967295
+  --port P          Introduction port; P+1 broadcasts state (default 7200)
+  --peer ENDPOINT   Introduction endpoint of any running peer
+  --advertise HOST  Reachable host this peer advertises
+  --host            Host the Apex platform authority in this process
+)";
+}
+
+bool parseOptions(int argc, char* argv[], ApexOptions& options)
+{
+    options.network.basePort = 7200;
+
+    auto value = [&](int& index, const char* flag, std::string& out) {
+        if (index + 1 >= argc) {
+            std::cerr << "apex-ascent: " << flag << " requires a value\n";
+            return false;
+        }
+        out = argv[++index];
+        return true;
+    };
+
+    for (int index = 1; index < argc; ++index) {
+        const std::string arg = argv[index];
+        std::string text;
+
+        if (arg == "--help" || arg == "-h") {
+            printUsage();
+            options.help = true;
+            return false;
+        }
         if (arg == "--join") {
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
-                return argv[i + 1];
+            options.online = true;
+            options.network.mode = Multiplayer::Mode::ClientServer;
+            if (index + 1 < argc && argv[index + 1][0] != '-') {
+                options.network.serverEndpoint = argv[++index];
             }
-            return "tcp://127.0.0.1:5555";
+            continue;
+        }
+        if (arg == "--mode") {
+            if (!value(index, "--mode", text) || !Multiplayer::parseMode(text, options.network.mode)) {
+                std::cerr << "apex-ascent: --mode must be client-server or peer-to-peer\n";
+                return false;
+            }
+            options.online = true;
+            continue;
+        }
+        if (arg == "--name") {
+            if (!value(index, "--name", options.network.playerName)) {
+                return false;
+            }
+            options.online = true;
+            continue;
+        }
+        if (arg == "--server") {
+            if (!value(index, "--server", options.network.serverEndpoint)) {
+                return false;
+            }
+            options.online = true;
+            continue;
+        }
+        if (arg == "--peer") {
+            if (!value(index, "--peer", text)) {
+                return false;
+            }
+            options.network.bootstrapPeers.push_back(text);
+            options.online = true;
+            continue;
+        }
+        if (arg == "--advertise") {
+            if (!value(index, "--advertise", options.network.advertiseHost)) {
+                return false;
+            }
+            options.online = true;
+            continue;
+        }
+        if (arg == "--id") {
+            if (!value(index, "--id", text)) {
+                return false;
+            }
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(text.c_str(), &end, 10);
+            if (end == text.c_str() || *end != '\0' || parsed == 0 ||
+                parsed > std::numeric_limits<Multiplayer::PlayerId>::max()) {
+                std::cerr << "apex-ascent: --id must be a non-zero 32-bit integer\n";
+                return false;
+            }
+            options.network.peerId = static_cast<Multiplayer::PlayerId>(parsed);
+            options.online = true;
+            continue;
+        }
+        if (arg == "--port") {
+            if (!value(index, "--port", text)) {
+                return false;
+            }
+            char* end = nullptr;
+            const long parsed = std::strtol(text.c_str(), &end, 10);
+            if (end == text.c_str() || *end != '\0' || parsed < 1024 || parsed > 65534) {
+                std::cerr << "apex-ascent: --port must be between 1024 and 65534\n";
+                return false;
+            }
+            options.network.basePort = static_cast<int>(parsed);
+            options.online = true;
+            continue;
+        }
+        if (arg == "--host") {
+            options.hostAuthority = true;
+            options.online = true;
+            continue;
         }
         // Bare endpoint for convenience: ./apex-ascent tcp://127.0.0.1:5555
         if (arg.rfind("tcp://", 0) == 0) {
-            return arg;
+            options.online = true;
+            options.network.mode = Multiplayer::Mode::ClientServer;
+            options.network.serverEndpoint = arg;
+            continue;
         }
+
+        std::cerr << "apex-ascent: unknown option " << arg << "\n\n";
+        printUsage();
+        return false;
     }
-    return {};
+
+    if (options.network.playerName.empty()) {
+        options.network.playerName = "apex-" + std::to_string(options.network.peerId);
+    }
+    return true;
 }
 
 } // namespace
@@ -690,17 +808,48 @@ std::string parseJoinEndpoint(int argc, char* argv[])
 int main(int argc, char* argv[])
 {
     try {
-        const std::string joinEndpoint = parseJoinEndpoint(argc, argv);
+        ApexOptions options;
+        if (!parseOptions(argc, argv, options)) {
+            return options.help ? 0 : 1;
+        }
+
+        std::unique_ptr<ApexListenServer> listenServer;
+        if (options.hostAuthority) {
+            if (options.network.mode != Multiplayer::Mode::PeerToPeer) {
+                std::cerr << "apex-ascent: --host requires --mode peer-to-peer\n";
+                return 1;
+            }
+
+            const std::size_t colon = options.network.serverEndpoint.rfind(':');
+            if (options.network.serverEndpoint.rfind("tcp://", 0) != 0 ||
+                colon == std::string::npos || colon <= 6 ||
+                colon + 1 >= options.network.serverEndpoint.size()) {
+                std::cerr << "apex-ascent: --host requires a tcp server endpoint with a port\n";
+                return 1;
+            }
+            const std::string bindEndpoint =
+                "tcp://*" + options.network.serverEndpoint.substr(colon);
+            listenServer = std::make_unique<ApexListenServer>(bindEndpoint);
+            listenServer->start();
+            std::cout << "Hosting Apex platform authority on " << bindEndpoint << '\n';
+        }
 
         // 900x900 design resolution (fits ordinary screens in Constant mode).
-        Engine engine(joinEndpoint.empty() ? "Apex Ascent" : "Apex Ascent (online)", 900, 900);
+        Engine engine(options.online ? "Apex Ascent (online)" : "Apex Ascent", 900, 900);
         engine.setClearColor(18, 20, 32);
 
-        ApexAscent game(engine, joinEndpoint);
+        std::unique_ptr<Multiplayer::Session> session;
+        if (options.online) {
+            std::cout << "Starting Apex in " << Multiplayer::modeName(options.network.mode)
+                      << " mode\n";
+            session = Multiplayer::Session::open(std::move(options.network), engine.realTime());
+        }
+
+        ApexAscent game(engine, std::move(session));
         engine.run(game);
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "Engine failed to start: " << error.what() << '\n';
+        std::cerr << "Apex Ascent failed to start: " << error.what() << '\n';
         return 1;
     }
 }

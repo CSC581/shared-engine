@@ -367,11 +367,28 @@ another machine can dial. Peer protocol version 3 — rebuild all peers together
 
 ### Apex Ascent Online Co-climb
 
-Apex Ascent online co-climb uses a separate server binary:
+Apex Ascent uses the common multiplayer interface, preserving client-server:
 
 ```bash
 ./build/apex-network-server
 ./build/apex-ascent --join
+```
+
+For peer-to-peer player state with the same dedicated platform authority:
+
+```bash
+./build/apex-network-server
+./build/apex-ascent --mode peer-to-peer --id 1 --port 7200
+./build/apex-ascent --mode peer-to-peer --id 2 --port 7202 \
+  --peer tcp://127.0.0.1:7200
+```
+
+Or host the platform authority inside the first peer:
+
+```bash
+./build/apex-ascent --mode peer-to-peer --id 1 --port 7200 --host
+./build/apex-ascent --mode peer-to-peer --id 2 --port 7202 \
+  --peer tcp://127.0.0.1:7200
 ```
 
 For clients on another machine, advertise the server host and join that

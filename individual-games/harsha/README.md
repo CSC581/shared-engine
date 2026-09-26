@@ -2,7 +2,8 @@
 
 Jump King–style vertical climber on the shared engine: charge a jump, aim,
 release, and climb a tower of platforms. Optional online co-climb uses the
-shared `network-core` module with a dedicated Apex server.
+shared `Multiplayer::Session` interface in either client-server or peer-to-peer
+mode.
 
 ## Controls
 
@@ -31,12 +32,12 @@ cmake --build build --target apex-ascent
 CMake copies player PNGs next to the binary (`build/media/apex-ascent/`). Run
 the executable from any cwd; assets resolve via `SDL_GetBasePath()`.
 
-## Online co-climb
+## Online co-climb — client-server
 
 ```bash
 cmake --build build --target apex-network-server apex-ascent
 ./build/apex-network-server
-./build/apex-ascent --join          # each player, separate terminal
+./build/apex-ascent --join          # repeat in separate terminals
 ```
 
 Use `./build/apex-network-server` (tower world), not the sandbox
@@ -53,6 +54,32 @@ Across machines, pass the server's reachable host separately from its bind:
 Online: peers are tinted animated ghost sprites; the amber moving platform is
 server-authored; pause/scale only affects your local climb.
 
+## Online co-climb — peer-to-peer
+
+Player poses and animation state travel directly between peers. The dedicated
+server remains authoritative only for the moving platform:
+
+```bash
+./build/apex-network-server
+./build/apex-ascent --mode peer-to-peer --id 1 --port 7200
+./build/apex-ascent --mode peer-to-peer --id 2 --port 7202 \
+  --peer tcp://127.0.0.1:7200
+./build/apex-ascent --mode peer-to-peer --id 3 --port 7204 \
+  --peer tcp://127.0.0.1:7202
+```
+
+Alternatively, the first player can carry the platform authority as a
+listen-server; no separate server process is needed:
+
+```bash
+./build/apex-ascent --mode peer-to-peer --id 1 --port 7200 --host
+./build/apex-ascent --mode peer-to-peer --id 2 --port 7202 \
+  --peer tcp://127.0.0.1:7200
+```
+
+Peer ids and base ports must be unique. Across machines, every peer also needs
+`--advertise HOST`, and bootstrap addresses must use reachable hosts.
+
 ## Layout
 
 | Path | Role |
@@ -60,6 +87,7 @@ server-authored; pause/scale only affects your local climb.
 | [apexAscent.cpp](apexAscent.cpp) | Gameplay, level, camera, collision, HUD, online mode |
 | [ApexNetworkConfig.hpp](ApexNetworkConfig.hpp) | Shared spawn + moving-platform paths for client/server |
 | [ApexNetworkServerMain.cpp](ApexNetworkServerMain.cpp) | Headless Apex world server |
+| [ApexListenServer.hpp](ApexListenServer.hpp) | In-process platform authority for a hosting peer |
 | [animation/](animation/) | `PlayerAnimation` — sheet load, clips, draw, ghost tint |
 | [media/Spritesheets/Spritesheets/](media/Spritesheets/Spritesheets/) | Source penguin spritesheets |
 | [docs/individual-games/harsha/apex-ascent-design.md](../../docs/individual-games/harsha/apex-ascent-design.md) | Design decisions |

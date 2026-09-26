@@ -220,7 +220,7 @@ add_executable(apex-ascent
     individual-games/harsha/animation/PlayerAnimation.cpp
 )
 target_include_directories(apex-ascent PRIVATE individual-games/harsha)
-target_link_libraries(apex-ascent PRIVATE engine network-core)
+target_link_libraries(apex-ascent PRIVATE engine multiplayer)
 
 # Headless Apex world server (tower coords). Separate from sandbox network-server.
 add_executable(apex-network-server individual-games/harsha/ApexNetworkServerMain.cpp)
