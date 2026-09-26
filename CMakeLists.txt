@@ -44,6 +44,7 @@ add_library(network-core STATIC
     src/NetworkProtocol.cpp
     src/NetworkServer.cpp
     src/NetworkClient.cpp
+    src/WorldStateClient.cpp
 )
 
 target_include_directories(network-core PUBLIC include)
