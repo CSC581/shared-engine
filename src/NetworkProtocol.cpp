@@ -44,6 +44,48 @@ bool isValidSessionToken(const std::string& token)
     });
 }
 
+bool parsePlatforms(const Message& message, std::size_t index,
+                    std::vector<PlatformState>& platforms, std::string& error)
+{
+    if (index >= message.size()) {
+        error = "invalid snapshot platform header";
+        return false;
+    }
+
+    std::uint64_t platformCount = 0;
+    if (!parseUnsigned(message[index], platformCount)) {
+        error = "invalid snapshot platform count";
+        return false;
+    }
+    ++index;
+
+    constexpr std::size_t platformFieldCount = 5;
+    if (platformCount > (std::numeric_limits<std::size_t>::max() - index) / platformFieldCount ||
+        message.size() != index + static_cast<std::size_t>(platformCount) * platformFieldCount) {
+        error = "invalid snapshot platform count";
+        return false;
+    }
+
+    platforms.clear();
+    platforms.reserve(static_cast<std::size_t>(platformCount));
+    for (std::uint64_t i = 0; i < platformCount; ++i) {
+        std::uint64_t id = 0;
+        PlatformState platform;
+        if (!parseUnsigned(message[index], id) || id == 0 || id > std::numeric_limits<std::uint32_t>::max() ||
+            !parseFloat(message[index + 1], platform.x) || !parseFloat(message[index + 2], platform.y) ||
+            !parseFloat(message[index + 3], platform.width) || !parseFloat(message[index + 4], platform.height) ||
+            platform.width <= 0.0F || platform.height <= 0.0F) {
+            error = "invalid platform in snapshot";
+            return false;
+        }
+
+        platform.id = static_cast<std::uint32_t>(id);
+        platforms.push_back(platform);
+        index += platformFieldCount;
+    }
+    return true;
+}
+
 bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& snapshot, std::string& error)
 {
     std::uint64_t playerCount = 0;
@@ -53,7 +95,6 @@ bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& sna
         return false;
     }
 
-    constexpr std::size_t platformFieldCount = 5;
     if (playerCount > message.size()) {
         error = "invalid snapshot player count";
         return false;
@@ -84,43 +125,19 @@ bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& sna
         snapshot.players.push_back(std::move(player));
     }
 
-    if (index >= message.size()) {
-        error = "invalid snapshot platform header";
-        return false;
+    return parsePlatforms(message, index, snapshot.platforms, error);
+}
+
+void appendPlatforms(Message& message, const std::vector<PlatformState>& platforms)
+{
+    message.push_back(std::to_string(platforms.size()));
+    for (const PlatformState& platform : platforms) {
+        message.push_back(std::to_string(platform.id));
+        message.push_back(formatFloat(platform.x));
+        message.push_back(formatFloat(platform.y));
+        message.push_back(formatFloat(platform.width));
+        message.push_back(formatFloat(platform.height));
     }
-
-    std::uint64_t platformCount = 0;
-    if (!parseUnsigned(message[index], platformCount)) {
-        error = "invalid snapshot platform count";
-        return false;
-    }
-    ++index;
-
-    if (platformCount > (std::numeric_limits<std::size_t>::max() - index) / platformFieldCount ||
-        message.size() != index + static_cast<std::size_t>(platformCount) * platformFieldCount) {
-        error = "invalid snapshot platform count";
-        return false;
-    }
-
-    snapshot.platforms.clear();
-    snapshot.platforms.reserve(static_cast<std::size_t>(platformCount));
-    for (std::uint64_t i = 0; i < platformCount; ++i) {
-        std::uint64_t id = 0;
-        PlatformState platform;
-        if (!parseUnsigned(message[index], id) || id == 0 || id > std::numeric_limits<std::uint32_t>::max() ||
-            !parseFloat(message[index + 1], platform.x) || !parseFloat(message[index + 2], platform.y) ||
-            !parseFloat(message[index + 3], platform.width) || !parseFloat(message[index + 4], platform.height) ||
-            platform.width <= 0.0F || platform.height <= 0.0F) {
-            error = "invalid platform in snapshot";
-            return false;
-        }
-
-        platform.id = static_cast<std::uint32_t>(id);
-        snapshot.platforms.push_back(platform);
-        index += platformFieldCount;
-    }
-
-    return true;
 }
 
 void appendSnapshot(Message& message, const WorldSnapshot& snapshot)
@@ -136,14 +153,7 @@ void appendSnapshot(Message& message, const WorldSnapshot& snapshot)
         message.push_back(player.data);
     }
 
-    message.push_back(std::to_string(snapshot.platforms.size()));
-    for (const PlatformState& platform : snapshot.platforms) {
-        message.push_back(std::to_string(platform.id));
-        message.push_back(formatFloat(platform.x));
-        message.push_back(formatFloat(platform.y));
-        message.push_back(formatFloat(platform.width));
-        message.push_back(formatFloat(platform.height));
-    }
+    appendPlatforms(message, snapshot.platforms);
 }
 
 } // namespace
@@ -166,10 +176,25 @@ Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken)
     return {std::to_string(protocolVersion), "LEAVE", std::to_string(playerId), sessionToken};
 }
 
+Message encodeGetWorld()
+{
+    return {std::to_string(protocolVersion), "GET_WORLD"};
+}
+
 bool decodeRequest(const Message& message, Request& request, std::string& error)
 {
     if (!parseVersion(message, error)) {
         return false;
+    }
+
+    if (message[1] == "GET_WORLD") {
+        if (message.size() != 2) {
+            error = "GET_WORLD takes no player fields";
+            return false;
+        }
+        request = {};
+        request.type = RequestType::GetWorld;
+        return true;
     }
 
     if (message[1] == "JOIN") {
@@ -254,6 +279,13 @@ Message encodeSnapshot(const WorldSnapshot& snapshot)
     return message;
 }
 
+Message encodeWorldState(const WorldStateSnapshot& snapshot)
+{
+    Message message{std::to_string(protocolVersion), "WORLD_STATE", std::to_string(snapshot.worldRevision)};
+    appendPlatforms(message, snapshot.platforms);
+    return message;
+}
+
 Message encodeError(const std::string& error)
 {
     return {std::to_string(protocolVersion), "ERROR", error};
@@ -288,6 +320,15 @@ bool decodeReply(const Message& message, Reply& reply, std::string& error)
         }
         reply.type = ReplyType::Goodbye;
         return true;
+    }
+
+    if (message[1] == "WORLD_STATE") {
+        if (message.size() < 4 || !parseUnsigned(message[2], reply.worldState.worldRevision)) {
+            error = "invalid world state header";
+            return false;
+        }
+        reply.type = ReplyType::WorldState;
+        return parsePlatforms(message, 3, reply.worldState.platforms, error);
     }
 
     std::size_t snapshotIndex = 2;

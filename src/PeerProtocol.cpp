@@ -11,7 +11,6 @@ namespace {
 // Field encoding is shared with the client-server protocol; see WireFormat.hpp.
 using Net::formatFloat;
 using Net::parseFloat;
-using Net::parseSigned;
 using Net::parseUnsigned;
 
 bool parsePeerId(const std::string& text, PeerId& value)
@@ -103,10 +102,6 @@ Message encodeState(const PeerState& state)
                     std::to_string(state.sequence),
                     formatFloat(state.x),
                     formatFloat(state.y),
-                    formatFloat(state.velocityX),
-                    formatFloat(state.velocityY),
-                    std::to_string(state.health),
-                    state.ready ? "1" : "0",
                     state.data};
     return message;
 }
@@ -184,27 +179,17 @@ bool decode(const Message& message, Envelope& envelope, std::string& error)
     }
 
     if (command == "STATE") {
-        std::int64_t health = 0;
-        if (message.size() != 12 || !isValidName(message[3]) ||
+        if (message.size() != 8 || !isValidName(message[3]) ||
             !parseUnsigned(message[4], envelope.state.sequence) || envelope.state.sequence == 0 ||
             !parseFloat(message[5], envelope.state.x) || !parseFloat(message[6], envelope.state.y) ||
-            !parseFloat(message[7], envelope.state.velocityX) ||
-            !parseFloat(message[8], envelope.state.velocityY) || !parseSigned(message[9], health) ||
-            health < 0 || health > std::numeric_limits<std::int32_t>::max() ||
-            (message[10] != "0" && message[10] != "1")) {
+            !Net::isValidPlayerData(message[7])) {
             error = "invalid STATE message";
             return false;
         }
         envelope.type = MessageType::State;
         envelope.state.id = envelope.senderId;
         envelope.state.name = message[3];
-        envelope.state.health = static_cast<std::int32_t>(health);
-        envelope.state.ready = message[10] == "1";
-        if (!Net::isValidPlayerData(message[11])) {
-            error = "STATE player data is too large";
-            return false;
-        }
-        envelope.state.data = message[11];
+        envelope.state.data = message[7];
         return true;
     }
 

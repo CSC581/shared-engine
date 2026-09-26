@@ -149,12 +149,17 @@ public:
         SDL_RenderDebugText(renderer, 32.0F, 516.0F,
                             "WASD/arrows move | P pause | 1/2/3 = 0.5x 1x 2x");
 
-        if (session_->state() != Multiplayer::State::Ready) {
-            SDL_SetRenderDrawColor(renderer, session_->state() == Multiplayer::State::Failed ? 255 : 255,
-                                   session_->state() == Multiplayer::State::Failed ? 110 : 205,
-                                   session_->state() == Multiplayer::State::Failed ? 110 : 100, 255);
-            SDL_RenderDebugText(renderer, 32.0F, 500.0F, session_->status().c_str());
+        const Multiplayer::State state = session_->state();
+        if (state == Multiplayer::State::Failed) {
+            SDL_SetRenderDrawColor(renderer, 255, 110, 110, 255);
+        } else if (state == Multiplayer::State::Connecting) {
+            SDL_SetRenderDrawColor(renderer, 255, 205, 100, 255);
+        } else {
+            // In hybrid mode this also makes a missing platform authority
+            // visible while the direct peer mesh remains usable.
+            SDL_SetRenderDrawColor(renderer, 150, 210, 175, 255);
         }
+        SDL_RenderDebugText(renderer, 32.0F, 500.0F, session_->status().c_str());
     }
 
     void printSummary() const

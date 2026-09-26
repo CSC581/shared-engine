@@ -1,0 +1,16 @@
+digraph FrameTimeFlow {
+    graph [rankdir=LR, bgcolor="#F8FAFC", pad="0.25", nodesep="0.35", ranksep="0.4", splines=polyline];
+    node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=13, penwidth=1.2, color="#9CB5C2", fillcolor="#FFFFFF", fontcolor="#193547", margin="0.18,0.13"];
+    edge [color="#478299", penwidth=1.3, arrowsize=0.72];
+
+    real [label="Real-time clock"];
+    timeline [label="Game timeline\npause or scale"];
+    loop [label="Engine loop\npoll input"];
+    input [label="Game::handleInput"];
+    frame [label="FrameTime\nelapsed game time", fillcolor="#E8F4F2", color="#64A49A"];
+    update [label="Game::update\nmove entities"];
+    render [label="Game::render\nengine presents frame"];
+
+    real -> timeline -> frame;
+    loop -> input -> frame -> update -> render;
+}

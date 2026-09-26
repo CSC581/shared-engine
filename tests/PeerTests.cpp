@@ -79,18 +79,14 @@ bool testProtocolRoundTrips()
     state.sequence = 91;
     state.x = 120.5F;
     state.y = -40.25F;
-    state.velocityX = 220.0F;
-    state.velocityY = -0.5F;
-    state.health = 73;
-    state.ready = true;
+    state.data = "velocity=220,-0.5 health=73 ready=1";
     passed &= expect(Peer::decode(Peer::encodeState(state), envelope, error),
                      "STATE should decode: " + error);
     passed &= expect(envelope.type == Peer::MessageType::State && envelope.state.id == 3 &&
                          envelope.state.name == "carol" && envelope.state.sequence == 91 &&
                          envelope.state.x == 120.5F && envelope.state.y == -40.25F &&
-                         envelope.state.velocityX == 220.0F && envelope.state.velocityY == -0.5F &&
-                         envelope.state.health == 73 && envelope.state.ready,
-                     "STATE should round-trip exactly, floats included");
+                         envelope.state.data == state.data,
+                     "STATE should round-trip its generic and game-defined fields");
 
     passed &= expect(Peer::decode(Peer::encodePing(5), envelope, error) &&
                          envelope.type == Peer::MessageType::Ping && envelope.senderId == 5,
@@ -119,7 +115,7 @@ bool testProtocolRejectsBadMessages()
     passed &= expect(!Peer::decode({"99", "LEAVE", "1"}, envelope, error) &&
                          error == "unsupported peer protocol version",
                      "a future protocol version should be named as the problem");
-    passed &= expect(!Peer::decode({"3", "PING", "1", "extra"}, envelope, error),
+    passed &= expect(!Peer::decode({std::to_string(Peer::protocolVersion), "PING", "1", "extra"}, envelope, error),
                      "a PING with extra fields should be rejected");
     passed &= expect(!Peer::decode({"1", "SHOUT", "1"}, envelope, error),
                      "an unknown command should be rejected");
@@ -335,6 +331,34 @@ bool testThreePeerMeshFormsFromOneAddress()
     return passed;
 }
 
+bool testDuplicatePeerIdReportsError()
+{
+    auto makeConfig = [](Peer::PeerId id, const std::vector<std::string>& bootstrap) {
+        Peer::PeerSession::Config config;
+        config.id = id;
+        config.name = "peer-" + std::to_string(id);
+        config.pubBind = "tcp://127.0.0.1:*";
+        config.greetBind = "tcp://127.0.0.1:*";
+        config.advertiseHost = "127.0.0.1";
+        config.bootstrap = bootstrap;
+        return config;
+    };
+
+    auto first = std::make_unique<Peer::PeerSession>(makeConfig(1, {}));
+    first->start();
+
+    auto duplicate = std::make_unique<Peer::PeerSession>(
+        makeConfig(1, {first->self().greetEndpoint}));
+    duplicate->start();
+
+    bool passed = expect(waitUntil([&] {
+        return duplicate->lastError().find("peer id 1 is already in use") != std::string::npos;
+    }), "a duplicate peer id should be reported to the joining peer");
+    passed &= expect(first->peerCount() == 1,
+                     "the existing peer should not add a duplicate id to its roster");
+    return passed;
+}
+
 // The point of the heartbeat: a peer that publishes no game state at all still
 // belongs to the session. Before it existed, liveness was a side effect of a
 // game publishing its player, so a paused game — or one between levels, or one
@@ -402,6 +426,7 @@ int main()
     passed &= testProtocolRoundTrips();
     passed &= testProtocolRejectsBadMessages();
     passed &= testThreePeerMeshFormsFromOneAddress();
+    passed &= testDuplicatePeerIdReportsError();
     passed &= testSilentPeersStayInTheSession();
 
     if (passed) {
