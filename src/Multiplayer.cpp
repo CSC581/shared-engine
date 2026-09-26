@@ -274,9 +274,13 @@ public:
 
         std::string text = std::to_string(mesh_->peerCount()) + " peer(s) in mesh";
         if (authority_) {
-            text += authority_->state() == Network::ConnectionState::Connected
-                        ? ", world objects from " + config_.serverEndpoint
-                        : ", waiting for world objects from " + config_.serverEndpoint;
+            if (authority_->state() == Network::ConnectionState::Error) {
+                text += ", world authority failed: " + authority_->error();
+            } else if (authority_->state() == Network::ConnectionState::Connected) {
+                text += ", world objects from " + config_.serverEndpoint;
+            } else {
+                text += ", waiting for world objects from " + config_.serverEndpoint;
+            }
         }
         return text;
     }

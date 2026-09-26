@@ -406,6 +406,53 @@ bool testBothModesBehaveBeforeConnecting()
     return passed;
 }
 
+bool testPeerReportsTerminalAuthorityFailure()
+{
+    zmq::context_t context(1);
+    zmq::socket_t socket(context, zmq::socket_type::rep);
+    socket.set(zmq::sockopt::linger, 0);
+    socket.set(zmq::sockopt::rcvtimeo, 2000);
+    socket.bind("tcp://127.0.0.1:*");
+    const std::string endpoint = socket.get(zmq::sockopt::last_endpoint);
+
+    std::thread authority([moved = std::move(socket)]() mutable {
+        bool received = false;
+        try {
+            Net::receive(moved, received);
+            if (received) {
+                Net::send(moved, {std::to_string(Network::protocolVersion + 1),
+                                  "WORLD_STATE", "0", "0"});
+            }
+        } catch (const zmq::error_t&) {
+        }
+    });
+
+    RealTimeClock clock;
+    Multiplayer::Config config;
+    config.mode = Multiplayer::Mode::PeerToPeer;
+    config.serverEndpoint = endpoint;
+    config.peerId = 4;
+    config.basePort = 57434;
+    std::unique_ptr<Multiplayer::Session> session = Multiplayer::Session::open(config, clock);
+
+    const bool failureReported = waitUntil([&] {
+        session->update();
+        return session->authorityState() == Multiplayer::AuthorityState::Failed;
+    });
+    authority.join();
+
+    const std::string status = session->status();
+    bool passed = expect(failureReported,
+                         "a terminal authority error should be reported as failed");
+    passed &= expect(session->state() == Multiplayer::State::Ready,
+                     "an authority failure must not disable the usable peer mesh");
+    passed &= expect(status.find("Protocol version mismatch") != std::string::npos,
+                     "peer status should expose the authority's actual failure: " + status);
+    passed &= expect(status.find("waiting for world objects") == std::string::npos,
+                     "a failed authority must not still be described as waiting");
+    return passed;
+}
+
 // Losing the authority must not delete the level. Before this, the client
 // dropped its whole snapshot on a disconnect and the platforms went with it —
 // so a server hiccup opened a hole in the floor under every player.
@@ -469,6 +516,7 @@ int main()
     passed &= testPeerToPeer();
     passed &= testPeerToPeerWithNoServerAtAll();
     passed &= testBothModesBehaveBeforeConnecting();
+    passed &= testPeerReportsTerminalAuthorityFailure();
     passed &= testWorldSurvivesLosingTheAuthority();
 
     if (passed) {
