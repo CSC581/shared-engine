@@ -16,7 +16,7 @@ player, level, score, or win condition.
 | --- | --- | --- |
 | 1. Time | Monotonic real-time source, pausable and rescalable timelines, per-consumer delta timers, and `FrameTime` for game movement. The engine also exposes a loop-iteration clock. | `include/TimeSource.hpp`, `include/Timeline.hpp`, `include/DeltaTimer.hpp`, `include/FrameTime.hpp`, `src/Engine.cpp` |
 | 2. Networking | SDL-free protocol and nonblocking ZeroMQ client. A headless server keeps player sessions, positions, and server-owned moving platforms. | `include/NetworkProtocol.hpp`, `include/NetworkClient.hpp`, `include/NetworkServer.hpp`, `src/Network*.cpp` |
-| 3. Multithreaded update example | A sandbox runs moving-platform and character updates on persistent worker threads, synchronizing each frame with a mutex and condition variable. This is a demonstration, not a thread scheduler inside `Engine::run()`. | `sandbox/ThreadLoopSandbox.cpp` |
+| 3. Multithreaded updates | Mutex-protected entities and timelines, plus independent delta timers, support game-managed parallel updates. The game synchronizes workers before collision checks and rendering. | `include/Entity.hpp`, `include/Timeline.hpp`, `include/DeltaTimer.hpp`, `src/Engine.cpp` |
 | 4. Concurrent clients | The dedicated server gives joined players separate request/reply workers; one slow client need not block another. Demo clients can independently pause or scale their own game time. | `sandbox/NetworkServerMain.cpp`, `sandbox/MultiplayerDemo.cpp` |
 | 5. Peer-to-peer and hybrid mode | Peers discover one another and send player state directly. An optional read-only world client obtains moving-platform state from a dedicated or player-hosted authority without joining its player roster. | `include/PeerSession.hpp`, `include/WorldStateClient.hpp`, `include/Multiplayer.hpp`, `src/PeerSession.cpp`, `src/WorldStateClient.cpp`, `src/Multiplayer.cpp` |
 
@@ -33,20 +33,27 @@ player, level, score, or win condition.
 
 ## How The Pieces Fit
 
-```text
-Application -> Game + Engine -> SDL window, input, rendering, FrameTime
-            -> Entity, Physics, Collision -> application-controlled movement
-            -> Multiplayer::Session (optional)
-               -> ClientServer: NetworkClient <-> NetworkServer
-               -> PeerToPeer:  PeerSession <-> other peers
-                               WorldStateClient <-> optional platform authority
-```
+**Frame and time.** The engine polls input, obtains game-time delta, calls the
+game update, and renders the frame. Real time keeps running during a game pause.
+
+![Milestone 2 frame and time flow](docs/frame-time-flow.svg)
+
+**Client-server mode.** The game sends its locally calculated position to the
+dedicated server and reads back a snapshot of players and platforms.
+
+![Milestone 2 client-server flow](docs/client-server-flow.svg)
+
+**Peer-to-peer and hybrid mode.** Player state goes directly between peers.
+If configured, a separate world client asks an authority only for platforms.
+
+![Milestone 2 peer-to-peer and hybrid flow](docs/peer-hybrid-flow.svg)
 
 `engine-time`, `engine-geometry`, `network-core`, and `peer-core` do not link
 SDL. The windowed `engine` library adds SDL on top, while the dedicated
 `network-server` uses the networking and time libraries without a window.
-The threading example is a sandbox game using the ordinary `Game` interface;
-it does not make every game multithreaded.
+For Section 3, games can use the thread-safe entity and time APIs to update
+different objects concurrently, then wait for the updates before checking
+collisions or rendering. `Engine::run()` does not create worker threads.
 
 The public APIs are in `include/`, their implementations are in `src/`,
 runnable examples are in `sandbox/`, and automated checks are in `tests/`.
@@ -105,15 +112,33 @@ membership and platform motion, but character controls and movement stay in
 the client. Connection timeouts and retries use real time, so they still work
 when the client's game timeline is paused.
 
+The `NetworkProtocol` messages are:
+
+| Message | Sent by | What it does |
+| --- | --- | --- |
+| `JOIN` | Client | Requests a player session. |
+| `WELCOME` | Server | Returns the assigned player ID, initial snapshot, and a private worker address when used. |
+| `POSITION` | Client | Sends the player's latest position, optional game data, and sequence number. |
+| `SNAPSHOT` | Server | Returns the current player and platform states after a position update. |
+| `LEAVE` | Client | Requests removal from the player session. |
+| `GOODBYE` | Server | Confirms that the player has left. |
+| `ERROR` | Server | Reports an invalid request, rejected update, or unavailable session. |
+| `GET_WORLD` | Hybrid peer's world client | Requests platform state without joining as a server player (Section 5). |
+| `WORLD_STATE` | Platform authority | Returns platform state only, with no player data (Section 5). |
+
+`Disconnected`, `Connecting`, `Connected`, and `Error` are local client
+connection states, not messages sent over the network.
+
 ### Section 3: Multithreaded Updates
 
-`thread-loop-sandbox` demonstrates a loop with two persistent worker threads:
-one updates a moving platform and the other updates a character. SDL input and
-rendering stay on the main thread. At the start of a frame, the main thread
-provides the frame delta and wakes both workers. It waits for both updates to
-finish before resolving collisions and drawing the new positions. A mutex and
-condition variable coordinate that work, and both workers are joined on
-shutdown. This threaded loop is in the sandbox, not built into `Engine::run()`.
+The shared engine supports game-managed updates on multiple threads. `Entity`
+protects individual position and velocity operations with a mutex, `Timeline`
+can be read from multiple threads, and each worker can use its own `DeltaTimer`.
+`Engine::run()` provides the frame time and keeps SDL input and rendering on its
+loop thread. A game can assign separate update tasks to workers, then wait for
+them to finish before checking collisions or rendering their results. The game
+is responsible for creating, coordinating, and joining those workers;
+`Engine::run()` does not schedule them automatically.
 
 ### Section 4: Concurrent Clients And Shared Platforms
 
@@ -165,35 +190,3 @@ player position to that server or register it as a server player.
 authority. Set the mode to `ClientServer` instead to use the same session
 interface with the centralized server. Rebuild the server and clients
 together after a protocol change.
-
-## Run The Demonstrations
-
-Start a separate terminal for each command that runs a server or game window.
-
-| Demonstration | Command | What it shows |
-| --- | --- | --- |
-| Timeline controls | `./build/timeline-sandbox` | Pause, time scale, nested timeline, and frame delta controls. |
-| Two update workers | `./build/thread-loop-sandbox` | Character and platform updates synchronized with the render loop. |
-| Basic client-server | `./build/network-server`, then `./build/network-client` in three terminals | Three windows sharing player positions and moving platforms. |
-
-To run the same multiplayer demo in client-server mode, start the server and
-then launch `./build/multiplayer-demo --mode client-server` twice. To run it in
-hybrid peer-to-peer mode, start the server and then launch these in separate
-terminals:
-
-```bash
-./build/multiplayer-demo --mode peer-to-peer --id 1 --port 7200
-./build/multiplayer-demo --mode peer-to-peer --id 2 --port 7202 --peer tcp://127.0.0.1:7200
-```
-
-The first peer can host the platform authority itself instead of using a
-separate server: add `--host` to its command and do not start
-`network-server`. For a serverless peer demonstration, pass `--server none`
-to both peers; they can exchange player positions but have no shared
-server-owned platforms.
-
-`WASD` or arrow keys move in the networking demos. `P` pauses that client's
-game time, and `1`, `2`, and `3` choose 0.5x, 1x, and 2x speed. On different
-computers, use a reachable server address and set `--advertise HOST` for the
-dedicated server and each peer. The private worker ports also need to be
-reachable through any firewall; see `./build/multiplayer-demo --help`.
