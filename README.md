@@ -205,7 +205,7 @@ stores membership and poses and replies with a world snapshot (other players
 plus server-owned moving platforms). Local movement uses game time; network
 I/O and platforms use real time. A JOIN handshake hands each client a private
 REP worker so one slow client does not stall the others (no Router/Dealer).
-Demo layout lives in `sandbox/NetworkDemoConfig.hpp`. Protocol version 4 —
+Demo layout lives in `sandbox/NetworkDemoConfig.hpp`. Network protocol version 6 —
 rebuild server and clients together.
 
 ```bash
@@ -302,6 +302,8 @@ instead of running `network-server` separately.
 In `PeerToPeer` the server is optional and owns world objects only: point every
 peer at one for moving platforms and the players still go peer to peer, or
 leave `serverEndpoint` empty for a session with no server process anywhere.
+Hybrid peers use a read-only `WorldStateClient` to fetch platforms; they do not
+join the server as players or send it their positions.
 Identity differs the way the architectures do — the server assigns an id, while
 peers choose their own and must not collide.
 

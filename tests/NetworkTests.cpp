@@ -1,6 +1,7 @@
 #include "NetworkClient.hpp"
 #include "NetworkProtocol.hpp"
 #include "NetworkServer.hpp"
+#include "WorldStateClient.hpp"
 #include "TimeSource.hpp"
 #include "WireFormat.hpp"
 #include "ZmqMessage.hpp"
@@ -368,6 +369,175 @@ bool welcomeEncodesSessionEndpoint()
                   "WELCOME must round-trip session endpoint and platforms");
 }
 
+bool worldStateClientReadsOnlyWorld()
+{
+    zmq::context_t context(1);
+    zmq::socket_t socket(context, zmq::socket_type::rep);
+    socket.set(zmq::sockopt::linger, 0);
+    socket.set(zmq::sockopt::rcvtimeo, 2000);
+    socket.bind("tcp://127.0.0.1:*");
+
+    ManualClock clock;
+    Network::WorldStateClient client(clock, socket.get(zmq::sockopt::last_endpoint));
+    client.start();
+    bool passed = expect(receiveMessage(socket) == Network::encodeGetWorld(),
+                         "world observer must request state without joining or sending a player pose");
+    Net::send(socket, Network::encodeWorldState({4, {{7, 10.0F, 20.0F, 30.0F, 40.0F}}}));
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.state() != Network::ConnectionState::Connected && std::chrono::steady_clock::now() < deadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    passed &= expect(client.state() == Network::ConnectionState::Connected &&
+                         client.snapshot().platforms.size() == 1 && client.snapshot().platforms[0].id == 7,
+                     "world observer should read platform state");
+
+    clock.advance(50 * 1000000);
+    client.poll();
+    passed &= expect(receiveMessage(socket) == Network::encodeGetWorld(),
+                     "world observer should poll independently of player movement");
+    Net::send(socket, Network::encodeWorldState({5, {{7, 50.0F, 20.0F, 30.0F, 40.0F}}}));
+    const auto updatedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.snapshot().worldRevision != 5 && std::chrono::steady_clock::now() < updatedDeadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    passed &= expect(client.snapshot().worldRevision == 5 && !client.snapshot().platforms.empty() &&
+                         client.snapshot().platforms[0].x == 50.0F,
+                     "world observer should receive later platform positions");
+    client.stop();
+    return passed;
+}
+
+bool worldRequestDoesNotUsePlayerSlots()
+{
+    ManualClock clock;
+    Network::ServerConfig config;
+    config.spawnPoints = {{0.0F, 0.0F}};
+    config.platforms = {{7, 0.0F, 0.0F, 100.0F, 0.0F, 50.0F, 30.0F, 10.0F}};
+    config.maxPlayers = 1;
+    Network::NetworkServer server(clock, config);
+
+    Network::Reply reply;
+    std::string error;
+    const Network::SessionToken playerToken(32, 'a');
+    bool passed = expect(Network::decodeReply(server.handle(Network::encodeJoin(playerToken)),
+                                               reply, error) && reply.type == Network::ReplyType::Welcome,
+                         "ordinary player should occupy the only player slot");
+    const Network::PlayerId playerId = reply.playerId;
+    passed &= expect(server.playerCount() == 1, "ordinary JOIN should register one player");
+    clock.advance(kNsPerSec);
+    Network::Message worldMessage = server.handle(Network::encodeGetWorld());
+    passed &= expect(worldMessage.size() == 9 &&
+                         Network::decodeReply(worldMessage, reply, error) &&
+                         reply.type == Network::ReplyType::WorldState &&
+                         reply.worldState.platforms.size() == 1 &&
+                         reply.worldState.platforms[0].x == 50.0F &&
+                         reply.snapshot.players.empty() && server.playerCount() == 1,
+                     "full server should serve platforms without relaying players or adding a slot");
+    const std::uint64_t worldRevision = reply.worldState.worldRevision;
+    server.handle(Network::encodePosition(playerId, playerToken, {5.0F, 6.0F, 1}));
+    passed &= expect(Network::decodeReply(server.handle(Network::encodeGetWorld()), reply, error) &&
+                         reply.type == Network::ReplyType::WorldState &&
+                         reply.worldState.worldRevision == worldRevision,
+                     "world revision must not change when only a player moves");
+    passed &= expect(Network::decodeReply(server.handle(Network::encodeJoin(Network::SessionToken(32, 'b'))),
+                                          reply, error) && reply.type == Network::ReplyType::Error,
+                     "player limit should still apply to normal JOIN requests");
+
+    Network::Request request;
+    passed &= expect(!Network::decodeRequest({std::to_string(Network::protocolVersion), "GET_WORLD", "1"},
+                                             request, error),
+                     "world request must reject player fields");
+    passed &= expect(!Network::decodeReply({std::to_string(Network::protocolVersion), "WORLD_STATE", "4", "1"},
+                                           reply, error),
+                     "truncated world snapshots must be rejected");
+    return passed;
+}
+
+bool worldObserverRetriesWithoutKeepingStaleState()
+{
+    zmq::context_t context(1);
+    zmq::socket_t socket(context, zmq::socket_type::rep);
+    socket.set(zmq::sockopt::linger, 0);
+    socket.set(zmq::sockopt::rcvtimeo, 2000);
+    socket.bind("tcp://127.0.0.1:*");
+
+    ManualClock clock;
+    Network::WorldStateClient client(clock, socket.get(zmq::sockopt::last_endpoint));
+    client.start();
+    if (!expect(receiveMessage(socket) == Network::encodeGetWorld(), "observer should make initial request")) {
+        return false;
+    }
+    Net::send(socket, Network::encodeWorldState({1, {{1, 10.0F, 0.0F, 20.0F, 10.0F}}}));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.state() != Network::ConnectionState::Connected && std::chrono::steady_clock::now() < deadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!expect(client.state() == Network::ConnectionState::Connected, "observer should initially connect")) {
+        return false;
+    }
+
+    clock.advance(50 * 1000000);
+    client.poll();
+    if (!expect(receiveMessage(socket) == Network::encodeGetWorld(), "observer should poll again")) {
+        return false;
+    }
+
+    // Deliberately withhold the second reply to simulate a dead authority.
+    clock.advance(kNsPerSec);
+    client.poll();
+    bool passed = expect(client.state() == Network::ConnectionState::Connecting &&
+                             client.snapshot().platforms.empty(),
+                         "retrying observer should clear stale snapshot and report reconnecting");
+    // Complete the abandoned REP exchange so this test socket can accept the
+    // observer's fresh REQ connection after its retry delay.
+    Net::send(socket, Network::encodeWorldState({2, {{1, 20.0F, 0.0F, 20.0F, 10.0F}}}));
+    clock.advance(kNsPerSec);
+    client.poll();
+    passed &= expect(receiveMessage(socket) == Network::encodeGetWorld(),
+                     "observer should retry with GET_WORLD, not JOIN");
+    Net::send(socket, Network::encodeWorldState({3, {{1, 30.0F, 0.0F, 20.0F, 10.0F}}}));
+    const auto reconnectDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.state() != Network::ConnectionState::Connected &&
+           std::chrono::steady_clock::now() < reconnectDeadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    passed &= expect(client.state() == Network::ConnectionState::Connected &&
+                         client.snapshot().worldRevision == 3 && !client.snapshot().platforms.empty() &&
+                         client.snapshot().platforms[0].x == 30.0F,
+                     "observer should recover with fresh world state after reconnecting");
+    return passed;
+}
+
+bool playerClientRejectsWorldOnlyReply()
+{
+    zmq::context_t context(1);
+    zmq::socket_t socket(context, zmq::socket_type::rep);
+    socket.set(zmq::sockopt::linger, 0);
+    socket.set(zmq::sockopt::rcvtimeo, 2000);
+    socket.bind("tcp://127.0.0.1:*");
+
+    ManualClock clock;
+    Network::NetworkClient client(clock, socket.get(zmq::sockopt::last_endpoint));
+    client.start();
+    if (!expect(!receiveMessage(socket).empty(), "player client should send JOIN")) {
+        return false;
+    }
+    Net::send(socket, Network::encodeWorldState({1, {{1, 0.0F, 0.0F, 20.0F, 10.0F}}}));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client.state() != Network::ConnectionState::Error && std::chrono::steady_clock::now() < deadline) {
+        client.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return expect(client.state() == Network::ConnectionState::Error && client.playerId() == 0 &&
+                      client.error().find("Unexpected reply") != std::string::npos,
+                  "player client must reject a read-only world reply instead of accepting an empty player snapshot");
+}
+
 bool rewriteTcpEndpointHostKeepsPort()
 {
     bool passed = true;
@@ -413,6 +583,10 @@ int main()
     passed &= welcomeEncodesSessionEndpoint();
     passed &= rewriteTcpEndpointHostKeepsPort();
     passed &= perClientWorkersDoNotBlockEachOther();
+    passed &= worldStateClientReadsOnlyWorld();
+    passed &= worldRequestDoesNotUsePlayerSlots();
+    passed &= worldObserverRetriesWithoutKeepingStaleState();
+    passed &= playerClientRejectsWorldOnlyReply();
 
     Network::Request decoded;
     std::string error;

@@ -16,8 +16,8 @@ There are two complete networking architectures, and one interface over both.
                    /              \
      ClientServerSession      PeerToPeerSession
             |                    |        \
-     Network::NetworkClient      |         Network::NetworkClient
-            |                    |          (platforms only, optional)
+     Network::NetworkClient      |         Network::WorldStateClient
+            |                    |          (read-only world, optional)
      Network::NetworkServer   Peer::PeerSession
             |                    |
       NetworkProtocol.hpp    PeerProtocol.hpp
@@ -74,7 +74,8 @@ real rather than two classes sharing a header.
    advances the moving platforms on real time and expires players who have gone
    quiet. It runs whether or not any client is asking for anything, because
    platform motion is not driven by request arrival.
-3. Loops on the handshake socket accepting `JOIN` and nothing else.
+3. Loops on the public socket accepting `JOIN` for players and `GET_WORLD` for
+   read-only world observers. Only `JOIN` creates a private worker or player ID.
 
 The server is headless — no SDL, no window. `network-core` does not link SDL at
 all, which is enforced by the link line rather than by discipline.
@@ -172,9 +173,12 @@ held for that peer. Arrival order is not send order, so a stale pose must never
 overwrite a fresh one.
 
 If a shared-world authority is configured, the peer also holds a
-`NetworkClient` to it — but only for platforms. Its reply carries a player list
-and that list is deliberately discarded. This is the hybrid design: common world
-details from an authority, player data peer to peer.
+`WorldStateClient` to it. Every 50ms it sends `GET_WORLD` and receives
+`WORLD_STATE` with a world-only revision and shared platforms, but no player
+list. It does not `JOIN` or consume a player slot. This is the hybrid design:
+common world details from an authority, player data directly between peers.
+An unreachable authority is retried on real time; the session retains its last
+platform positions until fresh state arrives.
 
 ### Leaving
 

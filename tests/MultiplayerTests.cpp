@@ -84,6 +84,8 @@ public:
         return endpoint;
     }
 
+    std::size_t playerCount() const { return server_.playerCount(); }
+
 private:
     zmq::context_t context_{1};
     RealTimeClock clock_;
@@ -298,10 +300,18 @@ bool testPeerToPeer()
     passed &= expect(one->authorityState() == Multiplayer::AuthorityState::Ready,
                      "hybrid peer-to-peer mode should report its platform authority as ready");
 
-    // Player data must not be reaching peers via the authority. Both peers
-    // poll it for platforms, so it does know their poses — the claim is that
-    // the peers do not depend on it for each other, which is demonstrated by
-    // the pair below, who share no authority at all.
+    passed &= expect(server.playerCount() == 0,
+                     "hybrid peers must not join the authority as server players");
+
+    Multiplayer::Config regular;
+    regular.mode = Multiplayer::Mode::ClientServer;
+    regular.serverEndpoint = endpoint;
+    regular.playerName = "regular";
+    std::unique_ptr<Multiplayer::Session> clientServer = Multiplayer::Session::open(regular, clock);
+    passed &= expect(waitUntil([&] { clientServer->update(); return clientServer->state() == Multiplayer::State::Ready; }),
+                     "normal client should still join the authority");
+    passed &= expect(clientServer->remotePlayers().empty() && server.playerCount() == 1,
+                     "normal client must not see hybrid peers as duplicate server players");
     return passed;
 }
 
