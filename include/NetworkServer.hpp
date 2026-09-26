@@ -86,6 +86,7 @@ private:
     void expireInactivePlayers(std::int64_t now);
     void advancePlatforms(std::int64_t now);
     WorldSnapshot buildSnapshot() const;
+    WorldStateSnapshot buildWorldState() const;
     PlayerState spawnPlayer(PlayerId id) const;
 
     const TimeSource& clock_;
@@ -93,6 +94,7 @@ private:
     mutable std::mutex mutex_;
     PlayerId nextPlayerId_ = 1;
     std::uint64_t serverTick_ = 0;
+    std::uint64_t worldRevision_ = 0;
     std::int64_t lastPlatformUpdate_ = 0;
     bool platformClockStarted_ = false;
     std::unordered_map<PlayerId, ActivePlayer> players_;

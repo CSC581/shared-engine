@@ -149,7 +149,7 @@ int main(int argc, char* argv[])
 
         std::cout << "Network server handshake listening on " << handshakeEndpoint << '\n';
         std::cout << "Session endpoints advertise host " << advertiseHost << '\n';
-        std::cout << "Each JOIN spawns a dedicated per-client REP worker (no Router/Dealer).\n";
+        std::cout << "Each JOIN spawns a dedicated per-client REP worker; GET_WORLD is read-only.\n";
         std::cout << "Moving platforms are server-authored on real time.\n";
 
         while (g_running.load()) {
@@ -168,6 +168,13 @@ int main(int argc, char* argv[])
             std::string error;
             if (!Network::decodeRequest(requestMessage, request, error)) {
                 Net::send(handshake, Network::encodeError(error));
+                continue;
+            }
+
+            // World observers do not JOIN, consume player slots, or need a
+            // private worker: this public socket only serves a read-only view.
+            if (request.type == Network::RequestType::GetWorld) {
+                Net::send(handshake, server.handle(requestMessage));
                 continue;
             }
 
