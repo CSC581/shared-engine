@@ -15,9 +15,9 @@ player, level, score, or win condition.
 | Section | Shared-engine feature or demonstration | Main files |
 | --- | --- | --- |
 | 1. Time | Monotonic real-time source, pausable and rescalable timelines, per-consumer delta timers, and `FrameTime` for game movement. The engine also exposes a loop-iteration clock. | `include/TimeSource.hpp`, `include/Timeline.hpp`, `include/DeltaTimer.hpp`, `include/FrameTime.hpp`, `src/Engine.cpp` |
-| 2. Networking | SDL-free protocol and nonblocking ZeroMQ client. A headless server keeps player sessions, positions, and server-owned moving platforms. | `include/NetworkProtocol.hpp`, `include/NetworkClient.hpp`, `include/NetworkServer.hpp`, `src/Network*.cpp` |
+| 2. Networking | SDL-free protocol and nonblocking ZeroMQ client. A headless server keeps player sessions, positions, and server-owned moving platforms, and `NetworkServerHost` puts it on the network so a server executable is only its configuration. | `include/NetworkProtocol.hpp`, `include/NetworkClient.hpp`, `include/NetworkServer.hpp`, `include/NetworkServerHost.hpp`, `src/Network*.cpp` |
 | 3. Multithreaded updates | Mutex-protected entities and timelines, plus independent delta timers, support game-managed parallel updates. The game synchronizes workers before collision checks and rendering. | `include/Entity.hpp`, `include/Timeline.hpp`, `include/DeltaTimer.hpp`, `src/Engine.cpp` |
-| 4. Concurrent clients | The dedicated server gives joined players separate request/reply workers; one slow client need not block another. Demo clients can independently pause or scale their own game time. | `sandbox/NetworkServerMain.cpp`, `sandbox/MultiplayerDemo.cpp` |
+| 4. Concurrent clients | `NetworkServerHost` in dedicated mode gives joined players separate request/reply workers; one slow client need not block another. Demo clients can independently pause or scale their own game time. | `include/NetworkServerHost.hpp`, `src/NetworkServerHost.cpp`, `sandbox/NetworkServerMain.cpp`, `sandbox/MultiplayerDemo.cpp` |
 | 5. Peer-to-peer and hybrid mode | Peers discover one another and send player state directly. An optional read-only world client obtains moving-platform state from a dedicated or player-hosted authority without joining its player roster. | `include/PeerSession.hpp`, `include/WorldStateClient.hpp`, `include/Multiplayer.hpp`, `src/PeerSession.cpp`, `src/WorldStateClient.cpp`, `src/Multiplayer.cpp` |
 
 ### Milestone 1 Foundations
@@ -75,7 +75,9 @@ CMake also fetches Dear ImGui for the timeline sandbox during the first
 configuration, so that first configure needs internet access unless the
 dependency is already cached. Dear ImGui is not linked into the shared engine.
 The test suite covers entities and physics, input, collision, timelines,
-ZeroMQ, the network client/server, the peer mesh, and both multiplayer modes.
+ZeroMQ, the network client/server, the server host, the peer mesh, both
+multiplayer modes, and a check that individual games do not use ZeroMQ
+directly.
 
 ## Using The Engine
 
@@ -142,11 +144,18 @@ is responsible for creating, coordinating, and joining those workers;
 
 ### Section 4: Concurrent Clients And Shared Platforms
 
+Server hosting is part of the engine: `Network::NetworkServerHost` runs a
+`NetworkServer` either as a dedicated server (`HostMode::Dedicated`) or inside
+a player's process as a listen-server (`HostMode::Listen`). A game's server is
+its `ServerConfig` plus a command line; it never touches ZeroMQ, and the
+`no-transport-in-games` test fails if code under `individual-games/` does.
+
 The dedicated `network-server` accepts a player's `JOIN` on a public endpoint
 and returns a private request/reply endpoint in `WELCOME`. Subsequent position
 updates use that player's worker, so another player's slow exchange does not
 hold up its replies. The server protects its shared session state while the
-workers run concurrently.
+workers run concurrently, and the host joins a departed player's worker while
+it keeps running rather than accumulating them until shutdown.
 
 A separate server thread advances moving platforms on real time about every
 16 ms. Clients receive those platform positions in snapshots. In the
