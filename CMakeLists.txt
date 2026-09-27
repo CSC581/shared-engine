@@ -148,6 +148,14 @@ target_link_libraries(network-server-host-tests PRIVATE network-core)
 
 add_test(NAME network-server-host-tests COMMAND network-server-host-tests)
 
+# Guardrail: individual games reach networking through the engine
+# (Multiplayer::Session, NetworkServerHost), never ZeroMQ directly. Copies of
+# engine code in a game drift from it the first time the protocol changes.
+add_test(NAME no-transport-in-games
+    COMMAND ${CMAKE_COMMAND}
+        "-DGAMES_DIR=${CMAKE_SOURCE_DIR}/individual-games"
+        -P "${CMAKE_SOURCE_DIR}/cmake/CheckNoTransportInGames.cmake")
+
 # Section 5: peer message parsing and a real three-peer TCP mesh.
 add_executable(peer-tests tests/PeerTests.cpp)
 target_link_libraries(peer-tests PRIVATE peer-core)

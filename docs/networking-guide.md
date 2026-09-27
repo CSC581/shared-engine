@@ -18,7 +18,10 @@ There are two complete networking architectures, and one interface over both.
             |                    |        \
      Network::NetworkClient      |         Network::WorldStateClient
             |                    |          (read-only world, optional)
-     Network::NetworkServer   Peer::PeerSession
+     Network::NetworkServerHost  Peer::PeerSession
+      (sockets, workers)         |
+     Network::NetworkServer      |
+      (session/state store)      |
             |                    |
       NetworkProtocol.hpp    PeerProtocol.hpp
             \                   /
@@ -54,6 +57,9 @@ What they do share is plumbing, in three header-only files:
    interface. The clearest place to see how differently they work.
 5. **`src/PeerSession.cpp`** (534) — the largest and trickiest file: three
    threads, two sockets, and the mesh discovery.
+6. **`include/NetworkServerHost.hpp`** then **`src/NetworkServerHost.cpp`** —
+   how the server store is put on the network: the handshake, one worker
+   thread per client, and shutdown.
 
 `tests/MultiplayerTests.cpp` is worth reading early too: `exerciseAsAGameWould()`
 is one function containing the calls a game's frame loop makes, run against both
@@ -66,7 +72,32 @@ real rather than two classes sharing a header.
 
 ### 2.1 The server starts
 
-`sandbox/NetworkServerMain.cpp`, run as `./build/network-server`.
+Hosting is an engine feature: `Network::NetworkServerHost` in `network-core`
+(`include/NetworkServerHost.hpp`). A server executable only supplies a
+`ServerConfig` (spawn points, platform paths), its command line, and Ctrl-C
+handling. `sandbox/NetworkServerMain.cpp`, run as `./build/network-server`, is
+the whole of such an executable in about 70 lines:
+
+```cpp
+Network::HostConfig hostConfig;              // mode, bind, advertise host
+Network::NetworkServerHost host(NetworkDemo::makeServerConfig(), hostConfig);
+host.start();                                // throws if the address is taken
+// ... wait for Ctrl-C ...
+host.stop();                                 // joins every thread it started
+```
+
+The host has two modes:
+
+| Mode | Sockets | Used by |
+| --- | --- | --- |
+| `HostMode::Dedicated` | handshake `REP` + one `REP` worker per client | `network-server` (Sections 2 and 4) |
+| `HostMode::Listen` | one `REP` answering every request | a player hosting the platform authority with `--host` (Section 5) |
+
+`NetworkServer` itself stays free of sockets, so its rules are unit-tested by
+handing it messages directly; the host is the only part that knows about
+ZeroMQ, and its header does not include ZeroMQ either.
+
+In `Dedicated` mode the host:
 
 1. Binds one `REP` socket — the **handshake** socket — at `tcp://*:5555`. This
    is the only well-known address in the system.
@@ -76,6 +107,10 @@ real rather than two classes sharing a header.
    platform motion is not driven by request arrival.
 3. Loops on the public socket accepting `JOIN` for players and `GET_WORLD` for
    read-only world observers. Only `JOIN` creates a private worker or player ID.
+
+`Listen` mode skips the workers: its one socket answers `GET_WORLD`, `JOIN`,
+`POSITION` and `LEAVE` itself, which is all a listen-server handing platforms
+to hybrid peers needs.
 
 The server is headless — no SDL, no window. `network-core` does not link SDL at
 all, which is enforced by the link line rather than by discipline.
@@ -99,7 +134,10 @@ from `ROUTER`/`DEALER`, which the assignment forbids for this.
 
 If the same session token joins again, the server reuses the existing worker
 rather than issuing a second one, so a client that reconnects does not leak a
-thread.
+thread. A worker whose client has left is joined and dropped while the host
+keeps running (`activeWorkers()` reports how many it holds), and a JOIN waits
+at most `HostConfig::workerStartTimeout` for its worker to bind, so one worker
+that fails to start cannot hold up everybody else's JOIN.
 
 ### 2.3 Clients exchange data
 
@@ -121,7 +159,7 @@ Three ways, and all three are handled:
 
 | How | What happens |
 | --- | --- |
-| Clean exit | Client sends `LEAVE`; server replies `GOODBYE`, erases the player, and the worker thread ends. |
+| Clean exit | Client sends `LEAVE`; server replies `GOODBYE`, erases the player, and the worker thread ends and is reaped by the host. |
 | Killed / crashed | No message. The server's update thread expires any player unheard from for **3 seconds** (`ServerConfig::inactivityTimeoutTics`). |
 | Server dies | Client's `NetworkClient` retries once a second and reports the failure through `status()`. |
 
@@ -298,6 +336,11 @@ contain anything — tabs, newlines, packed binary — with nothing to escape.
 - **Ids must be unique** across a peer-to-peer session. The introduction
   handshake rejects a duplicate ID and reports it through `status()`, but the
   game still needs to choose a different ID before it can join.
+- **No ZeroMQ in game code.** Games use `Multiplayer::Session` to play and
+  `Network::NetworkServerHost` to host; neither needs a socket. The
+  `no-transport-in-games` test fails if any file under `individual-games/`
+  uses ZeroMQ directly — if a game needs something the engine does not offer,
+  add it to the engine.
 - **`--advertise` is required off-localhost.** An address bound on `0.0.0.0` is
   not one another machine can dial.
 - **Platforms may be stale.** If the authority becomes unreachable they stop
@@ -354,11 +397,14 @@ timeout exists as a backstop rather than as the primary mechanism.
 
 ```bash
 cmake --build build
-ctest --test-dir build --output-on-failure     # 8 suites, ~15s
+ctest --test-dir build --output-on-failure     # 10 tests, ~15s
 ```
 
-`peer-tests` and `multiplayer-tests` both open real TCP sockets and run real
-sessions in-process; they are integration tests, not mocks.
+`peer-tests`, `multiplayer-tests` and `network-server-host-tests` open real
+TCP sockets and run real sessions in-process; they are integration tests, not
+mocks. `network-server-host-tests` runs the real host on loopback (distinct
+private workers, three real clients, rejoin, LEAVE reaping, listen mode, clean
+shutdown), and `multiplayer-tests` drives both architectures through it.
 
 `peer-tests` is the slowest at ~8.7s, and most of that is one case
 (`testSilentPeersStayInTheSession`) deliberately waiting out the 5-second
