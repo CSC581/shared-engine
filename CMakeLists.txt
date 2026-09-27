@@ -38,11 +38,14 @@ target_include_directories(engine-time PUBLIC include)
 find_package(Threads REQUIRED)
 target_link_libraries(engine-time PUBLIC Threads::Threads)
 
-# SDL-free networking: protocol, session/state store, and non-blocking ZeroMQ
-# client adapter. A headless server can link this without the window engine.
+# SDL-free networking: protocol, session/state store, the host that puts that
+# store on the network (handshake, per-client workers, shutdown), and the
+# non-blocking ZeroMQ client adapter. A headless server can link this without
+# the window engine.
 add_library(network-core STATIC
     src/NetworkProtocol.cpp
     src/NetworkServer.cpp
+    src/NetworkServerHost.cpp
     src/NetworkClient.cpp
     src/WorldStateClient.cpp
 )
@@ -137,6 +140,13 @@ add_executable(network-tests tests/NetworkTests.cpp)
 target_link_libraries(network-tests PRIVATE network-core engine-geometry)
 
 add_test(NAME network-tests COMMAND network-tests)
+
+# The real NetworkServerHost on loopback: handshake -> private worker, rejoin,
+# LEAVE reaping, GET_WORLD without joining, listen mode, and clean shutdown.
+add_executable(network-server-host-tests tests/NetworkServerHostTests.cpp)
+target_link_libraries(network-server-host-tests PRIVATE network-core)
+
+add_test(NAME network-server-host-tests COMMAND network-server-host-tests)
 
 # Section 5: peer message parsing and a real three-peer TCP mesh.
 add_executable(peer-tests tests/PeerTests.cpp)

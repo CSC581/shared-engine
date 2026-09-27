@@ -1,3 +1,4 @@
+#include "Endpoint.hpp"
 #include "NetworkClient.hpp"
 #include "NetworkProtocol.hpp"
 #include "NetworkServer.hpp"
@@ -556,6 +557,18 @@ bool rewriteTcpEndpointHostKeepsPort()
     return passed;
 }
 
+bool wildcardBindEndpointKeepsPort()
+{
+    bool passed = true;
+    passed &= expect(Net::wildcardBindEndpoint("tcp://192.168.1.10:5555") == "tcp://*:5555",
+                     "a server endpoint should become an all-interfaces bind on the same port");
+    passed &= expect(Net::wildcardBindEndpoint("tcp://[::1]:7000") == "tcp://*:7000",
+                     "an IPv6 server endpoint should keep its port");
+    passed &= expect(Net::wildcardBindEndpoint("tcp://host").empty(), "an endpoint without a port should be rejected");
+    passed &= expect(Net::wildcardBindEndpoint("ipc://socket").empty(), "non-tcp endpoints should be rejected");
+    return passed;
+}
+
 } // namespace
 
 int main()
@@ -582,6 +595,7 @@ int main()
     passed &= reconnectsToSessionEndpoint();
     passed &= welcomeEncodesSessionEndpoint();
     passed &= rewriteTcpEndpointHostKeepsPort();
+    passed &= wildcardBindEndpointKeepsPort();
     passed &= perClientWorkersDoNotBlockEachOther();
     passed &= worldStateClientReadsOnlyWorld();
     passed &= worldRequestDoesNotUsePlayerSlots();
