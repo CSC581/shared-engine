@@ -250,3 +250,33 @@ target_include_directories(starfall-salvage PRIVATE
 )
 
 target_link_libraries(starfall-salvage PRIVATE engine)
+
+# Vanaja's Project 2 game. Its separate server is headless and uses this game's
+# shuttle paths, not the NetworkDemo sandbox's arena configuration.
+add_library(signal-bloom-rules STATIC
+    individual-games/vanaja/signal-bloom/src/SignalBloomRules.cpp
+)
+target_include_directories(signal-bloom-rules PUBLIC
+    individual-games/vanaja/signal-bloom/include
+)
+target_link_libraries(signal-bloom-rules PUBLIC engine-geometry)
+
+add_executable(signal-bloom
+    individual-games/vanaja/signal-bloom/src/main.cpp
+    individual-games/vanaja/signal-bloom/src/SignalBloomGame.cpp
+)
+target_link_libraries(signal-bloom PRIVATE engine multiplayer signal-bloom-rules)
+
+add_executable(signal-bloom-server
+    individual-games/vanaja/signal-bloom/src/SignalBloomServer.cpp
+)
+target_link_libraries(signal-bloom-server PRIVATE network-core engine-geometry Threads::Threads)
+target_include_directories(signal-bloom-server PRIVATE
+    individual-games/vanaja/signal-bloom/include
+)
+
+add_executable(signal-bloom-tests
+    individual-games/vanaja/signal-bloom/tests/SignalBloomTests.cpp
+)
+target_link_libraries(signal-bloom-tests PRIVATE signal-bloom-rules)
+add_test(NAME signal-bloom-tests COMMAND signal-bloom-tests)
