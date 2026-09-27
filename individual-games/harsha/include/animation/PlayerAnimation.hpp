@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 struct SDL_Renderer;
 struct SDL_Texture;
 
@@ -40,6 +42,10 @@ public:
 
     bool isLoaded() const { return loaded_; }
 
+    Clip currentClip() const { return currentClip_; }
+    int currentFrame() const { return frameIndex_; }
+    bool facingRight() const { return facingRight_; }
+
     void update(float deltaTime, const AnimInput& input);
 
     // Draws the current clip/frame, foot-aligned; flips when facing left.
@@ -49,6 +55,21 @@ public:
               float cameraY,
               float bodyWidth,
               float bodyHeight) const;
+
+    // Remote climber: same sheets, tinted; clip/frame/facing from the network.
+    void drawGhost(SDL_Renderer* renderer,
+                   float bodyX,
+                   float bodyY,
+                   float cameraY,
+                   float bodyWidth,
+                   float bodyHeight,
+                   Clip clip,
+                   int frame,
+                   bool facingRight,
+                   std::uint8_t red,
+                   std::uint8_t green,
+                   std::uint8_t blue,
+                   std::uint8_t alpha = 220) const;
 
 private:
     struct ClipData {
@@ -71,6 +92,19 @@ private:
     void advanceFrames(float deltaTime);
     Clip chooseGroundedClip(const AnimInput& input) const;
     void updateFacing(float facingIntent);
+    void drawFrame(SDL_Renderer* renderer,
+                   Clip clip,
+                   int frame,
+                   float bodyX,
+                   float bodyY,
+                   float cameraY,
+                   float bodyWidth,
+                   float bodyHeight,
+                   bool facingRight,
+                   std::uint8_t red,
+                   std::uint8_t green,
+                   std::uint8_t blue,
+                   std::uint8_t alpha) const;
 
     ClipData clips_[static_cast<int>(Clip::Count)]{};
     Clip currentClip_ = Clip::Idle;

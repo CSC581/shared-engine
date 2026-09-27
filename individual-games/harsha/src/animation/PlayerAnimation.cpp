@@ -220,17 +220,58 @@ void PlayerAnimation::draw(SDL_Renderer* renderer,
                            float bodyWidth,
                            float bodyHeight) const
 {
+    drawFrame(renderer, currentClip_, frameIndex_, bodyX, bodyY, cameraY, bodyWidth, bodyHeight,
+              facingRight_, 255, 255, 255, 255);
+}
+
+void PlayerAnimation::drawGhost(SDL_Renderer* renderer,
+                                float bodyX,
+                                float bodyY,
+                                float cameraY,
+                                float bodyWidth,
+                                float bodyHeight,
+                                Clip clip,
+                                int frame,
+                                bool facingRight,
+                                std::uint8_t red,
+                                std::uint8_t green,
+                                std::uint8_t blue,
+                                std::uint8_t alpha) const
+{
+    if (clip < Clip::Idle || clip >= Clip::Count) {
+        clip = Clip::Idle;
+        frame = 0;
+    }
+    drawFrame(renderer, clip, frame, bodyX, bodyY, cameraY, bodyWidth, bodyHeight, facingRight, red,
+              green, blue, alpha);
+}
+
+void PlayerAnimation::drawFrame(SDL_Renderer* renderer,
+                                Clip clip,
+                                int frame,
+                                float bodyX,
+                                float bodyY,
+                                float cameraY,
+                                float bodyWidth,
+                                float bodyHeight,
+                                bool facingRight,
+                                std::uint8_t red,
+                                std::uint8_t green,
+                                std::uint8_t blue,
+                                std::uint8_t alpha) const
+{
     if (renderer == nullptr || !loaded_) {
         return;
     }
 
-    const ClipData& clip = clips_[static_cast<int>(currentClip_)];
-    if (clip.texture == nullptr) {
+    const ClipData& clipData = clips_[static_cast<int>(clip)];
+    if (clipData.texture == nullptr) {
         return;
     }
 
-    const int frame = (frameIndex_ >= 0 && frameIndex_ < clip.frameCount) ? frameIndex_ : 0;
-    const SDL_FRect src{static_cast<float>(frame * frameWidth), 0.0F,
+    const int safeFrame =
+        (frame >= 0 && frame < clipData.frameCount) ? frame : 0;
+    const SDL_FRect src{static_cast<float>(safeFrame * frameWidth), 0.0F,
                         static_cast<float>(frameWidth), static_cast<float>(frameHeight)};
 
     const float destW = static_cast<float>(frameWidth) * spriteScale;
@@ -243,6 +284,11 @@ void PlayerAnimation::draw(SDL_Renderer* renderer,
 
     const SDL_FRect dst{destX, destY, destW, destH};
     // Sheet art faces left; flip when facing right.
-    const SDL_FlipMode flip = facingRight_ ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
-    SDL_RenderTextureRotated(renderer, clip.texture, &src, &dst, 0.0, nullptr, flip);
+    const SDL_FlipMode flip = facingRight ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
+
+    SDL_SetTextureColorMod(clipData.texture, red, green, blue);
+    SDL_SetTextureAlphaMod(clipData.texture, alpha);
+    SDL_RenderTextureRotated(renderer, clipData.texture, &src, &dst, 0.0, nullptr, flip);
+    SDL_SetTextureColorMod(clipData.texture, 255, 255, 255);
+    SDL_SetTextureAlphaMod(clipData.texture, 255);
 }
