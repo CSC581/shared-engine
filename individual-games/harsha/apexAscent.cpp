@@ -5,9 +5,10 @@
 #include "Entity.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
-#include "ApexListenServer.hpp"
 #include "ApexNetworkConfig.hpp"
+#include "Endpoint.hpp"
 #include "Multiplayer.hpp"
+#include "NetworkServerHost.hpp"
 #include "Physics.hpp"
 #include "animation/PlayerAnimation.hpp"
 
@@ -837,24 +838,33 @@ int main(int argc, char* argv[])
             return options.help ? 0 : 1;
         }
 
-        std::unique_ptr<ApexListenServer> listenServer;
+        // Listen-server: the engine hosts the platform authority in this process.
+        std::unique_ptr<Network::NetworkServerHost> listenServer;
         if (options.hostAuthority) {
             if (options.network.mode != Multiplayer::Mode::PeerToPeer) {
                 std::cerr << "apex-ascent: --host requires --mode peer-to-peer\n";
                 return 1;
             }
 
-            const std::size_t colon = options.network.serverEndpoint.rfind(':');
-            if (options.network.serverEndpoint.rfind("tcp://", 0) != 0 ||
-                colon == std::string::npos || colon <= 6 ||
-                colon + 1 >= options.network.serverEndpoint.size()) {
+            const std::string bindEndpoint =
+                Net::wildcardBindEndpoint(options.network.serverEndpoint);
+            if (bindEndpoint.empty()) {
                 std::cerr << "apex-ascent: --host requires a tcp server endpoint with a port\n";
                 return 1;
             }
-            const std::string bindEndpoint =
-                "tcp://*" + options.network.serverEndpoint.substr(colon);
-            listenServer = std::make_unique<ApexListenServer>(bindEndpoint);
-            listenServer->start();
+            try {
+                Network::HostConfig hostConfig;
+                hostConfig.mode = Network::HostMode::Listen;
+                hostConfig.bindEndpoint = bindEndpoint;
+                listenServer = std::make_unique<Network::NetworkServerHost>(
+                    ApexNetwork::makeServerConfig(), hostConfig);
+                listenServer->start();
+            } catch (const std::exception& error) {
+                std::cerr << "apex-ascent: could not host the platform authority on "
+                          << bindEndpoint << ": " << error.what()
+                          << "\nIs something already hosting?\n";
+                return 1;
+            }
             std::cout << "Hosting Apex platform authority on " << bindEndpoint << '\n';
         }
 

@@ -54,6 +54,10 @@ Across machines, pass the server's reachable host separately from its bind:
 Online: peers are tinted animated ghost sprites; the amber moving platform is
 server-authored; pause/scale only affects your local climb.
 
+`./build/apex-network-server --rates` logs each climber's accepted
+POSITION/s once a second, so a client at 2x shows up at the server at twice
+the rate of one at 1x.
+
 ## Online co-climb — peer-to-peer
 
 Player poses and animation state travel directly between peers. The dedicated
@@ -69,7 +73,8 @@ server remains authoritative only for the moving platform:
 ```
 
 Alternatively, the first player can carry the platform authority as a
-listen-server; no separate server process is needed:
+listen-server (the engine's `NetworkServerHost` in Listen mode, inside that
+player's process); no separate server process is needed:
 
 ```bash
 ./build/apex-ascent --mode peer-to-peer --id 1 --port 7200 --host
@@ -86,8 +91,7 @@ Peer ids and base ports must be unique. Across machines, every peer also needs
 | --- | --- |
 | [apexAscent.cpp](apexAscent.cpp) | Gameplay, level, camera, collision, HUD, online mode |
 | [ApexNetworkConfig.hpp](ApexNetworkConfig.hpp) | Shared spawn + moving-platform paths for client/server |
-| [ApexNetworkServerMain.cpp](ApexNetworkServerMain.cpp) | Headless Apex world server |
-| [ApexListenServer.hpp](ApexListenServer.hpp) | In-process platform authority for a hosting peer |
+| [ApexNetworkServerMain.cpp](ApexNetworkServerMain.cpp) | Headless Apex world server: Apex config + CLI on the engine's `NetworkServerHost` |
 | [animation/](animation/) | `PlayerAnimation` — sheet load, clips, draw, ghost tint |
 | [media/Spritesheets/Spritesheets/](media/Spritesheets/Spritesheets/) | Source penguin spritesheets |
 | [docs/individual-games/harsha/apex-ascent-design.md](../../docs/individual-games/harsha/apex-ascent-design.md) | Design decisions |
