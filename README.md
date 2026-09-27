@@ -154,8 +154,12 @@ The dedicated `network-server` accepts a player's `JOIN` on a public endpoint
 and returns a private request/reply endpoint in `WELCOME`. Subsequent position
 updates use that player's worker, so another player's slow exchange does not
 hold up its replies. The server protects its shared session state while the
-workers run concurrently, and the host joins a departed player's worker while
-it keeps running rather than accumulating them until shutdown.
+workers run concurrently. A worker ends when its player leaves, or when the
+server expires a player that stopped responding (a crashed client never sends
+`LEAVE`), and the host joins it while it keeps running rather than
+accumulating threads until shutdown. `./build/network-server --rates` logs
+each player's accepted `POSITION` rate once a second, so clients running at
+0.5x, 1x and 2x show up as three different rates on the server.
 
 A separate server thread advances moving platforms on real time about every
 16 ms. Clients receive those platform positions in snapshots. In the

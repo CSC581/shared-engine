@@ -411,6 +411,46 @@ bool worldStateClientReadsOnlyWorld()
     return passed;
 }
 
+// The store counts what it accepted from each player and tracks whether a
+// token still owns a session — what the host uses to free a crashed client's
+// worker once the player expires.
+bool serverCountsAcceptedTrafficAndSessions()
+{
+    ManualClock clock;
+    Network::ServerConfig config;
+    config.spawnPoints = {{0.0F, 0.0F}};
+    config.inactivityTimeoutTics = kNsPerSec;
+    Network::NetworkServer server(clock, config);
+
+    const Network::SessionToken playerToken(32, 'b');
+    Network::Reply reply;
+    std::string error;
+    bool passed = expect(!server.hasSession(playerToken), "no session before JOIN");
+    passed &= expect(Network::decodeReply(server.handle(Network::encodeJoin(playerToken, "Nova")), reply, error) &&
+                         reply.type == Network::ReplyType::Welcome,
+                     "JOIN should be welcomed");
+    const Network::PlayerId id = reply.playerId;
+    passed &= expect(server.hasSession(playerToken), "JOIN should create a session");
+
+    for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
+        server.handle(Network::encodePosition(id, playerToken, {1.0F, 2.0F, sequence, {}}));
+    }
+    // Refused: stale sequence, and someone else's token.
+    server.handle(Network::encodePosition(id, playerToken, {1.0F, 2.0F, 2, {}}));
+    server.handle(Network::encodePosition(id, Network::SessionToken(32, 'c'), {1.0F, 2.0F, 9, {}}));
+
+    const std::vector<Network::PlayerTraffic> traffic = server.traffic();
+    passed &= expect(traffic.size() == 1 && traffic[0].id == id && traffic[0].name == "Nova" &&
+                         traffic[0].acceptedPositions == 3,
+                     "only accepted POSITIONs should be counted");
+
+    clock.advance(2 * kNsPerSec);
+    server.update();
+    passed &= expect(!server.hasSession(playerToken) && server.traffic().empty(),
+                     "an expired player should no longer have a session or traffic");
+    return passed;
+}
+
 bool worldRequestDoesNotUsePlayerSlots()
 {
     ManualClock clock;
@@ -599,6 +639,7 @@ int main()
     passed &= perClientWorkersDoNotBlockEachOther();
     passed &= worldStateClientReadsOnlyWorld();
     passed &= worldRequestDoesNotUsePlayerSlots();
+    passed &= serverCountsAcceptedTrafficAndSessions();
     passed &= worldObserverRetriesWithoutKeepingStaleState();
     passed &= playerClientRejectsWorldOnlyReply();
 

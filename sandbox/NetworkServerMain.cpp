@@ -39,6 +39,12 @@ int main(int argc, char* argv[])
             hostConfig.advertiseHost = argv[++i];
             continue;
         }
+        if (arg == "--rates") {
+            // Once a second, each player's accepted POSITION/s: run clients at
+            // 0.5x / 1x / 2x and the server sees three different rates.
+            hostConfig.trafficLogInterval = std::chrono::seconds(1);
+            continue;
+        }
         if (arg.rfind("--", 0) == 0) {
             std::cerr << "network-server: unknown option " << arg << '\n';
             return 1;

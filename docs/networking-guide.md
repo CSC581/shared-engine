@@ -108,6 +108,13 @@ In `Dedicated` mode the host:
 3. Loops on the public socket accepting `JOIN` for players and `GET_WORLD` for
    read-only world observers. Only `JOIN` creates a private worker or player ID.
 
+To see Section 4 from the server's side, set `HostConfig::trafficLogInterval`
+(`./build/network-server --rates`): the host logs each player's accepted
+`POSITION` rate, counted by `NetworkServer::traffic()`, so a client at 2x
+shows roughly double the rate of one at 1x. `advertiseHost` must be an
+address clients can dial; `*`, `0.0.0.0` and `::` are rejected at
+construction.
+
 `Listen` mode skips the workers: its one socket answers `GET_WORLD`, `JOIN`,
 `POSITION` and `LEAVE` itself, which is all a listen-server handing platforms
 to hybrid peers needs.
@@ -134,8 +141,11 @@ from `ROUTER`/`DEALER`, which the assignment forbids for this.
 
 If the same session token joins again, the server reuses the existing worker
 rather than issuing a second one, so a client that reconnects does not leak a
-thread. A worker whose client has left is joined and dropped while the host
-keeps running (`activeWorkers()` reports how many it holds), and a JOIN waits
+thread. A worker ends when its client sends `LEAVE`, or when the server
+expires its player for inactivity — a crashed client never says goodbye, so
+the worker notices on its next idle poll that its session is gone. Either way
+the host joins and drops it while it keeps running (`activeWorkers()` reports
+how many it holds). A JOIN waits
 at most `HostConfig::workerStartTimeout` for its worker to bind, so one worker
 that fails to start cannot hold up everybody else's JOIN.
 
@@ -160,7 +170,7 @@ Three ways, and all three are handled:
 | How | What happens |
 | --- | --- |
 | Clean exit | Client sends `LEAVE`; server replies `GOODBYE`, erases the player, and the worker thread ends and is reaped by the host. |
-| Killed / crashed | No message. The server's update thread expires any player unheard from for **3 seconds** (`ServerConfig::inactivityTimeoutTics`). |
+| Killed / crashed | No message. The server's update thread expires any player unheard from for **3 seconds** (`ServerConfig::inactivityTimeoutTics`); that player's worker then sees its session gone, exits, and is reaped. |
 | Server dies | Client's `NetworkClient` retries once a second and reports the failure through `status()`. |
 
 ---
