@@ -235,15 +235,19 @@ target_link_libraries(multiplayer-demo PRIVATE engine multiplayer)
 
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent
-    individual-games/harsha/apexAscent.cpp
-    individual-games/harsha/animation/PlayerAnimation.cpp
+    individual-games/harsha/src/apexAscent.cpp
+    individual-games/harsha/src/ApexGame.cpp
+    individual-games/harsha/src/ApexGameRender.cpp
+    individual-games/harsha/src/ApexOptions.cpp
+    individual-games/harsha/src/ApexPresence.cpp
+    individual-games/harsha/src/animation/PlayerAnimation.cpp
 )
-target_include_directories(apex-ascent PRIVATE individual-games/harsha)
+target_include_directories(apex-ascent PRIVATE individual-games/harsha/include)
 target_link_libraries(apex-ascent PRIVATE engine multiplayer)
 
 # Headless Apex world server (tower coords). Separate from sandbox network-server.
-add_executable(apex-network-server individual-games/harsha/ApexNetworkServerMain.cpp)
-target_include_directories(apex-network-server PRIVATE individual-games/harsha)
+add_executable(apex-network-server individual-games/harsha/src/ApexNetworkServerMain.cpp)
+target_include_directories(apex-network-server PRIVATE individual-games/harsha/include)
 target_link_libraries(apex-network-server PRIVATE network-core Threads::Threads)
 
 # Golf executable. Also builds standalone through

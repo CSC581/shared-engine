@@ -89,10 +89,14 @@ Peer ids and base ports must be unique. Across machines, every peer also needs
 
 | Path | Role |
 | --- | --- |
-| [apexAscent.cpp](apexAscent.cpp) | Gameplay, level, camera, collision, HUD, online mode |
-| [ApexNetworkConfig.hpp](ApexNetworkConfig.hpp) | Shared spawn + moving-platform paths for client/server |
-| [ApexNetworkServerMain.cpp](ApexNetworkServerMain.cpp) | Headless Apex world server: Apex config + CLI on the engine's `NetworkServerHost` |
-| [animation/](animation/) | `PlayerAnimation` — sheet load, clips, draw, ghost tint |
+| [apexAscent.cpp](src/apexAscent.cpp) | `main()`: options, optional `--host` listen-server, engine + session |
+| [ApexGame.hpp](include/ApexGame.hpp) / [ApexGame.cpp](src/ApexGame.cpp) | Gameplay: level, input, charge jump, collision, camera, moving platforms, pose publishing |
+| [ApexGameRender.cpp](src/ApexGameRender.cpp) | World, ghosts, charge meter, HUD |
+| [ApexOptions.hpp](include/ApexOptions.hpp) / [ApexOptions.cpp](src/ApexOptions.cpp) | Command line (`--join`, `--mode`, `--host`, …) |
+| [ApexPresence.hpp](include/ApexPresence.hpp) / [ApexPresence.cpp](src/ApexPresence.cpp) | Online presentation: HUD labels, ghost tints, animation hint encode/decode |
+| [ApexNetworkConfig.hpp](include/ApexNetworkConfig.hpp) | Shared spawn + moving-platform paths for client/server |
+| [ApexNetworkServerMain.cpp](src/ApexNetworkServerMain.cpp) | Headless Apex world server: Apex config + CLI on the engine's `NetworkServerHost` |
+| [include/animation/](include/animation/), [src/animation/](src/animation/) | `PlayerAnimation` — sheet load, clips, draw, ghost tint |
 | [media/Spritesheets/Spritesheets/](media/Spritesheets/Spritesheets/) | Source penguin spritesheets |
 | [docs/individual-games/harsha/apex-ascent-design.md](../../docs/individual-games/harsha/apex-ascent-design.md) | Design decisions |
 
