@@ -81,6 +81,10 @@ Message NetworkServer::handle(const Message& message)
         return encodeError(error);
     }
 
+    if (request.type == RequestType::GetWorld) {
+        return encodeWorldState(buildWorldState());
+    }
+
     if (request.type == RequestType::Join) {
         const auto existingId = playerIdsByToken_.find(request.sessionToken);
         if (existingId != playerIdsByToken_.end()) {
@@ -222,6 +226,7 @@ void NetworkServer::advancePlatforms(std::int64_t now)
 
     if (moved) {
         ++serverTick_;
+        ++worldRevision_;
     }
 }
 
@@ -236,6 +241,17 @@ WorldSnapshot NetworkServer::buildSnapshot() const
     std::sort(result.players.begin(), result.players.end(),
               [](const PlayerState& left, const PlayerState& right) { return left.id < right.id; });
 
+    result.platforms.reserve(platforms_.size());
+    for (const ActivePlatform& platform : platforms_) {
+        result.platforms.push_back(platform.state);
+    }
+    return result;
+}
+
+WorldStateSnapshot NetworkServer::buildWorldState() const
+{
+    WorldStateSnapshot result;
+    result.worldRevision = worldRevision_;
     result.platforms.reserve(platforms_.size());
     for (const ActivePlatform& platform : platforms_) {
         result.platforms.push_back(platform.state);

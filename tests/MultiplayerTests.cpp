@@ -84,6 +84,8 @@ public:
         return endpoint;
     }
 
+    std::size_t playerCount() const { return server_.playerCount(); }
+
 private:
     zmq::context_t context_{1};
     RealTimeClock clock_;
@@ -261,6 +263,8 @@ bool testClientServer()
 
     bool passed = expect(one->mode() == Multiplayer::Mode::ClientServer, "mode should be reported back");
     passed &= exerciseAsAGameWould(*one, *two, "client-server", true);
+    passed &= expect(one->authorityState() == Multiplayer::AuthorityState::Ready,
+                     "client-server mode should report its server as ready");
     return passed;
 }
 
@@ -293,11 +297,21 @@ bool testPeerToPeer()
     // The same checks as client-server, against a completely different
     // architecture, with no change to the checks themselves.
     passed &= exerciseAsAGameWould(*one, *two, "peer-to-peer", true);
+    passed &= expect(one->authorityState() == Multiplayer::AuthorityState::Ready,
+                     "hybrid peer-to-peer mode should report its platform authority as ready");
 
-    // Player data must not be reaching peers via the authority. Both peers
-    // poll it for platforms, so it does know their poses — the claim is that
-    // the peers do not depend on it for each other, which is demonstrated by
-    // the pair below, who share no authority at all.
+    passed &= expect(server.playerCount() == 0,
+                     "hybrid peers must not join the authority as server players");
+
+    Multiplayer::Config regular;
+    regular.mode = Multiplayer::Mode::ClientServer;
+    regular.serverEndpoint = endpoint;
+    regular.playerName = "regular";
+    std::unique_ptr<Multiplayer::Session> clientServer = Multiplayer::Session::open(regular, clock);
+    passed &= expect(waitUntil([&] { clientServer->update(); return clientServer->state() == Multiplayer::State::Ready; }),
+                     "normal client should still join the authority");
+    passed &= expect(clientServer->remotePlayers().empty() && server.playerCount() == 1,
+                     "normal client must not see hybrid peers as duplicate server players");
     return passed;
 }
 
@@ -326,6 +340,8 @@ bool testPeerToPeerWithNoServerAtAll()
     bool passed = exerciseAsAGameWould(*one, *two, "peer-to-peer (serverless)", false);
     passed &= expect(one->platforms().empty(),
                      "a session with no authority should report no shared objects");
+    passed &= expect(one->authorityState() == Multiplayer::AuthorityState::NotConfigured,
+                     "a serverless peer session should say that no authority is configured");
     return passed;
 }
 
@@ -376,6 +392,64 @@ bool testBothModesBehaveBeforeConnecting()
     passed &= expect(clash->remotePlayers().empty(),
                      "a failed peer should stay usable enough to draw an empty screen");
 
+    Multiplayer::Config waiting = peer;
+    waiting.peerId = 3;
+    waiting.basePort = 57432;
+    waiting.serverEndpoint = "tcp://127.0.0.1:57499";
+    std::unique_ptr<Multiplayer::Session> hybrid = Multiplayer::Session::open(waiting, clock);
+    hybrid->update();
+    passed &= expect(hybrid->state() == Multiplayer::State::Ready,
+                     "the peer mesh should still be usable while its authority connects");
+    passed &= expect(hybrid->authorityState() != Multiplayer::AuthorityState::Ready,
+                     "authorityState should reveal that shared world objects are not ready");
+
+    return passed;
+}
+
+bool testPeerReportsTerminalAuthorityFailure()
+{
+    zmq::context_t context(1);
+    zmq::socket_t socket(context, zmq::socket_type::rep);
+    socket.set(zmq::sockopt::linger, 0);
+    socket.set(zmq::sockopt::rcvtimeo, 2000);
+    socket.bind("tcp://127.0.0.1:*");
+    const std::string endpoint = socket.get(zmq::sockopt::last_endpoint);
+
+    std::thread authority([moved = std::move(socket)]() mutable {
+        bool received = false;
+        try {
+            Net::receive(moved, received);
+            if (received) {
+                Net::send(moved, {std::to_string(Network::protocolVersion + 1),
+                                  "WORLD_STATE", "0", "0"});
+            }
+        } catch (const zmq::error_t&) {
+        }
+    });
+
+    RealTimeClock clock;
+    Multiplayer::Config config;
+    config.mode = Multiplayer::Mode::PeerToPeer;
+    config.serverEndpoint = endpoint;
+    config.peerId = 4;
+    config.basePort = 57434;
+    std::unique_ptr<Multiplayer::Session> session = Multiplayer::Session::open(config, clock);
+
+    const bool failureReported = waitUntil([&] {
+        session->update();
+        return session->authorityState() == Multiplayer::AuthorityState::Failed;
+    });
+    authority.join();
+
+    const std::string status = session->status();
+    bool passed = expect(failureReported,
+                         "a terminal authority error should be reported as failed");
+    passed &= expect(session->state() == Multiplayer::State::Ready,
+                     "an authority failure must not disable the usable peer mesh");
+    passed &= expect(status.find("Protocol version mismatch") != std::string::npos,
+                     "peer status should expose the authority's actual failure: " + status);
+    passed &= expect(status.find("waiting for world objects") == std::string::npos,
+                     "a failed authority must not still be described as waiting");
     return passed;
 }
 
@@ -442,6 +516,7 @@ int main()
     passed &= testPeerToPeer();
     passed &= testPeerToPeerWithNoServerAtAll();
     passed &= testBothModesBehaveBeforeConnecting();
+    passed &= testPeerReportsTerminalAuthorityFailure();
     passed &= testWorldSurvivesLosingTheAuthority();
 
     if (passed) {

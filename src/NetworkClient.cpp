@@ -204,12 +204,19 @@ void NetworkClient::poll()
     }
 
     if (reply.type == ReplyType::Welcome) {
+        if (impl_->state != ConnectionState::Connecting) {
+            impl_->fail("Unexpected WELCOME reply while already connected");
+            return;
+        }
         impl_->playerId = reply.playerId;
         impl_->error.clear();
         if (!reply.sessionEndpoint.empty() && !impl_->connectSession(reply.sessionEndpoint)) {
             return;
         }
         impl_->state = ConnectionState::Connected;
+    } else if (reply.type != ReplyType::Snapshot || impl_->state != ConnectionState::Connected) {
+        impl_->fail("Unexpected reply to player request");
+        return;
     }
 
     impl_->snapshot = std::move(reply.snapshot);

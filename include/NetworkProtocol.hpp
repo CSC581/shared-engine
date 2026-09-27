@@ -8,7 +8,7 @@
 // of text fields so they never depend on C++ struct layout or byte order.
 namespace Network {
 
-constexpr int protocolVersion = 5;
+constexpr int protocolVersion = 6;
 
 using PlayerId = std::uint32_t;
 using SessionToken = std::string;
@@ -52,6 +52,14 @@ struct WorldSnapshot {
     std::vector<PlatformState> platforms;
 };
 
+// Read-only shared objects for hybrid peers. No player identity or player data
+// is part of this response.
+struct WorldStateSnapshot {
+    // Changes only when server-authored world objects move.
+    std::uint64_t worldRevision = 0;
+    std::vector<PlatformState> platforms;
+};
+
 enum class ConnectionState {
     Disconnected,
     Connecting,
@@ -63,6 +71,7 @@ enum class RequestType {
     Join,
     Position,
     Leave,
+    GetWorld,
 };
 
 struct Request {
@@ -77,6 +86,7 @@ struct Request {
 enum class ReplyType {
     Welcome,
     Snapshot,
+    WorldState,
     Error,
     Goodbye,
 };
@@ -88,12 +98,14 @@ struct Reply {
     // (Section 4 per-client worker). Empty means stay on the current socket.
     std::string sessionEndpoint;
     WorldSnapshot snapshot{};
+    WorldStateSnapshot worldState{};
     std::string error;
 };
 
 Message encodeJoin(const SessionToken& sessionToken, const std::string& playerName = {});
 Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position);
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken);
+Message encodeGetWorld();
 bool decodeRequest(const Message& message, Request& request, std::string& error);
 
 // Replace the host in a tcp://host:port endpoint while keeping the port.
@@ -106,6 +118,7 @@ std::string rewriteTcpEndpointHost(const std::string& endpoint, const std::strin
 Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot,
                       const std::string& sessionEndpoint = {});
 Message encodeSnapshot(const WorldSnapshot& snapshot);
+Message encodeWorldState(const WorldStateSnapshot& snapshot);
 Message encodeError(const std::string& error);
 Message encodeGoodbye();
 bool decodeReply(const Message& message, Reply& reply, std::string& error);

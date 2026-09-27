@@ -100,7 +100,28 @@ struct PeerSession::Impl {
         lastError = message;
     }
 
-    // Callers must hold stateMutex.
+    // Callers must hold stateMutex. An endpoint change for the same id is a
+    // duplicate launch, not an update: peers choose ids themselves, so this is
+    // the first place the collision can be reported clearly.
+    std::string peerIdConflictLocked(const PeerAddress& address) const
+    {
+        const auto differentEndpoint = [&address](const PeerAddress& existing) {
+            return existing.pubEndpoint != address.pubEndpoint ||
+                   existing.greetEndpoint != address.greetEndpoint;
+        };
+
+        if (address.id == self.id && differentEndpoint(self)) {
+            return "peer id " + std::to_string(address.id) + " is already in use";
+        }
+
+        const auto existing = known.find(address.id);
+        if (existing != known.end() && differentEndpoint(existing->second)) {
+            return "peer id " + std::to_string(address.id) + " is already in use";
+        }
+        return {};
+    }
+
+    // Callers must hold stateMutex and must have checked peerIdConflictLocked.
     void rememberLocked(const PeerAddress& address)
     {
         if (address.id == 0 || address.id == self.id) {
@@ -210,23 +231,33 @@ struct PeerSession::Impl {
             }
 
             std::vector<PeerAddress> reply;
+            std::string conflict;
             {
                 const std::lock_guard<std::mutex> lock(stateMutex);
-                rememberLocked(envelope.address);
-                // The newcomer gets everyone we know, so one introduction is
-                // enough to reach the whole mesh rather than just us.
-                reply.reserve(known.size() + 1);
-                reply.push_back(self);
-                for (const auto& entry : known) {
-                    if (entry.first != envelope.address.id) {
-                        reply.push_back(entry.second);
+                conflict = peerIdConflictLocked(envelope.address);
+                if (conflict.empty()) {
+                    rememberLocked(envelope.address);
+                    // The newcomer gets everyone we know, so one introduction
+                    // is enough to reach the whole mesh rather than just us.
+                    reply.reserve(known.size() + 1);
+                    reply.push_back(self);
+                    for (const auto& entry : known) {
+                        if (entry.first != envelope.address.id) {
+                            reply.push_back(entry.second);
+                        }
                     }
+                    // They introduced themselves to us, so we owe them nothing.
+                    greeted.insert(envelope.address.greetEndpoint);
+                    pendingGreets.erase(envelope.address.greetEndpoint);
                 }
-                // They introduced themselves to us, so we owe them nothing.
-                greeted.insert(envelope.address.greetEndpoint);
-                pendingGreets.erase(envelope.address.greetEndpoint);
             }
 
+            if (!conflict.empty()) {
+                // The joining peer receives this in status(), rather than
+                // silently behaving as if it were the same player as us.
+                Net::send(*greeter, encodeError(conflict));
+                continue;
+            }
             Net::send(*greeter, encodeRoster(self.id, reply));
             deliver(std::move(envelope));
         }
@@ -306,10 +337,16 @@ struct PeerSession::Impl {
             const std::lock_guard<std::mutex> lock(stateMutex);
             greeted.insert(target);
             pendingGreets.erase(target);
+            std::string conflict;
             for (const PeerAddress& address : roster) {
-                rememberLocked(address);
+                const std::string addressConflict = peerIdConflictLocked(address);
+                if (addressConflict.empty()) {
+                    rememberLocked(address);
+                } else if (conflict.empty()) {
+                    conflict = addressConflict;
+                }
             }
-            lastError.clear();
+            lastError = conflict;
         }
     }
 

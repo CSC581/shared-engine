@@ -1,0 +1,13 @@
+digraph ClientServerFlow {
+    graph [rankdir=LR, bgcolor="#F8FAFC", pad="0.25", nodesep="0.35", ranksep="0.4", splines=polyline];
+    node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=13, penwidth=1.2, color="#9CB5C2", fillcolor="#FFFFFF", fontcolor="#193547", margin="0.18,0.13"];
+    edge [color="#478299", penwidth=1.3, arrowsize=0.72];
+
+    game [label="Game\ncomputes local position"];
+    client [label="NetworkClient\nJOIN and position updates"];
+    server [label="Dedicated server\nper-client workers\nshared platform thread", fillcolor="#E8F4F2", color="#64A49A"];
+    snapshot [label="NetworkClient snapshot\nplayers and platforms"];
+    render [label="Game\nreads snapshot and renders"];
+
+    game -> client -> server -> snapshot -> render;
+}

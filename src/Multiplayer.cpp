@@ -2,6 +2,7 @@
 
 #include "NetworkClient.hpp"
 #include "PeerSession.hpp"
+#include "WorldStateClient.hpp"
 
 #include <algorithm>
 #include <map>
@@ -11,9 +12,8 @@
 namespace Multiplayer {
 namespace {
 
-// Both architectures get their shared world objects from the same place — a
-// Network::NetworkClient talking to an authority — so both translate them the
-// same way, and both keep the last set they were given while the link is down.
+// Both architectures translate server-authored platforms the same way, and
+// both keep the last set they were given while the authority link is down.
 //
 // The client drops its snapshot on a disconnect, which is right for players: a
 // player whose owner is unreachable is a ghost, and drawing it is a lie. It is
@@ -22,16 +22,26 @@ namespace {
 // floor, and every player standing on one falls through a world that was fine
 // a moment ago. So the distinction is drawn here, at the layer that knows
 // which is which, rather than in the client, which does not.
-void refreshPlatforms(const Network::NetworkClient& authority, std::vector<Platform>& out)
+void refreshPlatforms(const std::vector<Network::PlatformState>& source, std::vector<Platform>& out)
 {
-    if (authority.state() != Network::ConnectionState::Connected) {
-        return;
-    }
-
     out.clear();
-    for (const Network::PlatformState& platform : authority.snapshot().platforms) {
+    for (const Network::PlatformState& platform : source) {
         out.push_back({platform.id, platform.x, platform.y, platform.width, platform.height});
     }
+}
+
+AuthorityState authorityStateOf(Network::ConnectionState state)
+{
+    switch (state) {
+    case Network::ConnectionState::Connected:
+        return AuthorityState::Ready;
+    case Network::ConnectionState::Error:
+        return AuthorityState::Failed;
+    case Network::ConnectionState::Connecting:
+    case Network::ConnectionState::Disconnected:
+        return AuthorityState::Connecting;
+    }
+    return AuthorityState::Connecting;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +74,9 @@ public:
             }
         }
 
-        refreshPlatforms(client_, platforms_);
+        if (client_.state() == Network::ConnectionState::Connected) {
+            refreshPlatforms(client_.snapshot().platforms, platforms_);
+        }
     }
 
     void publishLocalPlayer(float x, float y, const std::string& data) override
@@ -93,6 +105,8 @@ public:
         }
         return State::Connecting;
     }
+
+    AuthorityState authorityState() const override { return authorityStateOf(client_.state()); }
 
     std::string status() const override
     {
@@ -124,11 +138,8 @@ private:
 // theirs. Identity is chosen rather than assigned, because there is nobody to
 // assign it.
 //
-// Shared world objects, if the session has any, still come from an authority
-// over the client-server link — the hybrid design. Nothing about a player ever
-// passes through it: a game can point every peer at the same authority for its
-// platforms and the players still travel peer to peer, which is the whole
-// distinction this mode exists to make.
+// Shared world objects, if configured, come from a read-only authority client.
+// Player poses are exchanged only through the peer mesh.
 // ---------------------------------------------------------------------------
 class PeerToPeerSession final : public Session {
 public:
@@ -157,7 +168,7 @@ public:
         }
 
         if (!config_.serverEndpoint.empty()) {
-            authority_ = std::make_unique<Network::NetworkClient>(realTime, config_.serverEndpoint);
+            authority_ = std::make_unique<Network::WorldStateClient>(realTime, config_.serverEndpoint);
             authority_->start();
         }
     }
@@ -196,7 +207,9 @@ public:
 
         if (authority_) {
             authority_->poll();
-            refreshPlatforms(*authority_, platforms_);
+            if (authority_->state() == Network::ConnectionState::Connected) {
+                refreshPlatforms(authority_->snapshot().platforms, platforms_);
+            }
         }
     }
 
@@ -212,24 +225,14 @@ public:
         state.sequence = ++sequence_;
         state.x = x;
         state.y = y;
-        state.ready = true;
         state.data = data;
         mesh_->publishState(state);
-
-        // The authority is request/reply, so something has to be sent to get a
-        // reply carrying the platforms back. This peer's pose is what is to
-        // hand; the player list that comes back is deliberately thrown away,
-        // because in this mode players come from the mesh and the authority is
-        // an authority over world objects only.
-        if (authority_ && authority_->state() == Network::ConnectionState::Connected) {
-            authority_->submitPosition(x, y);
-        }
     }
 
     void leave() override
     {
         if (authority_) {
-            authority_->leave();
+            authority_->stop();
         }
         // Destroying the mesh is what publishes LEAVE and stops its threads.
         mesh_.reset();
@@ -251,6 +254,11 @@ public:
         return mesh_ ? State::Ready : State::Connecting;
     }
 
+    AuthorityState authorityState() const override
+    {
+        return authority_ ? authorityStateOf(authority_->state()) : AuthorityState::NotConfigured;
+    }
+
     std::string status() const override
     {
         if (!failure_.empty()) {
@@ -266,9 +274,13 @@ public:
 
         std::string text = std::to_string(mesh_->peerCount()) + " peer(s) in mesh";
         if (authority_) {
-            text += authority_->state() == Network::ConnectionState::Connected
-                        ? ", world objects from " + config_.serverEndpoint
-                        : ", waiting for world objects from " + config_.serverEndpoint;
+            if (authority_->state() == Network::ConnectionState::Error) {
+                text += ", world authority failed: " + authority_->error();
+            } else if (authority_->state() == Network::ConnectionState::Connected) {
+                text += ", world objects from " + config_.serverEndpoint;
+            } else {
+                text += ", waiting for world objects from " + config_.serverEndpoint;
+            }
         }
         return text;
     }
@@ -283,7 +295,7 @@ private:
 
     Config config_;
     std::unique_ptr<Peer::PeerSession> mesh_;
-    std::unique_ptr<Network::NetworkClient> authority_;
+    std::unique_ptr<Network::WorldStateClient> authority_;
     std::map<PlayerId, Known> known_;
     std::vector<Player> remote_;
     std::vector<Platform> platforms_;

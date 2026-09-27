@@ -16,8 +16,8 @@ There are two complete networking architectures, and one interface over both.
                    /              \
      ClientServerSession      PeerToPeerSession
             |                    |        \
-     Network::NetworkClient      |         Network::NetworkClient
-            |                    |          (platforms only, optional)
+     Network::NetworkClient      |         Network::WorldStateClient
+            |                    |          (read-only world, optional)
      Network::NetworkServer   Peer::PeerSession
             |                    |
       NetworkProtocol.hpp    PeerProtocol.hpp
@@ -74,7 +74,8 @@ real rather than two classes sharing a header.
    advances the moving platforms on real time and expires players who have gone
    quiet. It runs whether or not any client is asking for anything, because
    platform motion is not driven by request arrival.
-3. Loops on the handshake socket accepting `JOIN` and nothing else.
+3. Loops on the public socket accepting `JOIN` for players and `GET_WORLD` for
+   read-only world observers. Only `JOIN` creates a private worker or player ID.
 
 The server is headless — no SDL, no window. `network-core` does not link SDL at
 all, which is enforced by the link line rather than by discipline.
@@ -172,9 +173,12 @@ held for that peer. Arrival order is not send order, so a stale pose must never
 overwrite a fresh one.
 
 If a shared-world authority is configured, the peer also holds a
-`NetworkClient` to it — but only for platforms. Its reply carries a player list
-and that list is deliberately discarded. This is the hybrid design: common world
-details from an authority, player data peer to peer.
+`WorldStateClient` to it. Every 50ms it sends `GET_WORLD` and receives
+`WORLD_STATE` with a world-only revision and shared platforms, but no player
+list. It does not `JOIN` or consume a player slot. This is the hybrid design:
+common world details from an authority, player data directly between peers.
+An unreachable authority is retried on real time; the session retains its last
+platform positions until fresh state arrives.
 
 ### Leaving
 
@@ -197,7 +201,7 @@ heard again.
 
 ## 4. How an individual game uses it
 
-The whole surface is six calls. A game never mentions `Network`, `Peer`, ZeroMQ,
+The whole surface is seven calls. A game never mentions `Network`, `Peer`, ZeroMQ,
 joins, handshakes, rosters, snapshots or sequence numbers.
 
 ### Opening a session
@@ -241,6 +245,11 @@ void MyGame::render(SDL_Renderer* renderer) const
     draw(x_, y_);                              // this player, drawn by the game
 }
 ```
+
+`state()` describes whether the player session itself is usable. In hybrid
+peer-to-peer mode, `authorityState()` separately describes the optional source
+of shared world objects. This lets a game show a useful message when players
+can see one another but the platform authority is still connecting.
 
 `remotePlayers()` never contains the local player, in either mode, so a game
 draws them all and its own character without filtering and without drawing
@@ -286,8 +295,9 @@ contain anything — tabs, newlines, packed binary — with nothing to escape.
 
 - **Call `update()` every frame, including while paused.** Otherwise what other
   players are doing stops arriving while this one is not doing anything.
-- **Ids must be unique** across a peer-to-peer session. Nobody assigns them, so
-  nobody can catch a collision.
+- **Ids must be unique** across a peer-to-peer session. The introduction
+  handshake rejects a duplicate ID and reports it through `status()`, but the
+  game still needs to choose a different ID before it can join.
 - **`--advertise` is required off-localhost.** An address bound on `0.0.0.0` is
   not one another machine can dial.
 - **Platforms may be stale.** If the authority becomes unreachable they stop
@@ -316,7 +326,8 @@ greeting each other simultaneously would otherwise each be blocked in a request
 while the other waited to be answered.
 
 **Everything off the wire is validated.** Ids, names, endpoints, float fields
-and blob lengths are all checked before use; `PeerTests` and `NetworkTests`
+and blob lengths are all checked before use; duplicate peer IDs are refused
+during introduction. `PeerTests` and `NetworkTests`
 both contain rejection suites. `tcp://` and `ipc://` are the only transports
 accepted, because endpoints are handed straight to `zmq_connect`.
 
@@ -356,13 +367,20 @@ five seconds in less than five seconds, and making the timeout configurable so
 the test could hurry it along would be a knob that exists for the test rather
 than for any game.
 
-End to end, with assertions:
+For a manual end-to-end check, first start the dedicated authority in one
+terminal:
 
 ```bash
-./sandbox/run-multiplayer-demo.sh 3 6
+./build/network-server
 ```
 
-Runs three players three ways — client-server, peer-to-peer with a dedicated
-authority, and peer-to-peer with a listen-server — and checks that every player
-saw every other player and the shared world in each case. The only difference
-between the runs is the flags.
+Then start two peer-to-peer players in separate terminals:
+
+```bash
+./build/multiplayer-demo --mode peer-to-peer --id 1 --port 7200
+./build/multiplayer-demo --mode peer-to-peer --id 2 --port 7202 --peer tcp://127.0.0.1:7200
+```
+
+Both windows should show the other player and the same moving platforms. To
+test a listen-server instead, stop `network-server`, add `--host` to the first
+peer command, and run the second peer command unchanged.

@@ -18,7 +18,7 @@
 // wire never depends on C++ struct layout, padding or byte order.
 namespace Peer {
 
-constexpr int protocolVersion = 3;
+constexpr int protocolVersion = 4;
 
 using PeerId = std::uint32_t;
 using Message = std::vector<std::string>;
@@ -33,9 +33,9 @@ struct PeerAddress {
 };
 
 // What one peer says about its own player. Generic network fields only — id,
-// name, sequence, pose, and liveness. Anything a particular game invents
-// (score, cargo, ammo) stays in that game rather than in this shared struct,
-// so the peer module does not grow a dependency on one game's rules.
+// name, sequence, and pose. Anything a particular game invents (velocity,
+// health, score, cargo, ammo) stays in the opaque data field so the peer
+// module does not grow a dependency on one game's rules.
 struct PeerState {
     PeerId id = 0;
     std::string name;
@@ -44,14 +44,8 @@ struct PeerState {
     std::uint64_t sequence = 0;
     float x = 0.0F;
     float y = 0.0F;
-    float velocityX = 0.0F;
-    float velocityY = 0.0F;
-    std::int32_t health = 100;
-    bool ready = false;
     // Whatever this particular game needs to say about a player beyond the
-    // fields above. One opaque field, relayed without any peer looking
-    // inside — see Network::PlayerState::data, which is the same idea on the
-    // other architecture.
+    // fields above. One opaque field, relayed without any peer looking inside.
     std::string data;
 };
 

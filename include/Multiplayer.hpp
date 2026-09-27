@@ -63,6 +63,16 @@ enum class State {
     Failed,
 };
 
+// The connection that supplies shared world objects. This is separate from
+// State because peer-to-peer play can work while its optional platform
+// authority is still connecting or unavailable.
+enum class AuthorityState {
+    NotConfigured,
+    Connecting,
+    Ready,
+    Failed,
+};
+
 // Another player, as last heard from. Which hop that came over is exactly what
 // this interface exists not to say.
 struct Player {
@@ -186,6 +196,11 @@ public:
     virtual const std::vector<Platform>& platforms() const = 0;
 
     virtual State state() const = 0;
+
+    // ClientServer: the state of the server coordinating the session.
+    // PeerToPeer: the state of the optional server or listen-server supplying
+    // shared world objects. NotConfigured means this session has no authority.
+    virtual AuthorityState authorityState() const = 0;
 
     // One line fit to show a player: what is happening, or what went wrong.
     virtual std::string status() const = 0;

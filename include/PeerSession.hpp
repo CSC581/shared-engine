@@ -15,8 +15,8 @@ namespace Peer {
 //
 // Two sockets do the work, because a mesh needs two very different things:
 //
-//   PUB  — everything this peer has to say about itself (state, input,
-//          checksum, leave), fanned out to everyone at once. One send reaches
+//   PUB  — everything this peer has to say about itself (state, ping, leave),
+//          fanned out to everyone at once. One send reaches
 //          every peer, and no peer has to acknowledge anything, which is what
 //          keeps a slow peer from holding up the sender.
 //   REP  — the "knock on the door" socket. PUB/SUB is one-directional, so a
