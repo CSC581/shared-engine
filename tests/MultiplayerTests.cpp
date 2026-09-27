@@ -1,6 +1,6 @@
 #include "Multiplayer.hpp"
 #include "../sandbox/NetworkDemoConfig.hpp"
-#include "NetworkServer.hpp"
+#include "NetworkServerHost.hpp"
 #include "TimeSource.hpp"
 #include "ZmqMessage.hpp"
 
@@ -35,65 +35,19 @@ bool waitUntil(Condition condition, std::chrono::milliseconds budget = std::chro
     return condition();
 }
 
-// A stand-in for the server process, so the client-server mode can be
-// exercised for real rather than against a mock.
-class TestServer {
-public:
-    explicit TestServer(Network::ServerConfig config) : server_(clock_, std::move(config)) {}
-
-    ~TestServer()
-    {
-        running_.store(false);
-        if (thread_.joinable()) {
-            thread_.join();
-        }
-        if (platforms_.joinable()) {
-            platforms_.join();
-        }
-    }
-
-    std::string start()
-    {
-        zmq::socket_t socket(context_, zmq::socket_type::rep);
-        socket.set(zmq::sockopt::linger, 0);
-        socket.set(zmq::sockopt::rcvtimeo, 100);
-        socket.bind("tcp://127.0.0.1:*");
-        const std::string endpoint = socket.get(zmq::sockopt::last_endpoint);
-
-        running_.store(true);
-        platforms_ = std::thread([this] {
-            while (running_.load()) {
-                server_.update();
-                std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            }
-        });
-        thread_ = std::thread([this, moved = std::move(socket)]() mutable {
-            while (running_.load()) {
-                bool received = false;
-                Network::Message request;
-                try {
-                    request = Net::receive(moved, received);
-                } catch (const zmq::error_t&) {
-                    continue;
-                }
-                if (received) {
-                    Net::send(moved, server_.handle(request));
-                }
-            }
-        });
-        return endpoint;
-    }
-
-    std::size_t playerCount() const { return server_.playerCount(); }
-
-private:
-    zmq::context_t context_{1};
-    RealTimeClock clock_;
-    Network::NetworkServer server_;
-    std::atomic<bool> running_{false};
-    std::thread thread_;
-    std::thread platforms_;
-};
+// The engine's own server host on an ephemeral loopback port, so both modes
+// are exercised against the real thing rather than a mock. Dedicated is what
+// network-server runs; Listen is what a peer launched with --host runs.
+std::unique_ptr<Network::NetworkServerHost> startServer(Network::HostMode mode)
+{
+    Network::HostConfig hostConfig;
+    hostConfig.mode = mode;
+    hostConfig.bindEndpoint = "tcp://127.0.0.1:*";
+    hostConfig.pollInterval = std::chrono::milliseconds(20);
+    auto host = std::make_unique<Network::NetworkServerHost>(NetworkDemo::makeServerConfig(), hostConfig);
+    host->start();
+    return host;
+}
 
 const Multiplayer::Player* findPlayer(const Multiplayer::Session& session, Multiplayer::PlayerId id)
 {
@@ -246,8 +200,8 @@ bool exerciseAsAGameWould(Multiplayer::Session& mine, Multiplayer::Session& thei
 
 bool testClientServer()
 {
-    TestServer server(NetworkDemo::makeServerConfig());
-    const std::string endpoint = server.start();
+    const auto server = startServer(Network::HostMode::Dedicated);
+    const std::string endpoint = server->boundEndpoint();
     RealTimeClock clock;
 
     Multiplayer::Config config;
@@ -270,8 +224,8 @@ bool testClientServer()
 
 bool testPeerToPeer()
 {
-    TestServer server(NetworkDemo::makeServerConfig());
-    const std::string endpoint = server.start();
+    const auto server = startServer(Network::HostMode::Listen);
+    const std::string endpoint = server->boundEndpoint();
     RealTimeClock clock;
 
     Multiplayer::Config first;
@@ -300,7 +254,7 @@ bool testPeerToPeer()
     passed &= expect(one->authorityState() == Multiplayer::AuthorityState::Ready,
                      "hybrid peer-to-peer mode should report its platform authority as ready");
 
-    passed &= expect(server.playerCount() == 0,
+    passed &= expect(server->playerCount() == 0,
                      "hybrid peers must not join the authority as server players");
 
     Multiplayer::Config regular;
@@ -310,7 +264,7 @@ bool testPeerToPeer()
     std::unique_ptr<Multiplayer::Session> clientServer = Multiplayer::Session::open(regular, clock);
     passed &= expect(waitUntil([&] { clientServer->update(); return clientServer->state() == Multiplayer::State::Ready; }),
                      "normal client should still join the authority");
-    passed &= expect(clientServer->remotePlayers().empty() && server.playerCount() == 1,
+    passed &= expect(clientServer->remotePlayers().empty() && server->playerCount() == 1,
                      "normal client must not see hybrid peers as duplicate server players");
     return passed;
 }
@@ -461,8 +415,8 @@ bool testWorldSurvivesLosingTheAuthority()
     bool passed = true;
     RealTimeClock clock;
 
-    auto server = std::make_unique<TestServer>(NetworkDemo::makeServerConfig());
-    const std::string endpoint = server->start();
+    auto server = startServer(Network::HostMode::Dedicated);
+    const std::string endpoint = server->boundEndpoint();
 
     Multiplayer::Config config;
     config.mode = Multiplayer::Mode::ClientServer;
