@@ -148,7 +148,7 @@ int main(int argc, char* argv[])
         std::cout << "Apex network server handshake on " << handshakeEndpoint << '\n';
         std::cout << "Session endpoints advertise host " << advertiseHost << '\n';
         std::cout << "World: Apex Ascent tower + room-0 moving platform (server-authored).\n";
-        std::cout << "Each JOIN spawns a dedicated per-client REP worker (no Router/Dealer).\n";
+        std::cout << "Each JOIN spawns a dedicated per-client REP worker; GET_WORLD is read-only.\n";
 
         while (g_running.load()) {
             Network::Message requestMessage;
@@ -166,6 +166,13 @@ int main(int argc, char* argv[])
             std::string error;
             if (!Network::decodeRequest(requestMessage, request, error)) {
                 Net::send(handshake, Network::encodeError(error));
+                continue;
+            }
+
+            // Hybrid peers only observe server-owned platforms. They do not
+            // join the player roster or need a private client worker.
+            if (request.type == Network::RequestType::GetWorld) {
+                Net::send(handshake, server.handle(requestMessage));
                 continue;
             }
 

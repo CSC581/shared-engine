@@ -40,6 +40,21 @@ const char* connectionLabel(Multiplayer::State state)
     return "Unknown";
 }
 
+const char* authorityLabel(Multiplayer::AuthorityState state)
+{
+    switch (state) {
+    case Multiplayer::AuthorityState::NotConfigured:
+        return "Not configured";
+    case Multiplayer::AuthorityState::Connecting:
+        return "Connecting";
+    case Multiplayer::AuthorityState::Ready:
+        return "Ready";
+    case Multiplayer::AuthorityState::Failed:
+        return "Failed";
+    }
+    return "Unknown";
+}
+
 // Distinct tints for remote climbers (ghosts); local player keeps the sprite.
 void ghostColor(Multiplayer::PlayerId playerId, Uint8& red, Uint8& green, Uint8& blue)
 {
@@ -621,18 +636,27 @@ void ApexAscent::render(SDL_Renderer* renderer) const
     SDL_RenderDebugText(renderer, 20.0F, 40.0F, scaleHud);
 
     if (session_) {
-        char netHud[160];
+        char netHud[256];
         if (session_->state() != Multiplayer::State::Ready) {
             std::snprintf(netHud, sizeof(netHud), "Net: %s — %s",
                           connectionLabel(session_->state()), session_->status().c_str());
             SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
+        } else if (session_->authorityState() == Multiplayer::AuthorityState::Failed) {
+            std::snprintf(netHud, sizeof(netHud), "Net: Ready | authority Failed — %s",
+                          session_->status().c_str());
+            SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
         } else {
             std::snprintf(netHud, sizeof(netHud),
-                          "Net: %s | you #%u | %zu climbers | authority platforms",
+                          "Net: %s | you #%u | %zu climbers | authority %s",
                           connectionLabel(session_->state()),
                           static_cast<unsigned>(session_->localPlayerId()),
-                          session_->remotePlayers().size() + 1);
-            SDL_SetRenderDrawColor(renderer, 180, 220, 255, 255);
+                          session_->remotePlayers().size() + 1,
+                          authorityLabel(session_->authorityState()));
+            if (session_->authorityState() == Multiplayer::AuthorityState::Connecting) {
+                SDL_SetRenderDrawColor(renderer, 255, 205, 100, 255);
+            } else {
+                SDL_SetRenderDrawColor(renderer, 180, 220, 255, 255);
+            }
         }
         SDL_RenderDebugText(renderer, 20.0F, 60.0F, netHud);
 
