@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -42,6 +43,15 @@ struct ServerConfig {
     std::int64_t inactivityTimeoutTics = 3 * kNsPerSec;
 };
 
+// How much one player has sent, as counted by the server. Accepted updates
+// only: a POSITION refused for a stale sequence or a wrong token is not
+// counted, so this measures what the server actually took from each client.
+struct PlayerTraffic {
+    PlayerId id = 0;
+    std::string name;
+    std::uint64_t acceptedPositions = 0;
+};
+
 // Thread-safe session/state store, independent of SDL and ZeroMQ.
 // Positions are trusted client reports, not validated game physics.
 //
@@ -65,12 +75,21 @@ public:
     WorldSnapshot snapshot() const;
     std::size_t playerCount() const;
 
+    // Whether this token currently owns a player. False once the player has
+    // left or been expired for inactivity.
+    bool hasSession(const SessionToken& sessionToken) const;
+
+    // Per-player accepted-update counts since each player joined. Monotonic
+    // for a given player; a caller wanting a rate samples it twice.
+    std::vector<PlayerTraffic> traffic() const;
+
 private:
     struct ActivePlayer {
         PlayerState state;
         SessionToken sessionToken;
         std::uint64_t lastSequence = 0;
         std::int64_t lastHeard = 0;
+        std::uint64_t acceptedPositions = 0;
     };
 
     struct ActivePlatform {

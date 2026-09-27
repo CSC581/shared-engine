@@ -1,21 +1,18 @@
-#include "NetworkServer.hpp"
+// Headless Section 2/4 demo server: the arena layout from NetworkDemoConfig,
+// hosted by the engine's NetworkServerHost. Everything network-shaped — the
+// handshake, per-client workers, endpoint advertising, shutdown — is the
+// host's job; this file is only the command line and Ctrl-C.
+
 #include "NetworkDemoConfig.hpp"
-#include "NetworkProtocol.hpp"
-#include "TimeSource.hpp"
-#include "ZmqMessage.hpp"
+#include "NetworkServerHost.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <exception>
-#include <future>
 #include <iostream>
-#include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_map>
-#include <utility>
 
 namespace {
 
@@ -26,82 +23,12 @@ void onSignal(int)
     g_running.store(false);
 }
 
-// One blocking REP loop per connected client. A slow client only stalls this
-// thread — other workers keep serving. Sockets stay on the worker thread
-// (ZeroMQ sockets are not thread-safe).
-void runClientWorker(zmq::context_t& context, Network::NetworkServer& server,
-                     std::promise<std::string> endpointReady,
-                     std::shared_ptr<std::atomic<bool>> alive,
-                     Network::SessionToken sessionToken,
-                     std::mutex& endpointsMutex,
-                     std::unordered_map<Network::SessionToken, std::string>& endpointsByToken)
-{
-    try {
-        zmq::socket_t socket(context, zmq::socket_type::rep);
-        socket.set(zmq::sockopt::linger, 0);
-        // Wake periodically so a cancelled worker (failed JOIN / shutdown) can exit.
-        socket.set(zmq::sockopt::rcvtimeo, 500);
-        // Bind on all interfaces; main rewrites the host for WELCOME via --advertise.
-        socket.bind("tcp://0.0.0.0:*");
-        const std::string endpoint = socket.get(zmq::sockopt::last_endpoint);
-        endpointReady.set_value(endpoint);
-
-        while (alive->load() && g_running.load()) {
-            Network::Message requestMessage;
-            bool received = false;
-            try {
-                requestMessage = Net::receive(socket, received);
-            } catch (const zmq::error_t&) {
-                continue;
-            }
-            if (!received) {
-                continue;
-            }
-
-            Network::Request request;
-            std::string error;
-            const bool decoded = Network::decodeRequest(requestMessage, request, error);
-            const Network::Message reply = server.handle(requestMessage);
-            Net::send(socket, reply);
-
-            // A malformed or unauthorized LEAVE produces ERROR. Keep this
-            // worker alive unless the server actually accepted the departure.
-            Network::Reply decodedReply;
-            std::string replyError;
-            const bool acceptedLeave =
-                decoded && request.type == Network::RequestType::Leave &&
-                Network::decodeReply(reply, decodedReply, replyError) &&
-                decodedReply.type == Network::ReplyType::Goodbye;
-            if (acceptedLeave) {
-                break;
-            }
-        }
-    } catch (...) {
-        try {
-            endpointReady.set_value({});
-        } catch (const std::future_error&) {
-            // Endpoint was already published before the failure.
-        }
-    }
-
-    {
-        const std::lock_guard<std::mutex> lock(endpointsMutex);
-        endpointsByToken.erase(sessionToken);
-    }
-    alive->store(false);
-}
-
-struct ClientWorker {
-    std::shared_ptr<std::atomic<bool>> alive;
-    std::thread thread;
-};
-
 } // namespace
 
 int main(int argc, char* argv[])
 {
-    std::string handshakeEndpoint = "tcp://*:5555";
-    std::string advertiseHost = "127.0.0.1";
+    Network::HostConfig hostConfig;
+    hostConfig.mode = Network::HostMode::Dedicated;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--advertise") {
@@ -109,175 +36,40 @@ int main(int argc, char* argv[])
                 std::cerr << "network-server: --advertise requires a host\n";
                 return 1;
             }
-            advertiseHost = argv[++i];
+            hostConfig.advertiseHost = argv[++i];
+            continue;
+        }
+        if (arg == "--rates") {
+            // Once a second, each player's accepted POSITION/s: run clients at
+            // 0.5x / 1x / 2x and the server sees three different rates.
+            hostConfig.trafficLogInterval = std::chrono::seconds(1);
             continue;
         }
         if (arg.rfind("--", 0) == 0) {
             std::cerr << "network-server: unknown option " << arg << '\n';
             return 1;
         }
-        handshakeEndpoint = arg;
+        hostConfig.bindEndpoint = arg;
     }
+    hostConfig.log = [](const std::string& line) { std::cout << "network-server: " << line << '\n'; };
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    int exitCode = 0;
-    zmq::context_t context(1);
-    RealTimeClock clock;
-    Network::NetworkServer server(clock, NetworkDemo::makeServerConfig());
-
-    std::mutex workersMutex;
-    std::vector<ClientWorker> workers;
-    std::thread platformThread;
-    std::mutex endpointsMutex;
-    std::unordered_map<Network::SessionToken, std::string> endpointsByToken;
-
     try {
-        zmq::socket_t handshake(context, zmq::socket_type::rep);
-        handshake.set(zmq::sockopt::linger, 0);
-        // Poll so Ctrl-C / error shutdown can leave the accept loop.
-        handshake.set(zmq::sockopt::rcvtimeo, 500);
-        handshake.bind(handshakeEndpoint);
-
-        platformThread = std::thread([&server] {
-            while (g_running.load()) {
-                server.update();
-                std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            }
-        });
-
-        std::cout << "Network server handshake listening on " << handshakeEndpoint << '\n';
-        std::cout << "Session endpoints advertise host " << advertiseHost << '\n';
-        std::cout << "Each JOIN spawns a dedicated per-client REP worker; GET_WORLD is read-only.\n";
+        Network::NetworkServerHost host(NetworkDemo::makeServerConfig(), hostConfig);
+        host.start();
+        std::cout << "Session endpoints advertise host " << hostConfig.advertiseHost << '\n';
+        std::cout << "Each JOIN gets a dedicated REP worker; GET_WORLD is read-only.\n";
         std::cout << "Moving platforms are server-authored on real time.\n";
 
         while (g_running.load()) {
-            Network::Message requestMessage;
-            bool received = false;
-            try {
-                requestMessage = Net::receive(handshake, received);
-            } catch (const zmq::error_t&) {
-                continue;
-            }
-            if (!received) {
-                continue;
-            }
-
-            Network::Request request;
-            std::string error;
-            if (!Network::decodeRequest(requestMessage, request, error)) {
-                Net::send(handshake, Network::encodeError(error));
-                continue;
-            }
-
-            // World observers do not JOIN, consume player slots, or need a
-            // private worker: this public socket only serves a read-only view.
-            if (request.type == Network::RequestType::GetWorld) {
-                Net::send(handshake, server.handle(requestMessage));
-                continue;
-            }
-
-            if (request.type != Network::RequestType::Join) {
-                Net::send(handshake, Network::encodeError("handshake accepts JOIN only"));
-                continue;
-            }
-
-            // Rejoin: reuse the existing worker endpoint when this token is live.
-            {
-                const std::lock_guard<std::mutex> lock(endpointsMutex);
-                const auto existing = endpointsByToken.find(request.sessionToken);
-                if (existing != endpointsByToken.end()) {
-                    const Network::Message handled = server.handle(requestMessage);
-                    Network::Reply welcome;
-                    std::string welcomeError;
-                    if (!Network::decodeReply(handled, welcome, welcomeError) ||
-                        welcome.type != Network::ReplyType::Welcome) {
-                        Net::send(handshake, handled);
-                        continue;
-                    }
-                    Net::send(handshake, Network::encodeWelcome(welcome.playerId, welcome.snapshot,
-                                                                existing->second));
-                    continue;
-                }
-            }
-
-            auto alive = std::make_shared<std::atomic<bool>>(true);
-            std::promise<std::string> endpointReady;
-            std::future<std::string> endpointFuture = endpointReady.get_future();
-            const Network::SessionToken token = request.sessionToken;
-
-            ClientWorker worker;
-            worker.alive = alive;
-            worker.thread = std::thread(runClientWorker, std::ref(context), std::ref(server),
-                                        std::move(endpointReady), alive, token, std::ref(endpointsMutex),
-                                        std::ref(endpointsByToken));
-            {
-                const std::lock_guard<std::mutex> lock(workersMutex);
-                workers.push_back(std::move(worker));
-            }
-
-            const std::string boundEndpoint = endpointFuture.get();
-            const std::string sessionEndpoint =
-                Network::rewriteTcpEndpointHost(boundEndpoint, advertiseHost);
-            if (boundEndpoint.empty() || sessionEndpoint.empty()) {
-                alive->store(false);
-                Net::send(handshake, Network::encodeError("could not start client worker"));
-                continue;
-            }
-
-            const Network::Message handled = server.handle(requestMessage);
-            Network::Reply welcome;
-            std::string welcomeError;
-            if (!Network::decodeReply(handled, welcome, welcomeError) ||
-                welcome.type != Network::ReplyType::Welcome) {
-                alive->store(false);
-                Net::send(handshake, handled);
-                continue;
-            }
-
-            {
-                const std::lock_guard<std::mutex> lock(endpointsMutex);
-                endpointsByToken[token] = sessionEndpoint;
-            }
-
-            std::cout << "Client player " << welcome.playerId << " -> " << sessionEndpoint << '\n';
-            Net::send(handshake,
-                      Network::encodeWelcome(welcome.playerId, welcome.snapshot, sessionEndpoint));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+        host.stop();
     } catch (const std::exception& exception) {
         std::cerr << "Network server error: " << exception.what() << '\n';
-        exitCode = 1;
+        return 1;
     }
-
-    // Stop background work while server/context are still alive (no detached UAF).
-    g_running.store(false);
-    {
-        const std::lock_guard<std::mutex> lock(workersMutex);
-        for (ClientWorker& worker : workers) {
-            if (worker.alive) {
-                worker.alive->store(false);
-            }
-        }
-    }
-    try {
-        context.shutdown();
-    } catch (const zmq::error_t&) {
-        // Already shut down or closing.
-    }
-
-    if (platformThread.joinable()) {
-        platformThread.join();
-    }
-    {
-        const std::lock_guard<std::mutex> lock(workersMutex);
-        for (ClientWorker& worker : workers) {
-            if (worker.thread.joinable()) {
-                worker.thread.join();
-            }
-        }
-        workers.clear();
-    }
-
-    return exitCode;
+    return 0;
 }

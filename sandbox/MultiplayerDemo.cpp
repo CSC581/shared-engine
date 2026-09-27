@@ -13,12 +13,13 @@
 // Everything architecture-specific lives in the option parsing, which is to
 // say in the deployment decision rather than in the game.
 
+#include "Endpoint.hpp"
 #include "Engine.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
-#include "ListenServer.hpp"
 #include "Multiplayer.hpp"
 #include "NetworkDemoConfig.hpp"
+#include "NetworkServerHost.hpp"
 #include "WireFormat.hpp"
 #include "TimeSource.hpp"
 
@@ -432,19 +433,24 @@ int main(int argc, char* argv[])
     // The listen-server: the shared-world authority carried by one of the
     // players rather than by a process of its own. It has to be running before
     // the session opens, since the session starts connecting immediately.
-    std::unique_ptr<ListenServer> listenServer;
+    std::unique_ptr<Network::NetworkServerHost> listenServer;
     if (hostAuthority) {
         if (config.serverEndpoint.empty()) {
             std::cerr << "multiplayer-demo: --host needs somewhere to bind; drop --server none\n";
             return 1;
         }
-        std::string bind = config.serverEndpoint;
-        const std::size_t colon = bind.rfind(':');
-        if (colon != std::string::npos) {
-            bind = "tcp://*" + bind.substr(colon);
+        // Bind on every interface at the port the other players will dial.
+        const std::string bind = Net::wildcardBindEndpoint(config.serverEndpoint);
+        if (bind.empty()) {
+            std::cerr << "multiplayer-demo: --host needs a tcp://host:port --server endpoint\n";
+            return 1;
         }
         try {
-            listenServer = std::make_unique<ListenServer>(bind, NetworkDemo::makeServerConfig());
+            Network::HostConfig hostConfig;
+            hostConfig.mode = Network::HostMode::Listen;
+            hostConfig.bindEndpoint = bind;
+            listenServer =
+                std::make_unique<Network::NetworkServerHost>(NetworkDemo::makeServerConfig(), hostConfig);
             listenServer->start();
             std::cout << "Hosting the shared-world authority (listen-server) on " << bind << '\n';
         } catch (const std::exception& exception) {

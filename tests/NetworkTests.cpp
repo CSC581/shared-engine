@@ -1,3 +1,4 @@
+#include "Endpoint.hpp"
 #include "NetworkClient.hpp"
 #include "NetworkProtocol.hpp"
 #include "NetworkServer.hpp"
@@ -410,6 +411,46 @@ bool worldStateClientReadsOnlyWorld()
     return passed;
 }
 
+// The store counts what it accepted from each player and tracks whether a
+// token still owns a session — what the host uses to free a crashed client's
+// worker once the player expires.
+bool serverCountsAcceptedTrafficAndSessions()
+{
+    ManualClock clock;
+    Network::ServerConfig config;
+    config.spawnPoints = {{0.0F, 0.0F}};
+    config.inactivityTimeoutTics = kNsPerSec;
+    Network::NetworkServer server(clock, config);
+
+    const Network::SessionToken playerToken(32, 'b');
+    Network::Reply reply;
+    std::string error;
+    bool passed = expect(!server.hasSession(playerToken), "no session before JOIN");
+    passed &= expect(Network::decodeReply(server.handle(Network::encodeJoin(playerToken, "Nova")), reply, error) &&
+                         reply.type == Network::ReplyType::Welcome,
+                     "JOIN should be welcomed");
+    const Network::PlayerId id = reply.playerId;
+    passed &= expect(server.hasSession(playerToken), "JOIN should create a session");
+
+    for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
+        server.handle(Network::encodePosition(id, playerToken, {1.0F, 2.0F, sequence, {}}));
+    }
+    // Refused: stale sequence, and someone else's token.
+    server.handle(Network::encodePosition(id, playerToken, {1.0F, 2.0F, 2, {}}));
+    server.handle(Network::encodePosition(id, Network::SessionToken(32, 'c'), {1.0F, 2.0F, 9, {}}));
+
+    const std::vector<Network::PlayerTraffic> traffic = server.traffic();
+    passed &= expect(traffic.size() == 1 && traffic[0].id == id && traffic[0].name == "Nova" &&
+                         traffic[0].acceptedPositions == 3,
+                     "only accepted POSITIONs should be counted");
+
+    clock.advance(2 * kNsPerSec);
+    server.update();
+    passed &= expect(!server.hasSession(playerToken) && server.traffic().empty(),
+                     "an expired player should no longer have a session or traffic");
+    return passed;
+}
+
 bool worldRequestDoesNotUsePlayerSlots()
 {
     ManualClock clock;
@@ -556,6 +597,18 @@ bool rewriteTcpEndpointHostKeepsPort()
     return passed;
 }
 
+bool wildcardBindEndpointKeepsPort()
+{
+    bool passed = true;
+    passed &= expect(Net::wildcardBindEndpoint("tcp://192.168.1.10:5555") == "tcp://*:5555",
+                     "a server endpoint should become an all-interfaces bind on the same port");
+    passed &= expect(Net::wildcardBindEndpoint("tcp://[::1]:7000") == "tcp://*:7000",
+                     "an IPv6 server endpoint should keep its port");
+    passed &= expect(Net::wildcardBindEndpoint("tcp://host").empty(), "an endpoint without a port should be rejected");
+    passed &= expect(Net::wildcardBindEndpoint("ipc://socket").empty(), "non-tcp endpoints should be rejected");
+    return passed;
+}
+
 } // namespace
 
 int main()
@@ -582,9 +635,11 @@ int main()
     passed &= reconnectsToSessionEndpoint();
     passed &= welcomeEncodesSessionEndpoint();
     passed &= rewriteTcpEndpointHostKeepsPort();
+    passed &= wildcardBindEndpointKeepsPort();
     passed &= perClientWorkersDoNotBlockEachOther();
     passed &= worldStateClientReadsOnlyWorld();
     passed &= worldRequestDoesNotUsePlayerSlots();
+    passed &= serverCountsAcceptedTrafficAndSessions();
     passed &= worldObserverRetriesWithoutKeepingStaleState();
     passed &= playerClientRejectsWorldOnlyReply();
 
