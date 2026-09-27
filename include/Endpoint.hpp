@@ -44,4 +44,14 @@ inline std::string rewriteTcpEndpointHost(const std::string& endpoint, const std
     return std::string(kPrefix) + host + ':' + port;
 }
 
+// The address to bind so that a server reachable at `endpoint` accepts
+// connections on every interface: "tcp://192.168.1.10:5555" -> "tcp://*:5555".
+// A player hosting a listen-server knows the address the others will dial;
+// this is the matching bind. Returns an empty string for anything that is not
+// a tcp://…:port endpoint.
+inline std::string wildcardBindEndpoint(const std::string& endpoint)
+{
+    return rewriteTcpEndpointHost(endpoint, "*");
+}
+
 } // namespace Net

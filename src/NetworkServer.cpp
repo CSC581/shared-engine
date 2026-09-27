@@ -138,6 +138,7 @@ Message NetworkServer::handle(const Message& message)
     player->second.state.data = std::move(request.position.data);
     player->second.lastSequence = request.position.sequence;
     player->second.lastHeard = now;
+    ++player->second.acceptedPositions;
     ++serverTick_;
     return encodeSnapshot(buildSnapshot());
 }
@@ -152,6 +153,25 @@ std::size_t NetworkServer::playerCount() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     return players_.size();
+}
+
+bool NetworkServer::hasSession(const SessionToken& sessionToken) const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return playerIdsByToken_.count(sessionToken) != 0;
+}
+
+std::vector<PlayerTraffic> NetworkServer::traffic() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<PlayerTraffic> result;
+    result.reserve(players_.size());
+    for (const auto& entry : players_) {
+        result.push_back({entry.first, entry.second.state.name, entry.second.acceptedPositions});
+    }
+    std::sort(result.begin(), result.end(),
+              [](const PlayerTraffic& a, const PlayerTraffic& b) { return a.id < b.id; });
+    return result;
 }
 
 void NetworkServer::expireInactivePlayers(std::int64_t now)
