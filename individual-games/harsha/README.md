@@ -18,7 +18,7 @@ Online only (`--join`):
 
 | Input | Action |
 | --- | --- |
-| P | Pause / unpause this client's game time |
+| P | Pause / unpause this client's game time (movement and jumps are ignored while paused) |
 | 1 / 2 / 3 | 0.5× / 1× / 2× game time |
 
 ## Build and run (offline)

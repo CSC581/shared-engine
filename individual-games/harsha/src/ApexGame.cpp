@@ -109,6 +109,14 @@ void ApexGame::handleInput(Engine& engine)
         if (Input::isKeyJustPressed(SDL_SCANCODE_3)) {
             gameTime.setScale(2.0);
         }
+
+        // Paused: freeze the climber. Only quit and the timeline keys above act.
+        if (gameTime.isPaused()) {
+            if (Input::isKeyJustPressed(SDL_SCANCODE_ESCAPE)) {
+                engine.quit();
+            }
+            return;
+        }
     }
 
     // Aim/charge only while grounded — no air control once jumping.
@@ -127,7 +135,9 @@ void ApexGame::handleInput(Engine& engine)
         player_.setVelocityX(aim * walkSpeed);
     }
 
-    if (Input::isKeyJustReleased(SDL_SCANCODE_SPACE) && isCharging_) {
+    // "Not held" rather than "just released": a release during a pause is
+    // missed, so the stored charge fires on the first unpaused frame.
+    if (isCharging_ && !Input::isKeyPressed(SDL_SCANCODE_SPACE)) {
         isCharging_ = false;
 
         const float power = baseJumpSpeed + chargePower_;
