@@ -28,12 +28,10 @@ Use four terminals, one process per terminal:
 ./build/signal-bloom --name Mira
 ```
 
-Each client can be launched before or after the server. The server terminal
-reports *accepted* `POSITION` messages per player per second. Set one client
-to `1` (0.5x), one to `2` (1x), and one to `3` (2x) and compare those numbers
-over several seconds. The client HUD also shows its measured loop rate. The
-client's publish-call counter in `F2` diagnostics is not a wire-message count:
-the networking layer can skip a send while awaiting a reply.
+Each client can be launched before or after the server. Set one client to `1`
+(0.5x), one to `2` (1x), and one to `3` (2x) to compare their measured loop
+rates in the client HUD. The publish-call counter in `F2` diagnostics is not a
+wire-message count: the networking layer can skip a send while awaiting a reply.
 For a repeatable measurement without key presses, add `--scale 0.5`,
 `--scale 1`, or `--scale 2` to the three client commands.
 
@@ -81,5 +79,5 @@ its world rather than restoring old progress. The station is online only
 while three distinct, connected players hold three different relays.
 
 Useful screenshots for the individual reflection are (1) all three relays
-active in three windows, (2) different client rates beside the server's
-accepted-message counts, and (3) hybrid mode with peers and a shared shuttle.
+active in three windows, (2) different client loop rates, and (3) hybrid mode
+with peers and a shared shuttle.

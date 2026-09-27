@@ -288,7 +288,7 @@ target_link_libraries(signal-bloom PRIVATE engine multiplayer signal-bloom-rules
 add_executable(signal-bloom-server
     individual-games/vanaja/signal-bloom/src/SignalBloomServer.cpp
 )
-target_link_libraries(signal-bloom-server PRIVATE network-core engine-geometry Threads::Threads)
+target_link_libraries(signal-bloom-server PRIVATE network-core)
 target_include_directories(signal-bloom-server PRIVATE
     individual-games/vanaja/signal-bloom/include
 )
