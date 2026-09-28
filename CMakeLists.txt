@@ -256,6 +256,20 @@ target_link_libraries(apex-network-server PRIVATE network-core Threads::Threads)
 add_executable(golf-game individual-games/skim253/main.cpp)
 target_link_libraries(golf-game PRIVATE engine)
 
+# Pokemon Hunt (Milestone 2): each client is a Pokemon, the headless server
+# owns the monster.
+add_executable(pokemon-hunt individual-games/skim253/pokemon-hunt/PokemonHunt.cpp)
+target_link_libraries(pokemon-hunt PRIVATE engine multiplayer)
+add_custom_command(TARGET pokemon-hunt POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/individual-games/skim253/pokemon-hunt/media
+        $<TARGET_FILE_DIR:pokemon-hunt>/media/pokemon-hunt
+    COMMENT "Copying Pokemon Hunt sprites next to pokemon-hunt"
+)
+
+add_executable(pokemon-hunt-server individual-games/skim253/pokemon-hunt/PokemonHuntServer.cpp)
+target_link_libraries(pokemon-hunt-server PRIVATE network-core engine-geometry Threads::Threads)
+
 # Runtime art next to the binary so SDL_GetBasePath() + "media/apex-ascent/"
 # works regardless of the caller's working directory.
 add_custom_command(TARGET apex-ascent POST_BUILD
