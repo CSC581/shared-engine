@@ -281,14 +281,32 @@ add_custom_command(TARGET apex-ascent POST_BUILD
     COMMENT "Copying Apex Ascent player sprites next to apex-ascent"
 )
 
-# Starfall Salvage executable
+# Starfall Salvage's cooperative Project 2 iteration. The server is headless
+# and owns this game's shuttle and drone paths.
+add_library(starfall-salvage-rules STATIC
+    individual-games/vanaja/src/StarfallSalvageRules.cpp
+)
+target_include_directories(starfall-salvage-rules PUBLIC
+    individual-games/vanaja/include
+)
+target_link_libraries(starfall-salvage-rules PUBLIC engine-geometry)
+
 add_executable(starfall-salvage
-    individual-games/vanaja/starfall-salvage/src/main.cpp
-    individual-games/vanaja/starfall-salvage/src/StarfallSalvageGame.cpp
+    individual-games/vanaja/src/starfallSalvage.cpp
+    individual-games/vanaja/src/StarfallSalvageGame.cpp
+)
+target_link_libraries(starfall-salvage PRIVATE engine multiplayer starfall-salvage-rules)
+
+add_executable(starfall-salvage-server
+    individual-games/vanaja/src/StarfallSalvageServer.cpp
+)
+target_link_libraries(starfall-salvage-server PRIVATE network-core)
+target_include_directories(starfall-salvage-server PRIVATE
+    individual-games/vanaja/include
 )
 
-target_include_directories(starfall-salvage PRIVATE
-    individual-games/vanaja/starfall-salvage/include
+add_executable(starfall-salvage-tests
+    individual-games/vanaja/tests/StarfallSalvageTests.cpp
 )
-
-target_link_libraries(starfall-salvage PRIVATE engine)
+target_link_libraries(starfall-salvage-tests PRIVATE starfall-salvage-rules)
+add_test(NAME starfall-salvage-tests COMMAND starfall-salvage-tests)
