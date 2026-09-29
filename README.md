@@ -1,201 +1,134 @@
-# Shared Engine
+# Shared Engine — Project 2: Time and Networking Foundations
 
-A reusable C++17 game-engine foundation built with SDL3 and ZeroMQ. The shared
-code supplies a window and game loop, entities, physics, input, collision,
-timekeeping, and networking. Applications supply their own rules and artwork.
+**Team:** Harsha Vardhan Puvvadi, Seojin Kim, Vanaja Agarwal · **CSC 581** · All five sections (1–5) are implemented.
 
-A game implements `Game::handleInput()`, `Game::update()`, and `Game::render()`,
-then passes itself to `Engine::run()`. The engine does not contain a particular
-player, level, score, or win condition.
-
-## Feature Map
-
-### Project 2 (Milestone 2)
-
-| Section | Shared-engine feature or demonstration | Main files |
-| --- | --- | --- |
-| 1. Time | Monotonic real-time source, pausable and rescalable timelines, per-consumer delta timers, and `FrameTime` for game movement. The engine also exposes a loop-iteration clock. | `include/TimeSource.hpp`, `include/Timeline.hpp`, `include/DeltaTimer.hpp`, `include/FrameTime.hpp`, `src/Engine.cpp` |
-| 2. Networking | SDL-free protocol and nonblocking ZeroMQ client. A headless server keeps player sessions, positions, and server-owned moving platforms, and `NetworkServerHost` puts it on the network so a server executable is only its configuration. | `include/NetworkProtocol.hpp`, `include/NetworkClient.hpp`, `include/NetworkServer.hpp`, `include/NetworkServerHost.hpp`, `src/Network*.cpp` |
-| 3. Multithreaded updates | Mutex-protected entities and timelines, plus independent delta timers, support game-managed parallel updates. The game synchronizes workers before collision checks and rendering. | `include/Entity.hpp`, `include/Timeline.hpp`, `include/DeltaTimer.hpp`, `src/Engine.cpp` |
-| 4. Concurrent clients | `NetworkServerHost` in dedicated mode gives joined players separate request/reply workers; one slow client need not block another. Demo clients can independently pause or scale their own game time. | `include/NetworkServerHost.hpp`, `src/NetworkServerHost.cpp`, `sandbox/NetworkServerMain.cpp`, `sandbox/MultiplayerDemo.cpp` |
-| 5. Peer-to-peer and hybrid mode | Peers discover one another and send player state directly. An optional read-only world client obtains moving-platform state from a dedicated or player-hosted authority without joining its player roster. | `include/PeerSession.hpp`, `include/WorldStateClient.hpp`, `include/Multiplayer.hpp`, `src/PeerSession.cpp`, `src/WorldStateClient.cpp`, `src/Multiplayer.cpp` |
-
-### Milestone 1 Foundations
-
-| Task | Shared-engine feature | Main files |
-| --- | --- | --- |
-| 1. Engine setup and rendering | SDL3 initialization, a resizable window and renderer, the main loop, screen clear, frame presentation, and cleanup. The game chooses its window title and design size. | `include/Engine.hpp`, `src/Engine.cpp`, `include/Game.hpp` |
-| 2. Entity | Position, dimensions, velocity, time-based movement, and a bounding rectangle. | `include/Entity.hpp`, `src/Entity.cpp` |
-| 3. Physics | Configurable gravity applied only to entities selected by the game. | `include/Physics.hpp`, `src/Physics.cpp` |
-| 4. Input | Polls the SDL keyboard once per frame and exposes held, just-pressed, and just-released keys, plus multi-key helpers. | `include/Input.hpp`, `src/Input.cpp` |
-| 5. Collision | SDL-free rectangle overlap, intersection, separation, and resolution. The game decides what a collision means. | `include/Collision.hpp`, `src/Collision.cpp` |
-| 6. Scaling | Constant/pixel and proportional/aspect-preserving rendering modes. `F1` toggles them by default; games may rebind or disable the key. | `include/Engine.hpp`, `src/Engine.cpp` |
-
-## How The Pieces Fit
-
-**Frame and time.** The engine polls input, obtains game-time delta, calls the
-game update, and renders the frame. Real time keeps running during a game pause.
-
-![Milestone 2 frame and time flow](docs/frame-time-flow.svg)
-
-**Client-server mode.** The game sends its locally calculated position to the
-dedicated server and reads back a snapshot of players and platforms.
-
-![Milestone 2 client-server flow](docs/client-server-flow.svg)
-
-**Peer-to-peer and hybrid mode.** Player state goes directly between peers.
-If configured, a separate world client asks an authority only for platforms.
-
-![Milestone 2 peer-to-peer and hybrid flow](docs/peer-hybrid-flow.svg)
-
-`engine-time`, `engine-geometry`, `network-core`, and `peer-core` do not link
-SDL. The windowed `engine` library adds SDL on top, while the dedicated
-`network-server` uses the networking and time libraries without a window.
-For Section 3, games can use the thread-safe entity and time APIs to update
-different objects concurrently, then wait for the updates before checking
-collisions or rendering. `Engine::run()` does not create worker threads.
-
-The public APIs are in `include/`, their implementations are in `src/`,
-runnable examples are in `sandbox/`, and automated checks are in `tests/`.
-For networking internals, see
-[docs/networking-guide.md](docs/networking-guide.md).
-
-## Build And Test
-
-The SDL3 and ZeroMQ dependencies are Git submodules. From a new clone, run:
+A reusable C++17 game engine built on SDL3 (window, input, drawing) and ZeroMQ (networking).
+Each game supplies its own input, update and draw code; the engine holds no game rules.
+Milestone 1 features (entities, gravity, collision, input, scaling) are not repeated here.
 
 ```bash
 git submodule update --init --recursive
-cmake -S . -B build
-cmake --build build -j 4
-ctest --test-dir build --output-on-failure
+cmake -S . -B build && cmake --build build -j 4 && ctest --test-dir build --output-on-failure
 ```
 
-CMake also fetches Dear ImGui for the timeline sandbox during the first
-configuration, so that first configure needs internet access unless the
-dependency is already cached. Dear ImGui is not linked into the shared engine.
-The test suite covers entities and physics, input, collision, timelines,
-ZeroMQ, the network client/server, the server host, the peer mesh, both
-multiplayer modes, and a check that individual games do not use ZeroMQ
-directly.
+## What each section asked for and how we did it
 
-## Using The Engine
+| § | Assignment asks for | What we built | How to see it |
+| --- | --- | --- | --- |
+| 1 | A time system that can pause, speed up (2×) and slow down (0.5×) | A `Timeline` clock that counts time on top of another clock. The engine keeps three: **real time** (never stops), **game time** (pausable, scalable) and **loop count**. Objects move by "time since last frame" from game time, so pausing or scaling needs no change to them | `./build/timeline-sandbox`; in `network-client` press `P` to pause, `1`/`2`/`3` for 0.5×/1×/2× |
+| 2 | A server with no window that keeps ≥3 separate client windows in sync | Each client moves its own player and sends the position to the server; the server replies with everyone's latest positions. Clients can join at any time | `./build/network-server`, then three `./build/network-client` (move with `WASD`) |
+| 3 | Game loop split across ≥2 threads, safely | Two long-lived worker threads (one moves platforms, one moves the player). The main thread waits for both before checking collisions and drawing. Shared objects are locked while being read or written | `./build/thread-loop-sandbox` |
+| 4 | A server where one slow client does not slow the others, without ZeroMQ's Router/Dealer | The server gives every client its own thread and connection. A slow or paused client only delays its own thread. Moving platforms are run by the server so all clients see them in the same place | `./build/network-server --rates` prints each client's update rate |
+| 5 | Peer-to-peer networking | **Hybrid:** players send their positions straight to each other; a server (separate, or hosted inside one player's game) only supplies the moving platforms. Games switch between client-server and peer-to-peer with one setting | `./build/multiplayer-demo --mode peer-to-peer` (add `--host` to host the platforms) |
 
-### Section 1: Time
+Automated tests cover every section (`ctest`), plus one that fails if a game uses ZeroMQ directly.
 
-`engine.realTime()` counts monotonic nanoseconds for networking and other
-always-running work. `engine.gameTime()` is a timeline for simulation, and
-`engine.loopTime()` counts loop iterations. The engine passes a `FrameTime` to
-the game each frame with elapsed game seconds (`dtSeconds`) and absolute game
-microseconds (`gameTimeUs`). `Entity::update()` accepts either `FrameTime` or a
-float delta time, so movement can use elapsed time rather than a fixed distance
-per frame.
+## Files for this milestone
 
-Use `engine.gameTime().togglePause()` to pause the simulation and
-`engine.gameTime().setScale(0.5)` or `engine.gameTime().setScale(2.0)` to
-change its speed. While paused, game-time deltas become zero, but real time
-keeps advancing so input, rendering, and network retries can continue.
-`Timeline` also supports adjustable tic size and child timelines. Each
-`DeltaTimer` measures elapsed tics for its own consumer and can cap a long
-frame delta. `loopTime()` records iterations; it does not set the frame rate.
+```text
+include/    (public headers; the matching .cpp files are in src/)
+├── TimeSource.hpp, TimeUnits.hpp    §1 the basic "what time is it" interface and unit constants
+├── Timeline.hpp                     §1 the pausable, scalable clock
+├── DeltaTimer.hpp, FrameTime.hpp    §1 "time since last frame", given to the game each frame
+├── Entity.hpp                       §3 game objects, now safe to update from several threads
+├── NetworkProtocol.hpp (+ WireFormat, Endpoint)  §2 the messages clients and server exchange
+├── NetworkClient.hpp                §2 client side: join, send position, receive world
+├── NetworkServer.hpp                §2 server side: who is connected, where everyone is
+├── NetworkServerHost.hpp            §4 runs the server: one thread per client, platform timer
+├── PeerProtocol.hpp, PeerSession.hpp  §5 players finding and talking to each other directly
+├── WorldStateClient.hpp             §5 fetches only the moving platforms for peer-to-peer
+└── Multiplayer.hpp                  §5 one simple API over both networking styles
+sandbox/    small demo programs, one per section (TimelineSandbox, NetworkServerMain, …)
+tests/      automated tests for timelines, networking, peer-to-peer and multiplayer
+```
 
-### Section 2: Client-Server Networking
+## API reference
 
-`NetworkClient` connects to a headless `NetworkServer` over ZeroMQ. Start the
-client and call `poll()` each frame. It first sends `JOIN`; the server assigns
-a player ID and returns an initial world snapshot. The client then uses
-`submitPosition(x, y)` to report its locally calculated position, and
-`snapshot()` provides the latest positions of connected players and moving
-platforms. A demo client sends its position even when it is not moving so
-the server knows it is still present.
+### Time (`Timeline.hpp`, `DeltaTimer.hpp`, `FrameTime.hpp`)
 
-`poll()` checks for replies without stopping the game loop. The server owns
-membership and platform motion, but character controls and movement stay in
-the client. Connection timeouts and retries use real time, so they still work
-when the client's game timeline is paused.
+| Function | Parameter | Type | Meaning |
+| --- | --- | --- | --- |
+| `Timeline(anchor, ticSize)` | `anchor` | clock | The clock this one follows — real time, or another timeline |
+| | `ticSize` | integer | How many of the anchor's ticks make one of ours. Bigger = slower. Must be > 0 |
+| `setScale(scale)` | `scale` | decimal | Speed multiplier: `0.5` half speed, `1.0` normal, `2.0` double |
+| `pause()`, `unpause()`, `togglePause()` | — | — | Stop / resume the clock. Its reading never jumps backwards |
+| `DeltaTimer(source, maxDelta)` | `maxDelta` | integer | Longest gap one frame may report, so a freeze does not teleport objects |
+| `FrameTime` (given each frame) | `dtSeconds` | decimal | Game seconds since the last frame (0 while paused) |
+| | `gameTimeUs` | integer | Total game time so far, in microseconds |
 
-The `NetworkProtocol` messages are:
+### Multiplayer (`Multiplayer.hpp`) — what a game uses
 
-| Message | Sent by | What it does |
+A game fills in a `Config`, calls `Session::open(config, engine.realTime())`, then every frame calls
+`update()` and `publishLocalPlayer(x, y, data)` and reads `remotePlayers()` and `platforms()`.
+Network failures show up in `status()` instead of crashing.
+
+| `Config` setting | Default | Meaning |
 | --- | --- | --- |
-| `JOIN` | Client | Requests a player session. |
-| `WELCOME` | Server | Returns the assigned player ID, initial snapshot, and a private worker address when used. |
-| `POSITION` | Client | Sends the player's latest position, optional game data, and sequence number. |
-| `SNAPSHOT` | Server | Returns the current player and platform states after a position update. |
-| `LEAVE` | Client | Requests removal from the player session. |
-| `GOODBYE` | Server | Confirms that the player has left. |
-| `ERROR` | Server | Reports an invalid request, rejected update, or unavailable session. |
-| `GET_WORLD` | Hybrid peer's world client | Requests platform state without joining as a server player (Section 5). |
-| `WORLD_STATE` | Platform authority | Returns platform state only, with no player data (Section 5). |
+| `mode` | `ClientServer` | `ClientServer` (everyone talks to a server) or `PeerToPeer` (players talk directly) |
+| `serverEndpoint` | `tcp://127.0.0.1:5555` | Server address. In peer-to-peer, where platforms come from (empty = no platforms) |
+| `playerName` | empty | Name other players see |
+| `peerId` | `1` | Peer-to-peer only: this player's number; each player needs a different one |
+| `basePort` | `7100` | Peer-to-peer only: this player uses this port and the next one |
+| `advertiseHost` | `127.0.0.1` | Peer-to-peer only: this computer's address as others should dial it (LAN IP across machines) |
+| `bootstrapPeers` | none | Peer-to-peer only: the address of any player already in the game |
 
-`Disconnected`, `Connecting`, `Connected`, and `Error` are local client
-connection states, not messages sent over the network.
+`publishLocalPlayer(x, y, data)`: `x`, `y` are the player's position; `data` is optional extra
+text the game wants to share (health, score, …), up to 512 bytes. The engine passes it along unread.
 
-### Section 3: Multithreaded Updates
+### Running a server (`NetworkServer.hpp`, `NetworkServerHost.hpp`)
 
-The shared engine supports game-managed updates on multiple threads. `Entity`
-protects individual position and velocity operations with a mutex, `Timeline`
-can be read from multiple threads, and each worker can use its own `DeltaTimer`.
-`Engine::run()` provides the frame time and keeps SDL input and rendering on its
-loop thread. A game can assign separate update tasks to workers, then wait for
-them to finish before checking collisions or rendering their results. The game
-is responsible for creating, coordinating, and joining those workers;
-`Engine::run()` does not schedule them automatically.
+Create `NetworkServerHost(serverConfig, hostConfig)`, then call `start()` and later `stop()`.
 
-### Section 4: Concurrent Clients And Shared Platforms
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `ServerConfig.spawnPoints` | none | Where new players appear (`x`, `y`) |
+| `ServerConfig.platforms` | none | Moving platforms: start and end point, `speed` (80 units/s), `width` (96), `height` (20) |
+| `ServerConfig.maxPlayers` | `8` | Most players allowed at once |
+| `ServerConfig.inactivityTimeoutTics` | 3 seconds | A player silent this long is removed |
+| `HostConfig.mode` | `Dedicated` | `Dedicated`: one thread per client (§4). `Listen`: one simple connection, for serving platforms |
+| `HostConfig.bindEndpoint` | `tcp://*:5555` | Address and port the server listens on |
+| `HostConfig.advertiseHost` | `127.0.0.1` | This machine's address as clients should reach it |
+| `HostConfig.tickInterval` | 16 ms | How often platforms move |
+| `HostConfig.trafficLogInterval` | off | If set, prints how many updates each client sends per interval |
 
-Server hosting is part of the engine: `Network::NetworkServerHost` runs a
-`NetworkServer` either as a dedicated server (`HostMode::Dedicated`) or inside
-a player's process as a listen-server (`HostMode::Listen`). A game's server is
-its `ServerConfig` plus a command line; it never touches ZeroMQ, and the
-`no-transport-in-games` test fails if code under `individual-games/` does.
+### Client–server messages (`NetworkProtocol.hpp`) — one reply per request
 
-The dedicated `network-server` accepts a player's `JOIN` on a public endpoint
-and returns a private request/reply endpoint in `WELCOME`. Subsequent position
-updates use that player's worker, so another player's slow exchange does not
-hold up its replies. The server protects its shared session state while the
-workers run concurrently, and the host joins a departed player's worker while
-it keeps running rather than accumulating them until shutdown.
+| Client sends | With | Server replies | With |
+| --- | --- | --- | --- |
+| `JOIN` | secret token, name | `WELCOME` | player id, the client's private connection address, world state |
+| `POSITION` | id, token, counter, `x`, `y`, `data` | `SNAPSHOT` | every player's position and every platform's |
+| `LEAVE` | id, token | `GOODBYE` | — |
+| `GET_WORLD` (peer-to-peer) | — | `WORLD_STATE` | platform positions only |
+| any invalid request | — | `ERROR` | reason |
 
-A separate server thread advances moving platforms on real time about every
-16 ms. Clients receive those platform positions in snapshots. In the
-`multiplayer-demo`, each window can pause or scale its own game timeline with
-`P` or `1`/`2`/`3` while continuing to poll the network and display the
-server's platforms.
+## Design decisions
 
-### Section 5: Peer-To-Peer And Hybrid Mode
+- **Two kinds of time.** Movement uses game time; networking, input and drawing use real time,
+  so a paused client still hears the "unpause" key and stays connected.
+- **One thread per client.** A basic ZeroMQ request/reply connection handles one request at a
+  time, so the public address only admits new players and gives each a private connection.
+- **Games own their rules.** The server only stores and shares positions, so all three team
+  games reuse the same server, and switching client-server ↔ peer-to-peer is one setting.
 
-`Multiplayer::Session` provides one game-facing API for client-server and
-peer-to-peer play. Select a mode in `Multiplayer::Config`, call `update()` each
-frame, publish the local player's position, and read `remotePlayers()` and
-`platforms()`:
+Diagrams are in the appendix below. More detail: [docs/networking-guide.md](docs/networking-guide.md).
 
-```cpp
-Multiplayer::Config config;
-config.mode = Multiplayer::Mode::PeerToPeer;
-config.peerId = 1;
-config.basePort = 7200;
-auto session = Multiplayer::Session::open(config, engine.realTime());
+<div style="page-break-before: always"></div>
 
-session->update();
-session->publishLocalPlayer(x, y, "health=3");
-for (const auto& player : session->remotePlayers()) {
-    // Read player.x, player.y, and optional player.data.
-}
-```
+## Appendix: how the pieces fit
 
-In peer-to-peer mode, a new `PeerSession` contacts a known peer and receives
-the other peers' addresses. Peers then announce their player positions and
-optional `data` directly to one another; `remotePlayers()` exposes the latest
-received state. Peers also send presence messages, so a player who is paused
-or standing still remains in the session.
+**A. One frame and the clocks behind it (§1).** Each frame runs steps 1–5. Movement uses game
+time, which the game can pause or scale; networking keeps running on real time.
 
-If `config.serverEndpoint` names an authority, `WorldStateClient` requests
-shared moving-platform positions separately. It does not send the peer's
-player position to that server or register it as a server player.
-`session->platforms()` returns the last received platform positions, while
-`authorityState()` reports whether those updates are available. Set
-`config.serverEndpoint` to an empty string to run without a platform
-authority. Set the mode to `ClientServer` instead to use the same session
-interface with the centralized server. Rebuild the server and clients
-together after a protocol change.
+![Frame and time flow](docs/frame-time-flow.svg)
+
+**B. Client-server (§2, §4).** A new client joins through the public socket and is handed its own
+worker thread; after that it only talks to that worker. The server moves platforms on its own.
+
+![Client-server flow](docs/client-server-flow.svg)
+
+**C. Peer-to-peer, hybrid (§5).** A new peer asks any running peer for the list of players, then
+sends its position straight to them. Platforms optionally come from a server.
+
+![Peer-to-peer flow](docs/peer-hybrid-flow.svg)
+
+<sub>LLM assistants were used to help navigate the code structure and draft docs; the team reviewed all design and code.</sub>

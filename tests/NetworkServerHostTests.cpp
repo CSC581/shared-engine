@@ -10,6 +10,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -114,6 +115,17 @@ bool rejectsBadConfig()
     Network::HostConfig zeroPoll = testHostConfig(Network::HostMode::Dedicated);
     zeroPoll.pollInterval = std::chrono::milliseconds(0);
     passed &= expect(throwsInvalid(zeroPoll), "zero poll interval should be rejected");
+
+    for (const char* wildcard : {"*", "0.0.0.0", "::", "[::]"}) {
+        Network::HostConfig undialable = testHostConfig(Network::HostMode::Dedicated);
+        undialable.advertiseHost = wildcard;
+        passed &= expect(throwsInvalid(undialable),
+                         std::string("advertising the wildcard ") + wildcard + " should be rejected");
+    }
+
+    Network::HostConfig negativeTraffic = testHostConfig(Network::HostMode::Dedicated);
+    negativeTraffic.trafficLogInterval = std::chrono::milliseconds(-1);
+    passed &= expect(throwsInvalid(negativeTraffic), "a negative traffic log interval should be rejected");
 
     Network::HostConfig listenNoAdvertise = testHostConfig(Network::HostMode::Listen);
     listenNoAdvertise.advertiseHost.clear();
@@ -326,6 +338,133 @@ bool leaveReapsWorker()
     return passed;
 }
 
+// A client that crashes never sends LEAVE. Once the server expires its player
+// for inactivity, its worker must go too, instead of holding a thread and a
+// port until shutdown.
+bool crashedClientsWorkerIsReaped()
+{
+    Network::ServerConfig serverConfig = testServerConfig();
+    serverConfig.inactivityTimeoutTics = 200 * 1000 * 1000; // 200 ms of RealTimeClock nanoseconds
+    Network::NetworkServerHost host(serverConfig, testHostConfig(Network::HostMode::Dedicated));
+    host.start();
+    zmq::context_t context(1);
+
+    Network::Reply welcome;
+    if (!expect(call(context, host.boundEndpoint(), Network::encodeJoin(token('d')), welcome) &&
+                    welcome.type == Network::ReplyType::Welcome,
+                "JOIN should be welcomed")) {
+        return false;
+    }
+    bool passed = expect(host.activeWorkers() == 1, "the client should have a worker");
+
+    // The client "crashes": it sends nothing more, not even LEAVE.
+    passed &= expect(waitFor([&] { return host.activeWorkers() == 0; }, std::chrono::milliseconds(2000)),
+                     "the worker of an expired player should be reaped");
+    passed &= expect(host.playerCount() == 0, "the silent player should have been expired");
+
+    Network::Reply again;
+    passed &= expect(call(context, host.boundEndpoint(), Network::encodeJoin(token('d')), again) &&
+                         again.type == Network::ReplyType::Welcome &&
+                         !again.sessionEndpoint.empty() && again.sessionEndpoint != welcome.sessionEndpoint,
+                     "the same token joining again should get a fresh worker, not the dead one");
+    passed &= expect(host.activeWorkers() == 1, "rejoining should start exactly one worker");
+    return passed;
+}
+
+// A client that keeps talking is never mistaken for a crashed one, however
+// long it runs past the inactivity timeout.
+bool activeClientsWorkerSurvivesTheTimeout()
+{
+    Network::ServerConfig serverConfig = testServerConfig();
+    serverConfig.inactivityTimeoutTics = 200 * 1000 * 1000;
+    Network::NetworkServerHost host(serverConfig, testHostConfig(Network::HostMode::Dedicated));
+    host.start();
+    zmq::context_t context(1);
+
+    Network::Reply welcome;
+    if (!expect(call(context, host.boundEndpoint(), Network::encodeJoin(token('e')), welcome),
+                "JOIN should be welcomed")) {
+        return false;
+    }
+
+    bool passed = true;
+    const auto until = Clock::now() + std::chrono::milliseconds(700);
+    for (std::uint64_t sequence = 1; Clock::now() < until; ++sequence) {
+        Network::Reply reply;
+        passed &= expect(call(context, welcome.sessionEndpoint,
+                              Network::encodePosition(welcome.playerId, token('e'), {1.0F, 1.0F, sequence, {}}),
+                              reply) &&
+                             reply.type == Network::ReplyType::Snapshot,
+                         "a heartbeating client should keep being served");
+        if (!passed) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    passed &= expect(host.activeWorkers() == 1 && host.playerCount() == 1,
+                     "a client that keeps talking should keep its worker and player");
+    return passed;
+}
+
+// Section 4 evidence from the server's side: each player's accepted POSITION
+// count, and the periodic rate line built from it.
+bool reportsAcceptedTrafficPerPlayer()
+{
+    std::vector<std::string> lines;
+    std::mutex linesMutex;
+    Network::HostConfig hostConfig = testHostConfig(Network::HostMode::Dedicated);
+    hostConfig.trafficLogInterval = std::chrono::milliseconds(100);
+    hostConfig.log = [&](const std::string& line) {
+        const std::lock_guard<std::mutex> lock(linesMutex);
+        lines.push_back(line);
+    };
+    Network::NetworkServerHost host(testServerConfig(), hostConfig);
+    host.start();
+    zmq::context_t context(1);
+
+    Network::Reply fast;
+    Network::Reply slow;
+    if (!expect(call(context, host.boundEndpoint(), Network::encodeJoin(token('f'), "fast"), fast) &&
+                    call(context, host.boundEndpoint(), Network::encodeJoin(token('0'), "slow"), slow),
+                "JOINs should be welcomed")) {
+        return false;
+    }
+
+    bool passed = true;
+    for (std::uint64_t sequence = 1; sequence <= 10; ++sequence) {
+        Network::Reply reply;
+        passed &= expect(call(context, fast.sessionEndpoint,
+                              Network::encodePosition(fast.playerId, token('f'), {1.0F, 1.0F, sequence, {}}), reply),
+                         "fast POSITION should be answered");
+    }
+    Network::Reply reply;
+    passed &= expect(call(context, slow.sessionEndpoint,
+                          Network::encodePosition(slow.playerId, token('0'), {1.0F, 1.0F, 1, {}}), reply),
+                     "slow POSITION should be answered");
+    // A stale sequence is refused and must not be counted.
+    passed &= expect(call(context, slow.sessionEndpoint,
+                          Network::encodePosition(slow.playerId, token('0'), {1.0F, 1.0F, 1, {}}), reply) &&
+                         reply.type == Network::ReplyType::Error,
+                     "a repeated sequence should be refused");
+
+    const std::vector<Network::PlayerTraffic> traffic = host.traffic();
+    passed &= expect(traffic.size() == 2 && traffic[0].id == fast.playerId && traffic[0].name == "fast" &&
+                         traffic[0].acceptedPositions == 10 && traffic[1].acceptedPositions == 1,
+                     "traffic should count accepted POSITIONs per player, in id order");
+
+    passed &= expect(waitFor(
+                         [&] {
+                             const std::lock_guard<std::mutex> lock(linesMutex);
+                             return std::any_of(lines.begin(), lines.end(), [](const std::string& line) {
+                                 return line.find("(fast):") != std::string::npos &&
+                                        line.find("accepted POSITION/s") != std::string::npos;
+                             });
+                         },
+                         std::chrono::milliseconds(1000)),
+                     "the host should log a per-player accepted POSITION rate");
+    return passed;
+}
+
 bool handshakeRejectsOtherRequests()
 {
     Network::NetworkServerHost host(testServerConfig(), testHostConfig(Network::HostMode::Dedicated));
@@ -449,6 +588,9 @@ int main()
         passed &= getWorldOnHandshakeDoesNotJoin();
         passed &= rejoinReusesWorker();
         passed &= leaveReapsWorker();
+        passed &= crashedClientsWorkerIsReaped();
+        passed &= activeClientsWorkerSurvivesTheTimeout();
+        passed &= reportsAcceptedTrafficPerPlayer();
         passed &= handshakeRejectsOtherRequests();
         passed &= takenAddressThrows();
         passed &= stopIsPromptAndIdempotent();

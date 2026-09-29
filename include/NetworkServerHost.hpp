@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 // Runs a NetworkServer on the network: the sockets, threads and shutdown that
 // turn the session/state store into something clients can reach.
@@ -42,7 +43,8 @@ struct HostConfig {
     std::string bindEndpoint = "tcp://*:5555";
     // Dedicated only. Workers bind on 0.0.0.0, which nobody else can dial, so
     // WELCOME carries each worker's port with this host instead. Use the
-    // machine's LAN address when clients run on other machines.
+    // machine's LAN address when clients run on other machines. Wildcards
+    // ("*", "0.0.0.0", "::") are rejected: no client can dial them.
     std::string advertiseHost = "127.0.0.1";
     // How often server-owned platforms advance and idle players expire.
     std::chrono::milliseconds tickInterval{16};
@@ -56,6 +58,11 @@ struct HostConfig {
     // Optional progress lines ("player 3 -> tcp://…"). Called from the host's
     // own threads; empty means silent.
     std::function<void(const std::string&)> log;
+    // When positive, every interval the host logs each player's accepted
+    // POSITION rate through `log` — the server-side evidence that clients
+    // running at different speeds really do send at different rates. Zero
+    // turns it off.
+    std::chrono::milliseconds trafficLogInterval{0};
 };
 
 class NetworkServerHost {
@@ -87,10 +94,14 @@ public:
 
     std::size_t playerCount() const;
 
-    // Worker threads the host currently owns (Dedicated). Finished workers —
-    // after an accepted LEAVE, a failed JOIN, or an error — are joined and
-    // dropped while the host runs, so this does not grow with every client
-    // that has ever connected.
+    // Accepted POSITION counts per player; see NetworkServer::traffic().
+    std::vector<PlayerTraffic> traffic() const;
+
+    // Worker threads the host currently owns (Dedicated). A worker finishes
+    // after an accepted LEAVE, a failed JOIN, an error, or once the server has
+    // expired its player for inactivity (a client that crashed or vanished
+    // without LEAVE). Finished workers are joined and dropped while the host
+    // runs, so this does not grow with every client that has ever connected.
     std::size_t activeWorkers() const;
 
 private:

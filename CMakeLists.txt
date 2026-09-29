@@ -221,6 +221,7 @@ target_link_libraries(thread-loop-sandbox PRIVATE engine Threads::Threads)
 # Standalone Section 2 proof. These do not modify or build into any person's
 # individual game: the server is headless and the client is a small SDL demo.
 add_executable(network-server sandbox/NetworkServerMain.cpp)
+target_include_directories(network-server PRIVATE sandbox)
 target_link_libraries(network-server PRIVATE network-core Threads::Threads)
 
 add_executable(network-client sandbox/NetworkClientDemo.cpp)
@@ -234,17 +235,40 @@ target_link_libraries(multiplayer-demo PRIVATE engine multiplayer)
 
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent
-    individual-games/harsha/apexAscent.cpp
-    individual-games/harsha/animation/PlayerAnimation.cpp
+    individual-games/harsha/src/apexAscent.cpp
+    individual-games/harsha/src/ApexGame.cpp
+    individual-games/harsha/src/ApexGameRender.cpp
+    individual-games/harsha/src/ApexOptions.cpp
+    individual-games/harsha/src/ApexPresence.cpp
+    individual-games/harsha/src/animation/PlayerAnimation.cpp
 )
-target_include_directories(apex-ascent PRIVATE individual-games/harsha)
-target_link_libraries(apex-ascent PRIVATE engine)
+target_include_directories(apex-ascent PRIVATE individual-games/harsha/include)
+target_link_libraries(apex-ascent PRIVATE engine multiplayer)
+
+# Headless Apex world server (tower coords). Separate from sandbox network-server.
+add_executable(apex-network-server individual-games/harsha/src/ApexNetworkServerMain.cpp)
+target_include_directories(apex-network-server PRIVATE individual-games/harsha/include)
+target_link_libraries(apex-network-server PRIVATE network-core Threads::Threads)
 
 # Golf executable. Also builds standalone through
 # individual-games/skim253/build.sh, which predates this target; the target
 # exists so a clean configure covers this game like every other one.
 add_executable(golf-game individual-games/skim253/main.cpp)
 target_link_libraries(golf-game PRIVATE engine)
+
+# Pokemon Hunt (Milestone 2): each client is a Pokemon, the headless server
+# owns the monster.
+add_executable(pokemon-hunt individual-games/skim253/pokemon-hunt/PokemonHunt.cpp)
+target_link_libraries(pokemon-hunt PRIVATE engine multiplayer)
+add_custom_command(TARGET pokemon-hunt POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/individual-games/skim253/pokemon-hunt/media
+        $<TARGET_FILE_DIR:pokemon-hunt>/media/pokemon-hunt
+    COMMENT "Copying Pokemon Hunt sprites next to pokemon-hunt"
+)
+
+add_executable(pokemon-hunt-server individual-games/skim253/pokemon-hunt/PokemonHuntServer.cpp)
+target_link_libraries(pokemon-hunt-server PRIVATE network-core engine-geometry Threads::Threads)
 
 # Runtime art next to the binary so SDL_GetBasePath() + "media/apex-ascent/"
 # works regardless of the caller's working directory.

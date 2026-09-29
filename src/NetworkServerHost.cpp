@@ -9,7 +9,10 @@
 
 #include <atomic>
 #include <future>
+#include <iomanip>
+#include <locale>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -34,14 +37,24 @@ struct Worker {
     std::thread thread;
 };
 
+// Addresses a socket can bind to but no client can dial.
+bool isWildcardHost(const std::string& host)
+{
+    return host == "*" || host == "0.0.0.0" || host == "::" || host == "[::]";
+}
+
 void validate(const HostConfig& config)
 {
     if (config.bindEndpoint.empty()) {
         throw std::invalid_argument("NetworkServerHost bind endpoint is empty");
     }
     if (config.tickInterval.count() <= 0 || config.pollInterval.count() <= 0 ||
-        config.workerStartTimeout.count() <= 0) {
+        config.workerStartTimeout.count() <= 0 || config.trafficLogInterval.count() < 0) {
         throw std::invalid_argument("NetworkServerHost intervals must be positive");
+    }
+    if (config.mode == HostMode::Dedicated && isWildcardHost(config.advertiseHost)) {
+        throw std::invalid_argument("NetworkServerHost must advertise a host clients can dial, not " +
+                                    config.advertiseHost);
     }
     if (config.mode == HostMode::Dedicated &&
         Net::rewriteTcpEndpointHost("tcp://0.0.0.0:1", config.advertiseHost).empty()) {
@@ -81,10 +94,43 @@ struct NetworkServerHost::Impl {
     // only when a request happens to arrive.
     void runTicks()
     {
+        auto lastTrafficLog = std::chrono::steady_clock::now();
+        std::unordered_map<PlayerId, std::uint64_t> lastCounts;
         while (running.load()) {
             server.update();
+            if (config.trafficLogInterval.count() > 0 && config.log) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - lastTrafficLog >= config.trafficLogInterval) {
+                    logTraffic(std::chrono::duration<double>(now - lastTrafficLog).count(), lastCounts);
+                    lastTrafficLog = now;
+                }
+            }
             std::this_thread::sleep_for(config.tickInterval);
         }
+    }
+
+    // One line per player: accepted POSITIONs per second since the last line.
+    // A player who joined during the interval is measured from zero, so its
+    // first reading is low.
+    void logTraffic(double seconds, std::unordered_map<PlayerId, std::uint64_t>& lastCounts) const
+    {
+        std::unordered_map<PlayerId, std::uint64_t> counts;
+        for (const PlayerTraffic& player : server.traffic()) {
+            const auto previous = lastCounts.find(player.id);
+            const std::uint64_t before = previous == lastCounts.end() ? 0 : previous->second;
+            std::ostringstream line;
+            line.imbue(std::locale::classic());
+            line << "player " << player.id;
+            if (!player.name.empty()) {
+                line << " (" << player.name << ")";
+            }
+            line << ": " << std::fixed << std::setprecision(1)
+                 << static_cast<double>(player.acceptedPositions - before) / seconds
+                 << " accepted POSITION/s";
+            log(line.str());
+            counts[player.id] = player.acceptedPositions;
+        }
+        lastCounts = std::move(counts);
     }
 
     // HostMode::Listen: every request answered on the one socket.
@@ -116,8 +162,13 @@ struct NetworkServerHost::Impl {
             socket.set(zmq::sockopt::rcvtimeo, static_cast<int>(config.pollInterval.count()));
             // All interfaces; WELCOME advertises config.advertiseHost instead.
             socket.bind("tcp://0.0.0.0:*");
-            endpointReady.set_value(socket.get(zmq::sockopt::last_endpoint));
+            const std::string endpoint = socket.get(zmq::sockopt::last_endpoint);
+            endpointReady.set_value(endpoint);
 
+            // Set once this worker's player is seen to exist. The handshake
+            // registers the player only after the worker has bound, so "no
+            // session yet" at startup is normal and must not end the worker.
+            bool registered = false;
             while (state->alive.load() && running.load()) {
                 Message requestMessage;
                 bool received = false;
@@ -127,6 +178,9 @@ struct NetworkServerHost::Impl {
                     continue;
                 }
                 if (!received) {
+                    if (sessionEnded(sessionToken, state, endpoint, registered)) {
+                        break;
+                    }
                     continue;
                 }
 
@@ -159,6 +213,33 @@ struct NetworkServerHost::Impl {
         }
         state->alive.store(false);
         state->finished.store(true);
+    }
+
+    // A client that crashes never sends LEAVE; the server expires its player
+    // after ServerConfig::inactivityTimeoutTics, and from then on this worker
+    // has nobody to serve. Checked, and the endpoint entry dropped, under
+    // endpointsMutex — the lock rejoin() holds while it re-registers a token —
+    // so a rejoin either revives the session before this check (the worker
+    // stays) or finds no entry after it (and gets a fresh worker). It can
+    // never be handed the address of a worker that is about to exit.
+    bool sessionEnded(const SessionToken& sessionToken, const std::shared_ptr<WorkerState>& state,
+                      const std::string& endpoint, bool& registered)
+    {
+        const std::lock_guard<std::mutex> lock(endpointsMutex);
+        if (server.hasSession(sessionToken)) {
+            registered = true;
+            return false;
+        }
+        if (!registered) {
+            return false;
+        }
+        const auto entry = endpointsByToken.find(sessionToken);
+        if (entry != endpointsByToken.end() && entry->second.owner == state) {
+            endpointsByToken.erase(entry);
+        }
+        // The endpoint, not the token: the token is the client's credential.
+        log("worker " + endpoint + " exiting: its player was expired without LEAVE");
+        return true;
     }
 
     // Joins and drops workers that have exited, so a long-running server does
@@ -413,6 +494,11 @@ std::string NetworkServerHost::boundEndpoint() const
 std::size_t NetworkServerHost::playerCount() const
 {
     return impl_->server.playerCount();
+}
+
+std::vector<PlayerTraffic> NetworkServerHost::traffic() const
+{
+    return impl_->server.traffic();
 }
 
 std::size_t NetworkServerHost::activeWorkers() const
