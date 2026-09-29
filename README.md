@@ -17,7 +17,7 @@ cmake -S . -B build && cmake --build build -j 4 && ctest --test-dir build --outp
 | --- | --- | --- | --- |
 | 1 | A time system that can pause, speed up (2×) and slow down (0.5×) | A `Timeline` clock that counts time on top of another clock. The engine keeps three: **real time** (never stops), **game time** (pausable, scalable) and **loop count**. Objects move by "time since last frame" from game time, so pausing or scaling needs no change to them | `./build/timeline-sandbox`; in `network-client` press `P` to pause, `1`/`2`/`3` for 0.5×/1×/2× |
 | 2 | A server with no window that keeps ≥3 separate client windows in sync | Each client moves its own player and sends the position to the server; the server replies with everyone's latest positions. Clients can join at any time | `./build/network-server`, then three `./build/network-client` (move with `WASD`) |
-| 3 | Game loop split across ≥2 threads, safely | Two long-lived worker threads (one moves platforms, one moves the player). The main thread waits for both before checking collisions and drawing. Shared objects are locked while being read or written | `./build/thread-loop-sandbox` |
+| 3 | Game loop split across ≥2 threads, safely | `FrameWorkers` gives a game long-lived worker threads and waits for all of them each frame. Apex runs its platforms on one and its player on the other; the main thread keeps input, collisions and drawing. Shared objects are locked while being read or written | `./build/apex-ascent`, `frame-workers-tests` |
 | 4 | A server where one slow client does not slow the others, without ZeroMQ's Router/Dealer | The server gives every client its own thread and connection. A slow or paused client only delays its own thread. Moving platforms are run by the server so all clients see them in the same place | `./build/network-server --rates` prints each client's update rate |
 | 5 | Peer-to-peer networking | **Hybrid:** players send their positions straight to each other; a server (separate, or hosted inside one player's game) only supplies the moving platforms. Games switch between client-server and peer-to-peer with one setting | `./build/multiplayer-demo --mode peer-to-peer` (add `--host` to host the platforms) |
 
@@ -40,9 +40,12 @@ cmake -S . -B build && cmake --build build -j 4 && ctest --test-dir build --outp
 └── tests/NetworkTests.cpp, ZmqSmokeTests.cpp
 §3 Threads
 ├── include/Entity.hpp                      src/Entity.cpp           game objects, safe to update from several threads
-└── sandbox/ThreadLoopSandbox.cpp, ThreadExampleMain.cpp             two worker threads + main thread
+├── include/FrameWorkers.hpp                src/FrameWorkers.cpp     splits a game's update across threads, one per task
+├── sandbox/ThreadLoopSandbox.cpp, ThreadExampleMain.cpp             first version of the pattern, standalone
+└── tests/FrameWorkersTests.cpp
 §4 Asynchronous server
 ├── include/NetworkServerHost.hpp           src/NetworkServerHost.cpp  one thread per client, platform timer
+├── include/SendPacer.hpp                   src/SendPacer.cpp        send rate follows game speed (0.5x halves, 2x doubles)
 └── tests/NetworkServerHostTests.cpp
 §5 Peer-to-peer
 ├── include/PeerProtocol.hpp                src/PeerProtocol.cpp     messages peers exchange
