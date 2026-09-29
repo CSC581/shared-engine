@@ -1,4 +1,4 @@
-#include "SignalBloomWorld.hpp"
+#include "StarfallSalvageWorld.hpp"
 
 #include "NetworkServerHost.hpp"
 
@@ -28,11 +28,13 @@ int main(int argc, char* argv[])
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if ((arg == "--bind" || arg == "--advertise") && i + 1 < argc) {
+        if (arg == "--rates") {
+            hostConfig.trafficLogInterval = std::chrono::seconds(1);
+        } else if ((arg == "--bind" || arg == "--advertise") && i + 1 < argc) {
             (arg == "--bind" ? hostConfig.bindEndpoint : hostConfig.advertiseHost) = argv[++i];
         } else {
-            std::cerr << "Usage: signal-bloom-server [--bind tcp://*:5555] "
-                         "[--advertise reachable-host]\n";
+            std::cerr << "Usage: starfall-salvage-server [--bind tcp://*:5555] "
+                         "[--advertise reachable-host] [--rates]\n";
             return 1;
         }
     }
@@ -48,19 +50,19 @@ int main(int argc, char* argv[])
 
     try {
         hostConfig.log = [](const std::string& line) {
-            std::cout << "signal-bloom-server: " << line << '\n';
+            std::cout << "starfall-salvage-server: " << line << '\n';
         };
-        Network::NetworkServerHost host(SignalBloom::serverConfig(), hostConfig);
+        Network::NetworkServerHost host(StarfallSalvage::serverConfig(), hostConfig);
         host.start();
 
         std::cout << "Private client workers advertise " << hostConfig.advertiseHost << '\n'
-                  << "GET_WORLD reads shuttles only; player updates use private workers.\n";
+                  << "GET_WORLD reads shuttles and patrols only; player updates use private workers.\n";
         while (running.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         host.stop();
     } catch (const std::exception& exception) {
-        std::cerr << "Signal Bloom server: " << exception.what() << '\n';
+        std::cerr << "Starfall Salvage server: " << exception.what() << '\n';
         return 1;
     }
 

@@ -1,7 +1,7 @@
 #include "Engine.hpp"
 #include "Multiplayer.hpp"
-#include "SignalBloomGame.hpp"
-#include "SignalBloomWorld.hpp"
+#include "StarfallSalvageGame.hpp"
+#include "StarfallSalvageWorld.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -47,7 +47,7 @@ bool number(const std::string& text, std::uint32_t& out)
 
 void usage()
 {
-    std::cerr << "Usage: signal-bloom --name NAME [--mode client-server|peer-to-peer] "
+    std::cerr << "Usage: starfall-salvage --name NAME [--mode client-server|peer-to-peer] "
                  "[--server tcp://HOST:PORT] [--scale 0.5|1|2] [--peer-id ID --port PORT "
                  "--bootstrap tcp://HOST:PORT --advertise HOST]\n";
 }
@@ -133,13 +133,13 @@ int main(int argc, char* argv[])
     }
 
     try {
-        const std::string title = "Signal Bloom - " + config.playerName;
-        Engine engine(title.c_str(), SignalBloom::width, SignalBloom::height);
+        const std::string title = "Starfall Salvage - " + config.playerName;
+        Engine engine(title.c_str(), StarfallSalvage::width, StarfallSalvage::height);
         engine.gameTime().setScale(initialScale);
-        SignalBloomGame game(engine, std::move(config));
+        StarfallSalvageGame game(engine, std::move(config));
         engine.run(game);
     } catch (const std::exception& exception) {
-        std::cerr << "Signal Bloom: " << exception.what() << '\n';
+        std::cerr << "Starfall Salvage: " << exception.what() << '\n';
         return 1;
     }
     return 0;

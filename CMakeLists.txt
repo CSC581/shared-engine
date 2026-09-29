@@ -281,44 +281,32 @@ add_custom_command(TARGET apex-ascent POST_BUILD
     COMMENT "Copying Apex Ascent player sprites next to apex-ascent"
 )
 
-# Starfall Salvage executable
+# Starfall Salvage's cooperative Project 2 iteration. The server is headless
+# and owns this game's shuttle and drone paths.
+add_library(starfall-salvage-rules STATIC
+    individual-games/vanaja/src/StarfallSalvageRules.cpp
+)
+target_include_directories(starfall-salvage-rules PUBLIC
+    individual-games/vanaja/include
+)
+target_link_libraries(starfall-salvage-rules PUBLIC engine-geometry)
+
 add_executable(starfall-salvage
-    individual-games/vanaja/starfall-salvage/src/main.cpp
-    individual-games/vanaja/starfall-salvage/src/StarfallSalvageGame.cpp
+    individual-games/vanaja/src/starfallSalvage.cpp
+    individual-games/vanaja/src/StarfallSalvageGame.cpp
+)
+target_link_libraries(starfall-salvage PRIVATE engine multiplayer starfall-salvage-rules)
+
+add_executable(starfall-salvage-server
+    individual-games/vanaja/src/StarfallSalvageServer.cpp
+)
+target_link_libraries(starfall-salvage-server PRIVATE network-core)
+target_include_directories(starfall-salvage-server PRIVATE
+    individual-games/vanaja/include
 )
 
-target_include_directories(starfall-salvage PRIVATE
-    individual-games/vanaja/starfall-salvage/include
+add_executable(starfall-salvage-tests
+    individual-games/vanaja/tests/StarfallSalvageTests.cpp
 )
-
-target_link_libraries(starfall-salvage PRIVATE engine)
-
-# Vanaja's Project 2 game. Its separate server is headless and uses this game's
-# shuttle paths, not the NetworkDemo sandbox's arena configuration.
-add_library(signal-bloom-rules STATIC
-    individual-games/vanaja/signal-bloom/src/SignalBloomRules.cpp
-)
-target_include_directories(signal-bloom-rules PUBLIC
-    individual-games/vanaja/signal-bloom/include
-)
-target_link_libraries(signal-bloom-rules PUBLIC engine-geometry)
-
-add_executable(signal-bloom
-    individual-games/vanaja/signal-bloom/src/main.cpp
-    individual-games/vanaja/signal-bloom/src/SignalBloomGame.cpp
-)
-target_link_libraries(signal-bloom PRIVATE engine multiplayer signal-bloom-rules)
-
-add_executable(signal-bloom-server
-    individual-games/vanaja/signal-bloom/src/SignalBloomServer.cpp
-)
-target_link_libraries(signal-bloom-server PRIVATE network-core)
-target_include_directories(signal-bloom-server PRIVATE
-    individual-games/vanaja/signal-bloom/include
-)
-
-add_executable(signal-bloom-tests
-    individual-games/vanaja/signal-bloom/tests/SignalBloomTests.cpp
-)
-target_link_libraries(signal-bloom-tests PRIVATE signal-bloom-rules)
-add_test(NAME signal-bloom-tests COMMAND signal-bloom-tests)
+target_link_libraries(starfall-salvage-tests PRIVATE starfall-salvage-rules)
+add_test(NAME starfall-salvage-tests COMMAND starfall-salvage-tests)
