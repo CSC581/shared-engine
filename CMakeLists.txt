@@ -71,6 +71,7 @@ target_link_libraries(peer-core PUBLIC cppzmq-static Threads::Threads)
 # interface twice, once on each; a game links this instead of either.
 add_library(multiplayer STATIC
     src/Multiplayer.cpp
+    src/SendPacer.cpp
 )
 
 target_include_directories(multiplayer PUBLIC include)

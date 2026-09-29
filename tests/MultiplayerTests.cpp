@@ -1,6 +1,9 @@
 #include "Multiplayer.hpp"
 #include "../sandbox/NetworkDemoConfig.hpp"
 #include "NetworkServerHost.hpp"
+#include "SendPacer.hpp"
+#include "TimeUnits.hpp"
+#include "Timeline.hpp"
 #include "TimeSource.hpp"
 #include "ZmqMessage.hpp"
 
@@ -8,6 +11,7 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -460,6 +464,89 @@ bool testWorldSurvivesLosingTheAuthority()
     return passed;
 }
 
+
+// ---------------------------------------------------------------------------
+// Send pacing (§4): a client's send rate must follow its game speed, so a
+// server really sees one client at half rate and another at double. Driven by
+// hand-stepped clocks, like the engine's loop at 60 fps, so it needs no sleep
+// and no sockets.
+// ---------------------------------------------------------------------------
+constexpr std::int64_t frameNs = kNsPerSec / 60;
+constexpr std::int64_t sendIntervalUs = kGameTicsPerSecond / 30;
+constexpr std::int64_t heartbeatNs = 250 * kNsPerMs;
+
+// Sends in one real second of 60 frames, with the game timeline set up by
+// `configure` — the engine's own game time: microseconds on a real clock.
+template <typename Configure>
+int sendsInOneSecond(std::int64_t interval, Configure configure)
+{
+    ManualClock real;
+    Timeline gameTime(real, kNsPerUs);
+    configure(gameTime);
+    Multiplayer::SendPacer pacer(&gameTime, interval, real, heartbeatNs);
+
+    // Warm up past the first send, so only the steady rate is counted.
+    pacer.shouldSend();
+    int sends = 0;
+    for (int frame = 0; frame < 60; ++frame) {
+        real.advance(frameNs);
+        sends += pacer.shouldSend() ? 1 : 0;
+    }
+    return sends;
+}
+
+bool near(int actual, int expected) { return actual >= expected - 1 && actual <= expected + 1; }
+
+bool testSendRateFollowsGameSpeed()
+{
+    bool passed = true;
+
+    const int normal = sendsInOneSecond(sendIntervalUs, [](Timeline&) {});
+    const int half = sendsInOneSecond(sendIntervalUs, [](Timeline& t) { t.setScale(0.5); });
+    const int twice = sendsInOneSecond(sendIntervalUs, [](Timeline& t) { t.setScale(2.0); });
+    const int paused = sendsInOneSecond(sendIntervalUs, [](Timeline& t) { t.pause(); });
+    const int unpaced = sendsInOneSecond(0, [](Timeline& t) { t.setScale(0.5); });
+
+    passed &= expect(near(normal, 30), "1x should send 30/s, sent " + std::to_string(normal));
+    passed &= expect(near(half, 15), "0.5x should halve the rate, sent " + std::to_string(half));
+    passed &= expect(near(twice, 60), "2x should double the rate, sent " + std::to_string(twice));
+    passed &= expect(near(paused, 4),
+                     "paused should send only the 4/s heartbeat, sent " + std::to_string(paused));
+    passed &= expect(unpaced == 60,
+                     "without pacing every publish should send, sent " + std::to_string(unpaced));
+    return passed;
+}
+
+// A stall must not be paid back as a burst: after one long frame the next send
+// is simply on time again.
+bool testSendPacingDoesNotBurstAfterAStall()
+{
+    ManualClock real;
+    Timeline gameTime(real, kNsPerUs);
+    Multiplayer::SendPacer pacer(&gameTime, sendIntervalUs, real, heartbeatNs);
+    pacer.shouldSend();
+
+    real.advance(kNsPerSec / 5); // a 200 ms hitch: six intervals late
+    bool passed = expect(pacer.shouldSend(), "the frame after a stall should send");
+
+    real.advance(frameNs);
+    passed &= expect(!pacer.shouldSend(), "a stall should not cause catch-up sends");
+    return passed;
+}
+
+bool testPacingWithoutAGameClockIsRejected()
+{
+    Multiplayer::Config config;
+    config.sendIntervalGameTics = sendIntervalUs;
+    RealTimeClock real;
+    try {
+        Multiplayer::Session::open(config, real);
+    } catch (const std::invalid_argument&) {
+        return true;
+    }
+    return expect(false, "pacing with no game clock should be rejected as a config error");
+}
+
 } // namespace
 
 int main()
@@ -472,6 +559,9 @@ int main()
     passed &= testBothModesBehaveBeforeConnecting();
     passed &= testPeerReportsTerminalAuthorityFailure();
     passed &= testWorldSurvivesLosingTheAuthority();
+    passed &= testSendRateFollowsGameSpeed();
+    passed &= testSendPacingDoesNotBurstAfterAStall();
+    passed &= testPacingWithoutAGameClockIsRejected();
 
     if (passed) {
         std::cout << "multiplayer-tests: all checks passed\n";
