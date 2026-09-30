@@ -44,6 +44,9 @@ std::string encodeState(std::uint8_t cargoMask, int control, std::uint8_t person
 bool decodeState(const std::string& data, std::uint8_t& cargoMask, int& control,
                  std::uint8_t& personalCargoMask);
 MissionStatus evaluateMission(const std::vector<Claim>& claims);
+std::uint8_t cargoAt(const Rect& player, std::uint8_t recoveredMask,
+                     bool canCollect, float deltaTime);
+std::uint8_t creditedCargoMask(const std::vector<Claim>& claims, std::uint32_t playerId);
 CargoWinner chooseCargoWinner(const std::vector<Claim>& claims);
 
 // A 25 Hz baseline leaves headroom beneath the engine's 50 ms game-delta cap

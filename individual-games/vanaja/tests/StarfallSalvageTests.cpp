@@ -30,9 +30,11 @@ int checkTimeAndPacing()
     for (const double scale : {0.5, 1.0, 2.0}) {
         TestClock real;
         Timeline gameTime(real, kNsPerUs);
+        Timeline networkTime(real, kNsPerUs);
         gameTime.setScale(scale);
+        networkTime.setScale(scale);
         DeltaTimer timer(gameTime, 50'000);
-        Multiplayer::SendPacer pacer(&gameTime,
+        Multiplayer::SendPacer pacer(&networkTime,
             StarfallSalvage::positionSendIntervalGameTics, real, heartbeat);
         const auto interval = StarfallSalvage::frameIntervalNs(scale);
         int sends = 0;
@@ -56,28 +58,27 @@ int checkTimeAndPacing()
 
         gameTime.pause();
         const auto pausedAt = gameTime.now();
-        auto lastHeartbeat = real.now();
-        int heartbeats = 0;
+        const auto networkAtPause = networkTime.now();
+        int pausedSends = 0;
         for (std::int64_t elapsed = 0; elapsed < 2 * kNsPerSec; elapsed += interval) {
             real.elapsed += interval;
             EXPECT(timer.tick() == 0);
             EXPECT(gameTime.now() == pausedAt);
-            if (pacer.shouldSend()) {
-                const auto gap = real.now() - lastHeartbeat;
-                EXPECT(gap >= heartbeat && gap <= heartbeat + interval);
-                lastHeartbeat = real.now();
-                ++heartbeats;
-            }
+            EXPECT(pacer.shouldSend());
+            ++pausedSends;
             EXPECT(!pacer.shouldSend());
         }
-        EXPECT(heartbeats >= 6 && heartbeats <= 8);
+        EXPECT(pausedSends == static_cast<int>(2 * StarfallSalvage::normalLoopHz * scale));
+        EXPECT(networkTime.now() - networkAtPause ==
+               static_cast<std::int64_t>(2 * kGameTicsPerSecond * scale));
 
-        // A speed change while paused must not advance game time. Resuming
-        // and a later long stall must not trigger catch-up message bursts.
-        gameTime.setScale(scale == 2.0 ? 0.5 : 2.0);
+        // Speed changes keep the send clock in sync without unpausing physics.
+        const double newScale = scale == 2.0 ? 0.5 : 2.0;
+        gameTime.setScale(newScale);
+        networkTime.setScale(newScale);
         EXPECT(gameTime.now() == pausedAt);
         gameTime.unpause();
-        real.elapsed += StarfallSalvage::frameIntervalNs(gameTime.scale());
+        real.elapsed += StarfallSalvage::frameIntervalNs(newScale);
         EXPECT(timer.tick() == StarfallSalvage::positionSendIntervalGameTics);
         EXPECT(pacer.shouldSend());
         EXPECT(!pacer.shouldSend());
@@ -158,6 +159,17 @@ int main()
     };
     EXPECT(StarfallSalvage::chooseCargoWinner(simultaneousPickup).playerId == 2);
     EXPECT(StarfallSalvage::chooseCargoWinner(simultaneousPickup).crates == 2);
+    EXPECT(StarfallSalvage::creditedCargoMask(simultaneousPickup, 2) == 0x3);
+    EXPECT(StarfallSalvage::creditedCargoMask(simultaneousPickup, 4) == 0);
+    EXPECT(StarfallSalvage::creditedCargoMask(simultaneousPickup, 3) == 0x4);
+    EXPECT(StarfallSalvage::creditedCargoMask({simultaneousPickup[0], simultaneousPickup[1]}, 2) == 0x3);
+    EXPECT(StarfallSalvage::creditedCargoMask({simultaneousPickup[1], simultaneousPickup[0]}, 2) == 0x3);
+
+    const Rect firstCrate = StarfallSalvage::cargo[0];
+    EXPECT(StarfallSalvage::cargoAt(firstCrate, 0, true, 0.02F) == 0x1);
+    EXPECT(StarfallSalvage::cargoAt(firstCrate, 0, false, 0.02F) == 0);
+    EXPECT(StarfallSalvage::cargoAt(firstCrate, 0, true, 0.0F) == 0);
+    EXPECT(StarfallSalvage::cargoAt(firstCrate, 0x1, true, 0.02F) == 0);
     EXPECT(StarfallSalvage::chooseCargoWinner({onPad(9, 0, 1), onPad(2, 1, 2)}).playerId == 2);
     EXPECT(StarfallSalvage::chooseCargoWinner({{1, 0.0F, 0.0F, "bad"}, onPad(2, 1, 2)}).playerId == 2);
     EXPECT(StarfallSalvage::chooseCargoWinner({}).playerId == 0);

@@ -5,6 +5,7 @@
 #include "Game.hpp"
 #include "Multiplayer.hpp"
 #include "StarfallSalvageRules.hpp"
+#include "Timeline.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -47,6 +48,8 @@ private:
     void resolveBlocker(const Rect& blocker, std::uint32_t platformId, const Rect& previous);
     void respawn();
 
+    // Network updates keep flowing while the local simulation is paused.
+    Timeline networkTime_;
     std::unique_ptr<Multiplayer::Session> session_;
     Multiplayer::Config config_;
     Entity player_{76.0F, 380.0F, 30.0F, 40.0F};
@@ -57,6 +60,7 @@ private:
     StarfallSalvage::RelayStatus relays_{};
     std::uint8_t cargoMask_ = 0;
     std::uint8_t personalCargoMask_ = 0;
+    std::uint8_t creditedCargoMask_ = 0;
     StarfallSalvage::CargoWinner cargoWinner_{};
     std::string winnerName_;
     float cargoFlashSeconds_ = 0.0F;

@@ -4,10 +4,30 @@ Starfall Salvage is a three-player space-station game. Collect the four cargo
 crates, help each other open the bulkhead, then stand on the three relay pads
 and hold `E` together to finish. Avoid the drones and use the moving shuttles
 to reach other parts of the station. The player who collected the most cargo
-is named the winner.
+is named the winner. If two players claim the same crate before their updates
+arrive, only the player with the lower ID gets credit once claims are shared.
 
 The same game can run in client-server or hybrid peer-to-peer mode. Both modes
 use the game server for the moving shuttles and drones.
+
+## How to play
+
+1. Move with `A`/`D` or the arrow keys. Press `Space` twice to double-jump, and
+   use the moving shuttles to reach higher decks. Avoid the patrolling drones.
+2. Touch the orange cargo crates. The counter at the top shows the team's
+   progress. One crate is on the raised deck in the east wing, beyond the
+   tall red gate.
+3. To open the gate, one player stands on the orange switch just to its left
+   and holds `E` while another player crosses. There is a second switch on the
+   right that can help a teammate cross back.
+4. Once the counter reads `CARGO 4/4`, put one different player on each of the
+   three relay pads: left, middle, and east wing. All three players must stand
+   on their pads and hold `E` at the same time to finish. The game then names
+   the player who earned the most cargo credit as the winner.
+
+You can open three clients on one laptop to check that networking works, but
+one keyboard cannot reliably control all three windows at once for the gate
+and final relay step. Playing together on separate laptops is easier.
 
 ## Build
 
@@ -103,8 +123,9 @@ than calculating their paths again.
 
 The game keeps its 25-loop-per-second baseline. Keys `1`, `2`, and `3` change
 both local game time and the actual loop rate. The session also uses the
-engine's send pacing, with `sendIntervalGameTics = kGameTicsPerSecond / 25`
-and both clocks passed to `Session::open`.
+engine's send pacing, with `sendIntervalGameTics = kGameTicsPerSecond / 25`.
+The game gives it a separate timeline at the same scale as game time, but
+does not pause that timeline.
 
 | Setting | Target loops per real second | Target position updates per real second |
 | --- | --- | --- |
@@ -117,8 +138,11 @@ server reply can lower the actual count. `F2` shows loop and worker counters;
 its publish counter counts game API calls, not delivered messages.
 
 Pausing stops local movement and game-timed effects, but polling and recovery
-continue. A real-time heartbeat becomes due every 250 ms and is sent on the
-next eligible frame. Other players and server-controlled objects keep moving.
+continue. Network publishing keeps its current speed during pause, so the
+server can send fresh player and platform positions instead of leaving them
+frozen between sparse heartbeats. This sends more messages while paused than
+the engine's minimum heartbeat. If your astronaut is on a shuttle, the shuttle
+still carries them while paused.
 
 To see accepted player messages in client-server mode, start the server with:
 
