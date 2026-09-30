@@ -83,3 +83,61 @@ peer's reachable IP and port.
 | `F1` | Toggle proportional/constant window scaling |
 | `F2` | Toggle clock, worker, and publish diagnostics |
 | `Esc` | Quit |
+
+## Engine features
+
+The game uses `Entity`, `Physics`, and `Collision` for movement and jumping.
+`FrameWorkers` runs two update tasks: player physics and collisions on one
+worker, and remote relay/cargo checks and visual effects on the other. Both
+receive the same game-time delta. The main thread waits for both tasks before
+combining their results, sending player state, and drawing the frame. Input,
+networking calls, and rendering stay on the main thread. The engine joins the
+workers when the game closes.
+
+`Multiplayer::Session` handles both networking modes, and `NetworkServerHost`
+runs the game server. Game code does not create ZeroMQ sockets. The server
+controls moving shuttles and drones; clients use the received positions rather
+than calculating their paths again.
+
+## Time and message rates
+
+The game keeps its 25-loop-per-second baseline. Keys `1`, `2`, and `3` change
+both local game time and the actual loop rate. The session also uses the
+engine's send pacing, with `sendIntervalGameTics = kGameTicsPerSecond / 25`
+and both clocks passed to `Session::open`.
+
+| Setting | Target loops per real second | Target position updates per real second |
+| --- | --- | --- |
+| 0.5x | 12.5 | 12.5 |
+| 1x | 25 | 25 |
+| 2x | 50 | 50 |
+
+These are targets, not guaranteed network rates. A busy frame or pending
+server reply can lower the actual count. `F2` shows loop and worker counters;
+its publish counter counts game API calls, not delivered messages.
+
+Pausing stops local movement and game-timed effects, but polling and recovery
+continue. A real-time heartbeat becomes due every 250 ms and is sent on the
+next eligible frame. Other players and server-controlled objects keep moving.
+
+To see accepted player messages in client-server mode, start the server with:
+
+```bash
+./build/starfall-salvage-server --rates
+```
+
+Use `--scale 0.5`, `--scale 1`, and `--scale 2` on the three client commands,
+or change speeds with the keys. Compare several seconds of server output.
+In hybrid mode, player updates go directly between peers, so the server's
+player-message counter does not measure them.
+
+## Automated checks
+
+```bash
+cmake --build build --target starfall-salvage-tests frame-workers-tests multiplayer-tests -j 4
+ctest --test-dir build -R "starfall-salvage|frame-workers|multiplayer" --output-on-failure
+```
+
+These cover the game's mission rules and timing settings, the engine's worker
+barrier and shutdown, and multiplayer pacing. They do not replace playing a
+full round with three clients.
