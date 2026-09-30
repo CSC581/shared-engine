@@ -5,8 +5,8 @@
 //   ./build/pokemon-hunt --pokemon pikachu                     # client-server
 //   ./build/pokemon-hunt --pokemon squirtle
 //
-//   ./build/pokemon-hunt --mode peer-to-peer --id 1 --port 7300 --pokemon charmander
-//   ./build/pokemon-hunt --mode peer-to-peer --id 2 --port 7302 --peer tcp://127.0.0.1:7300
+//   ./build/pokemon-hunt --mode peer-to-peer --pokemon charmander
+//   ./build/pokemon-hunt --mode peer-to-peer --pokemon bulbasaur
 //
 // Rules:
 //   Stomp Mewtwo (land on it from above)       -> 3 damage, +100 points
@@ -18,33 +18,31 @@
 //   Timeline (S1)       - Pokemon physics, skills and cooldowns run on game
 //                         time. P pauses, 1/2/3 set 0.5x/1x/2x on this client.
 //   Client-server (S2)  - the server relays every Pokemon to every client.
-//   Threads (S3)        - a worker thread runs this Pokemon's physics while the
-//                         main thread pumps the network; they meet at a barrier.
+//   Threads (S3)        - FrameWorkers runs this Pokemon's physics on one
+//                         worker and the network on another; the main thread
+//                         waits for both, then runs the fight and draws.
 //   Async (S4)          - Mewtwo moves on the server's real time, so a slowed or
 //                         paused client still sees it where everyone else does.
+//                         Positions are sent on game time, so 0.5x / 2x halve /
+//                         double this client's message rate.
 //   Peer-to-peer (S5)   - --mode peer-to-peer: Pokemon go straight to each
 //                         other; only Mewtwo still comes from the server.
 //
-// Mewtwo's HP lives on the server with the rest of Mewtwo. Each Pokemon sends
-// the total damage it has dealt with its position; the server takes the new
-// part off the HP, and when it runs out Mewtwo vanishes and drops back in at a
-// random spot 5 seconds (server real time) later.
-//
-// In peer-to-peer mode the engine's session tells the server only where a
-// player is, not its data. So there this game keeps its own link to the
-// server (a Network::NetworkClient, used as is) to report damage and fetch
-// Mewtwo, while the Pokemon themselves still travel peer to peer.
+// Mewtwo is a bot player the server runs (see PokemonHuntWorld.hpp). Its data
+// carries the boss, and each Pokemon's data carries its total damage, which
+// the bot takes off Mewtwo's HP.
 #include "Collision.hpp"
 #include "Engine.hpp"
 #include "Entity.hpp"
+#include "FrameWorkers.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
 #include "Multiplayer.hpp"
-#include "NetworkClient.hpp"
 #include "Physics.hpp"
 #include "PokemonHuntConfig.hpp"
 #include "PokemonHuntData.hpp"
 #include "PokemonHuntDraw.hpp"
+#include "PokemonHuntPrediction.hpp"
 #include "PokemonHuntStyle.hpp"
 #include "PokemonHuntWorld.hpp"
 #include "TimeSource.hpp"
@@ -53,17 +51,13 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
-#include <atomic>
-#include <condition_variable>
 #include <cstdlib>
 #include <deque>
 #include <exception>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -76,15 +70,15 @@ using namespace PokemonHunt;
 // ---------------------------------------------------------------------------
 class PokemonHuntGame final : public Game {
 public:
-    // `authority` is this game's own link to Mewtwo's server, peer-to-peer
-    // only; null in client-server mode, where the session already talks to it.
-    PokemonHuntGame(std::unique_ptr<Multiplayer::Session> session,
-                    std::unique_ptr<Network::NetworkClient> authority, int kind, SDL_Renderer* renderer,
+    PokemonHuntGame(std::unique_ptr<Multiplayer::Session> session, int kind, SDL_Renderer* renderer,
                     const std::string& mediaDir)
         : session_(std::move(session)),
-          authority_(std::move(authority)),
           pokemon_(spawnX(kind), spawnY, pokemonSize, pokemonSize),
-          shot_(0.0F, 0.0F, shotSize, shotSize)
+          shot_(0.0F, 0.0F, shotSize, shotSize),
+          workers_({
+              [this](float dt) { physicsStep(dt); },
+              [this](float) { networkStep(); },
+          })
     {
         local_.species = kind;
         for (int i = 0; i < SpeciesCount; ++i) {
@@ -92,17 +86,6 @@ public:
         }
         bossSprite_.load(renderer, mediaDir + bossSpriteFile);
         Physics::setGravity(gravity);
-        physicsThread_ = std::thread([this] { physicsLoop(); });
-    }
-
-    ~PokemonHuntGame() override
-    {
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            quit_ = true;
-        }
-        cv_.notify_all();
-        physicsThread_.join();
     }
 
     void handleInput(Engine& engine) override
@@ -126,18 +109,17 @@ public:
             endEffect(gameTime);
         }
 
-        // Section 3: hand this frame's physics to the worker thread...
-        startPhysicsStep(dt);
-        // ...and do the network side on this thread meanwhile. Pumped even
-        // while paused, so the others and Mewtwo keep moving on this screen.
-        session_->update();
-        refreshWorld();
-        const StepResult step = finishPhysicsStep();
+        // Section 3: physics and the network each run on their own worker;
+        // this returns once both are done, so everything below reads their
+        // finished results. The network is pumped even while paused, so the
+        // others and Mewtwo keep moving on this screen.
+        controlLocked_ = controlLock_ > 0.0;
+        workers_.runFrame(dt);
 
         // Everything below runs on game time: paused means frozen, 2x means
         // cooldowns and knockback finish twice as fast.
         if (dt > 0.0F) {
-            playFrame(time.dtSeconds, step);
+            playFrame(time.dtSeconds);
         }
 
         applyEarnedEffects(gameTime);
@@ -171,20 +153,6 @@ public:
     }
 
 private:
-    // What the worker hands to the main thread at the end of a step.
-    struct StepResult {
-        bool skill = false;
-        float previousBottom = 0.0F;
-    };
-
-    // What the main thread hands to the worker for one step.
-    struct PhysicsInput {
-        float dt = 0.0F;
-        float axis = 0.0F;
-        bool jump = false;
-        bool locked = false;
-    };
-
     // --- Input ---------------------------------------------------------------
     // Manual time controls always win: they end any running effect first,
     // which puts back the speed the player had chosen.
@@ -213,10 +181,10 @@ private:
         }
     }
 
-    // Movement for the physics thread; the skill press is kept until used.
+    // Movement for the physics worker; the skill press is kept until used.
+    // Written only here, before runFrame(), so the worker reads it unlocked.
     void readControls()
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
         axis_ = std::clamp(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D) +
                                Input::getAxis(SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT),
                            -1.0F, 1.0F);
@@ -225,86 +193,32 @@ private:
                         Input::isKeyJustPressed(SDL_SCANCODE_X);
     }
 
-    // --- The barrier between the main and physics threads --------------------
-    void startPhysicsStep(float dt)
+    // --- Physics worker: this Pokemon, and nothing the network touches. ------
+    void physicsStep(float dt)
     {
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            frameDt_ = dt;
-            controlLocked_ = controlLock_ > 0.0;
-            moved_ = false;
-            ++frame_;
+        previousBottom_ = pokemon_.getY() + pokemonSize;
+        if (dt <= 0.0F) {
+            return;
         }
-        cv_.notify_all();
-    }
-
-    StepResult finishPhysicsStep()
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this] { return moved_; });
-        StepResult result;
-        result.skill = skillPressed_;
-        result.previousBottom = previousBottom_;
-        skillPressed_ = false;
-        return result;
-    }
-
-    // --- Worker thread: this Pokemon's physics, one step per frame. ---------
-    void physicsLoop()
-    {
-        std::uint64_t seen = 0;
-        bool onGround = false;
-        PhysicsInput input;
-        while (waitForStep(seen, input)) {
-            const float previousBottom = pokemon_.getY() + pokemonSize;
-            if (input.dt > 0.0F) {
-                onGround = stepPhysics(input, onGround, previousBottom);
+        if (!controlLocked_) {
+            pokemon_.setVelocityX(axis_ * walkSpeed);
+            if (axis_ != 0.0F) {
+                facing_ = axis_ < 0.0F ? -1 : 1;
             }
-            reportStepDone(previousBottom);
-        }
-    }
-
-    // Blocks until the main thread starts a new frame. False means quit.
-    bool waitForStep(std::uint64_t& seen, PhysicsInput& input)
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [&] { return quit_ || frame_ != seen; });
-        if (quit_) {
-            return false;
-        }
-        seen = frame_;
-        input.dt = frameDt_;
-        input.axis = axis_;
-        input.jump = jumpPressed_;
-        input.locked = controlLocked_;
-        return true;
-    }
-
-    // Moves the Pokemon one step. Returns whether it is standing afterwards.
-    bool stepPhysics(const PhysicsInput& input, bool onGround, float previousBottom)
-    {
-        if (!input.locked) {
-            pokemon_.setVelocityX(input.axis * walkSpeed);
-            if (input.axis != 0.0F) {
-                facing_ = input.axis < 0.0F ? -1 : 1;
-            }
-            if (input.jump && onGround) {
+            if (jumpPressed_ && onGround_) {
                 pokemon_.setVelocityY(-jumpSpeed);
             }
         }
-        Physics::applyGravity(pokemon_, input.dt);
-        pokemon_.update(input.dt);
-        return land(previousBottom);
+        Physics::applyGravity(pokemon_, dt);
+        pokemon_.update(dt);
+        onGround_ = land(previousBottom_);
     }
 
-    void reportStepDone(float previousBottom)
+    // --- Network worker: the session and Mewtwo, never the Pokemon. ---------
+    void networkStep()
     {
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            previousBottom_ = previousBottom;
-            moved_ = true;
-        }
-        cv_.notify_all();
+        session_->update();
+        refreshWorld();
     }
 
     // Walls, floor and one-way ledges. Returns whether we are standing.
@@ -338,17 +252,18 @@ private:
         return standing;
     }
 
-    // --- Main thread, after the barrier. -----------------------------------
-    void playFrame(double dt, const StepResult& step)
+    // --- Main thread, after both workers finish. ---------------------------
+    void playFrame(double dt)
     {
         // Our own animation is on game time too: it freezes with the pause.
         animationTime_ += dt;
         tickTimers(dt);
-        if (step.skill) {
+        if (skillPressed_) {
+            skillPressed_ = false;
             fireShot();
         }
         moveShot(static_cast<float>(dt));
-        fightBoss(step.previousBottom);
+        fightBoss(previousBottom_);
     }
 
     void tickTimers(double dt)
@@ -561,11 +476,7 @@ private:
         local_.shot = shotActive_;
         local_.shotX = static_cast<int>(shot_.getX());
         local_.shotY = static_cast<int>(shot_.getY());
-        const std::string data = encode(local_);
-        session_->publishLocalPlayer(pokemon_.getX(), pokemon_.getY(), data);
-        if (authority_ && authority_->state() == Network::ConnectionState::Connected) {
-            authority_->submitPosition(pokemon_.getX(), pokemon_.getY(), data);
-        }
+        session_->publishLocalPlayer(pokemon_.getX(), pokemon_.getY(), encode(local_));
     }
 
     void refreshWorld()
@@ -574,22 +485,23 @@ private:
         readBossStatus();
     }
 
-    // Everything the server owns, from whichever link carries it: the session
-    // in client-server mode, this game's own link in peer-to-peer mode. Kept
-    // as last received while a link is down, like the engine does.
+    // Everything the server owns, read off Mewtwo's player data. Kept as last
+    // received while Mewtwo is missing, like the engine keeps platforms. In
+    // client-server mode it comes only as often as this client sends, which
+    // follows its game speed, so Mewtwo is moved on between updates on real
+    // time (see WorldPredictor).
     void fetchWorld()
     {
-        if (!authority_) {
-            world_ = session_->platforms();
-            return;
-        }
-        authority_->poll();
-        if (authority_->state() == Network::ConnectionState::Connected) {
-            world_.clear();
-            for (const Network::PlatformState& object : authority_->snapshot().platforms) {
-                world_.push_back({object.id, object.x, object.y, object.width, object.height});
+        bossSeen_ = false;
+        std::vector<Multiplayer::Platform> received;
+        for (const Multiplayer::Player& player : session_->remotePlayers()) {
+            if (player.name == bossPlayerName && decodeBossWorld(player.data, received)) {
+                predictor_.receive(received, now_);
+                bossSeen_ = true;
+                break;
             }
         }
+        world_ = predictor_.predict(now_);
     }
 
     void readBossStatus()
@@ -604,12 +516,6 @@ private:
             }
             status_ = {true, hp, object.y, static_cast<long long>(object.width) - 1};
         }
-    }
-
-    bool connectedToBoss() const
-    {
-        return authority_ ? authority_->state() == Network::ConnectionState::Connected
-                          : session_->state() == Multiplayer::State::Ready;
     }
 
     // Null while Mewtwo is fainted, or before the server has been heard from.
@@ -652,7 +558,7 @@ private:
         if (session_->state() != Multiplayer::State::Ready) {
             return session_->status();
         }
-        if (!connectedToBoss() || (boss == nullptr && !bossFainted())) {
+        if (!bossSeen_ || (boss == nullptr && !bossFainted())) {
             return "waiting for Mewtwo... (is pokemon-hunt-server running?)";
         }
         return {};
@@ -684,9 +590,11 @@ private:
     }
 
     std::unique_ptr<Multiplayer::Session> session_;
-    std::unique_ptr<Network::NetworkClient> authority_;
+    // Written by the network worker, read by main after runFrame().
+    WorldPredictor predictor_;
     std::vector<Multiplayer::Platform> world_;
     BossStatus status_;
+    bool bossSeen_ = false;
     PokemonSprites pokemonSprites_;
     SpriteSheet bossSprite_;
     double animationTime_ = 0.0;
@@ -716,22 +624,22 @@ private:
     bool freezeEarned_ = false;
     bool autoEffects_ = true;
 
-    // Written by the worker during a frame, read by main after the barrier.
-    std::atomic<int> facing_{1};
-
-    // Shared with the physics thread; guarded by mutex_.
-    std::mutex mutex_;
-    std::condition_variable cv_;
+    // Written by main before runFrame(), read by the physics worker.
     float axis_ = 0.0F;
     bool jumpPressed_ = false;
-    bool skillPressed_ = false;
     bool controlLocked_ = false;
-    float frameDt_ = 0.0F;
+    // Main thread only; the worker never sees the skill key.
+    bool skillPressed_ = false;
+
+    // Written by the physics worker, read by main after runFrame().
+    int facing_ = 1;
     float previousBottom_ = 0.0F;
-    std::uint64_t frame_ = 0;
-    bool moved_ = false;
-    bool quit_ = false;
-    std::thread physicsThread_;
+    bool onGround_ = false;
+
+    // Section 3: physics and network each on their own thread every frame.
+    // Declared last so its threads are joined before any member they use is
+    // destroyed.
+    FrameWorkers workers_;
 };
 
 // ---------------------------------------------------------------------------
@@ -743,6 +651,7 @@ struct Options {
     bool idGiven = false;
     bool portGiven = false;
     bool peerGiven = false;
+    bool serverGiven = false;
 };
 
 int speciesFromName(const std::string& name)
@@ -762,7 +671,8 @@ void printUsage()
   --pokemon NAME    pikachu, charmander, squirtle or bulbasaur. Each Pokemon
                     can be in the party once; leave it out to get a free one.
   --mode MODE       client-server (default) or peer-to-peer.
-  --server ENDPOINT Mewtwo's server. Default tcp://127.0.0.1:5600.
+  --server ENDPOINT Mewtwo's server. Default tcp://127.0.0.1:5600, or in
+                    peer-to-peer mode Mewtwo's peer, tcp://127.0.0.1:7290.
 
 Peer-to-peer only:
   --id N            This peer's id, 1..8. Leave it out to take the first free
@@ -792,6 +702,7 @@ bool applyOption(const std::string& arg, const std::string& value, Options& opti
         }
     } else if (arg == "--server") {
         config.serverEndpoint = value;
+        options.serverGiven = true;
     } else if (arg == "--id") {
         const int id = std::atoi(value.c_str());
         if (id < 1 || id > maxPeerId) {
@@ -823,6 +734,8 @@ bool parseArgs(int argc, char* argv[], Options& options, int& exitCode)
     // The server shows this in its log; on screen a Pokemon is named by its
     // species, which is only settled after joining.
     options.config.playerName = "trainer";
+    options.config.sendIntervalGameTics = sendIntervalGameTics;
+    options.config.heartbeatIntervalRealTics = heartbeatIntervalRealTics;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -842,12 +755,28 @@ bool parseArgs(int argc, char* argv[], Options& options, int& exitCode)
             return false;
         }
     }
+    if (options.config.mode == Multiplayer::Mode::PeerToPeer && !options.serverGiven) {
+        options.config.serverEndpoint = defaultBossPeerEndpoint;
+    }
     return true;
 }
 
 // ---------------------------------------------------------------------------
 // Joining the party
 // ---------------------------------------------------------------------------
+// The engine's game time, which paces sends. The session is opened before the
+// window, and so the engine, exists; until attach() this reads 0, which is
+// harmless because nothing is published before the game starts.
+class GameClock final : public TimeSource {
+public:
+    std::int64_t now() const override { return target_ != nullptr ? target_->now() : 0; }
+
+    void attach(const TimeSource& target) { target_ = &target; }
+
+private:
+    const TimeSource* target_ = nullptr;
+};
+
 // Why a session cannot be joined, or empty if it can.
 std::string sessionProblem(const Multiplayer::Session& session)
 {
@@ -857,7 +786,8 @@ std::string sessionProblem(const Multiplayer::Session& session)
 // Each id gets its own ports, so two peers with the same id on one machine
 // collide on the port instead of silently confusing the mesh. Without --id,
 // take the first id whose ports are free.
-std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, const TimeSource& clock)
+std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, const TimeSource& clock,
+                                                      const TimeSource& gameClock)
 {
     const Multiplayer::PlayerId first = options.idGiven ? options.config.peerId : 1;
     const Multiplayer::PlayerId last = options.idGiven ? options.config.peerId : maxPeerId;
@@ -865,8 +795,9 @@ std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, co
     for (Multiplayer::PlayerId id = first; id <= last; ++id) {
         Multiplayer::Config attempt = options.config;
         attempt.peerId = id;
-        // Mewtwo comes over this game's own link to the server (see main),
-        // so the peer session carries Pokemon only.
+        // Mewtwo is a peer in the mesh, so there is no world authority to
+        // poll. Greeting its peer is how this Pokemon meets it, whichever of
+        // the two starts first.
         attempt.serverEndpoint.clear();
         if (!options.portGiven) {
             attempt.basePort = firstPeerBasePort + portsPerPeer * static_cast<int>(id - 1);
@@ -874,7 +805,8 @@ std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, co
         if (!options.peerGiven && id != 1) {
             attempt.bootstrapPeers = {firstPeerEndpoint};
         }
-        auto candidate = Multiplayer::Session::open(attempt, clock);
+        attempt.bootstrapPeers.push_back(options.config.serverEndpoint);
+        auto candidate = Multiplayer::Session::open(attempt, clock, &gameClock);
         problem = sessionProblem(*candidate);
         if (problem.empty()) {
             std::cout << "Joined as peer " << id << " on port " << attempt.basePort << std::endl;
@@ -951,11 +883,13 @@ int chooseSpecies(const Multiplayer::Session& session, int requested)
 
 // Joins the session and looks at who is already in the party, before any
 // window opens, so a clash is an error message rather than a broken game.
-std::unique_ptr<Multiplayer::Session> joinParty(const Options& options, int& kind, const TimeSource& clock)
+std::unique_ptr<Multiplayer::Session> joinParty(const Options& options, int& kind, const TimeSource& clock,
+                                                const TimeSource& gameClock)
 {
-    std::unique_ptr<Multiplayer::Session> session = options.config.mode == Multiplayer::Mode::PeerToPeer
-                                                        ? openPeerSession(options, clock)
-                                                        : Multiplayer::Session::open(options.config, clock);
+    std::unique_ptr<Multiplayer::Session> session =
+        options.config.mode == Multiplayer::Mode::PeerToPeer
+            ? openPeerSession(options, clock, gameClock)
+            : Multiplayer::Session::open(options.config, clock, &gameClock);
     if (!session || !waitForParty(*session, clock)) {
         return nullptr;
     }
@@ -978,29 +912,17 @@ std::string mediaDirectory()
     return std::string(base != nullptr ? base : "") + "media/pokemon-hunt/";
 }
 
-// In peer-to-peer mode, this game's own link to Mewtwo's server; else null.
-std::unique_ptr<Network::NetworkClient> connectToBoss(const Multiplayer::Config& config, int kind,
-                                                      const TimeSource& clock)
-{
-    if (config.mode != Multiplayer::Mode::PeerToPeer) {
-        return nullptr;
-    }
-    auto authority = std::make_unique<Network::NetworkClient>(clock, config.serverEndpoint);
-    authority->setPlayerName(species[kind].name);
-    authority->start();
-    return authority;
-}
-
-int runGame(const Options& options, std::unique_ptr<Multiplayer::Session> session, int kind,
-            const TimeSource& clock)
+int runGame(std::unique_ptr<Multiplayer::Session> session, int kind, GameClock& gameClock)
 {
     try {
         Engine engine("Pokemon Hunt", windowWidth, windowHeight);
         engine.setScaleToggleKey(SDL_SCANCODE_UNKNOWN);
         engine.setClearColor(Palette::clear.r, Palette::clear.g, Palette::clear.b);
 
-        PokemonHuntGame game(std::move(session), connectToBoss(options.config, kind, clock), kind,
-                             engine.getRenderer(), mediaDirectory());
+        // From here the session's sends follow this engine's pause and speed.
+        gameClock.attach(engine.gameTime());
+
+        PokemonHuntGame game(std::move(session), kind, engine.getRenderer(), mediaDirectory());
         engine.run(game);
     } catch (const std::exception& exception) {
         std::cerr << "pokemon-hunt: " << exception.what() << '\n';
@@ -1019,12 +941,13 @@ int main(int argc, char* argv[])
         return exitCode;
     }
 
-    // Declared first so it outlives the session.
+    // Declared first so they outlive the session.
     RealTimeClock clock;
+    GameClock gameClock;
     int kind = 0;
-    std::unique_ptr<Multiplayer::Session> session = joinParty(options, kind, clock);
+    std::unique_ptr<Multiplayer::Session> session = joinParty(options, kind, clock, gameClock);
     if (!session) {
         return 1;
     }
-    return runGame(options, std::move(session), kind, clock);
+    return runGame(std::move(session), kind, gameClock);
 }

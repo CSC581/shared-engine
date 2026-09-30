@@ -112,6 +112,12 @@ constexpr double joinTimeoutSeconds = 3.0;
 constexpr double joinSettleSeconds = 1.0;
 constexpr Uint32 joinPollMs = 20;
 
+// Send pacing (Section 4): positions go out once per 1/30 game-second, so a
+// client at 0.5x sends 15/s and one at 2x sends 60/s. While paused, game time
+// stops, so a real-time heartbeat keeps the Pokemon from being timed out.
+constexpr std::int64_t sendIntervalGameTics = kGameTicsPerSecond / 30;
+constexpr std::int64_t heartbeatIntervalRealTics = 250 * kNsPerMs;
+
 // ---------------------------------------------------------------------------
 // The party
 // ---------------------------------------------------------------------------
