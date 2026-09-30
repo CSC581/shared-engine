@@ -14,6 +14,7 @@
 #include <cmath>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -135,34 +136,21 @@ int recoveredCargo(std::uint8_t mask)
 } // namespace
 
 StarfallSalvageGame::StarfallSalvageGame(Engine& engine, Multiplayer::Config config)
-    : session_(Multiplayer::Session::open(config, engine.realTime())), config_(std::move(config))
+    : session_(Multiplayer::Session::open(config, engine.realTime(), &engine.gameTime())),
+      config_(std::move(config)),
+      workers_({
+          [this](float dt) {
+              simulatePlayer(frameJob_, dt);
+              ++physicsFrames_;
+          },
+          [this](float dt) {
+              updateSignals(frameJob_, dt);
+              ++signalFrames_;
+          },
+      })
 {
     Physics::setGravity(StarfallSalvage::gravity);
     engine.setClearColor({7, 14, 31});
-    physicsThread_ = std::thread([this] { physicsLoop(); });
-    try {
-        signalThread_ = std::thread([this] { signalLoop(); });
-    } catch (...) {
-        {
-            const std::lock_guard<std::mutex> lock(frameMutex_);
-            stopping_ = true;
-        }
-        frameCv_.notify_all();
-        physicsThread_.join();
-        throw;
-    }
-}
-
-StarfallSalvageGame::~StarfallSalvageGame()
-{
-    {
-        const std::lock_guard<std::mutex> lock(frameMutex_);
-        stopping_ = true;
-    }
-    frameCv_.notify_all();
-    if (physicsThread_.joinable()) physicsThread_.join();
-    if (signalThread_.joinable()) signalThread_.join();
-    session_.reset();
 }
 
 void StarfallSalvageGame::handleInput(Engine& engine)
@@ -242,15 +230,11 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
         spawned_ = true;
     }
 
-    {
-        std::unique_lock<std::mutex> lock(frameMutex_);
-        frameJob_ = FrameJob{time, input_, canMove, gateOpen_, session_->localPlayerId(),
-                             platforms_, remote_};
-        workersDone_ = 0;
-        ++generation_;
-        frameCv_.notify_all();
-        frameCv_.wait(lock, [this] { return stopping_ || workersDone_ == 2; });
-    }
+    // Workers read this fixed snapshot and write separate results. The main
+    // thread resumes only after both tasks have completed the frame.
+    frameJob_ = FrameJob{input_, canMove, gateOpen_, session_->localPlayerId(),
+                         platforms_, remote_};
+    workers_.runFrame(static_cast<float>(time.dtSeconds));
 
     if (spawned_) {
         const float target = StarfallSalvage::cameraTargetX(player_.getX());
@@ -347,61 +331,22 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     }
 }
 
-void StarfallSalvageGame::physicsLoop()
+void StarfallSalvageGame::updateSignals(const FrameJob& job, float deltaTime)
 {
-    std::uint64_t seen = 0;
-    while (true) {
-        FrameJob job;
-        {
-            std::unique_lock<std::mutex> lock(frameMutex_);
-            frameCv_.wait(lock, [this, seen] { return stopping_ || generation_ != seen; });
-            if (stopping_) return;
-            seen = generation_;
-            job = frameJob_;
+    std::vector<StarfallSalvage::Claim> claims;
+    claims.reserve(job.remote.size());
+    for (const auto& player : job.remote) {
+        if (player.id != job.localId) {
+            claims.push_back({player.id, player.x, player.y, player.data});
         }
-        simulatePlayer(job);
-        ++physicsFrames_;
-        workerDone();
     }
+    remoteMission_ = StarfallSalvage::evaluateMission(claims);
+    pulse_ = std::fmod(pulse_ + deltaTime * 0.55F, 1.0F);
 }
 
-void StarfallSalvageGame::signalLoop()
+void StarfallSalvageGame::simulatePlayer(const FrameJob& job, float deltaTime)
 {
-    std::uint64_t seen = 0;
-    while (true) {
-        FrameJob job;
-        {
-            std::unique_lock<std::mutex> lock(frameMutex_);
-            frameCv_.wait(lock, [this, seen] { return stopping_ || generation_ != seen; });
-            if (stopping_) return;
-            seen = generation_;
-            job = frameJob_;
-        }
-
-        std::vector<StarfallSalvage::Claim> claims;
-        claims.reserve(job.remote.size());
-        for (const auto& player : job.remote) {
-            if (player.id != job.localId) {
-                claims.push_back({player.id, player.x, player.y, player.data});
-            }
-        }
-        remoteMission_ = StarfallSalvage::evaluateMission(claims);
-        pulse_ = std::fmod(pulse_ + static_cast<float>(job.time.dtSeconds) * 0.55F, 1.0F);
-        ++signalFrames_;
-        workerDone();
-    }
-}
-
-void StarfallSalvageGame::workerDone()
-{
-    const std::lock_guard<std::mutex> lock(frameMutex_);
-    ++workersDone_;
-    if (workersDone_ == 2) frameCv_.notify_all();
-}
-
-void StarfallSalvageGame::simulatePlayer(const FrameJob& job)
-{
-    if (supportId_ != 0 && job.canMove && job.time.dtSeconds > 0.0) {
+    if (supportId_ != 0 && job.canMove && deltaTime > 0.0F) {
         const auto oldPlatform = std::find_if(lastPhysicsPlatforms_.begin(), lastPhysicsPlatforms_.end(),
             [this](const auto& platform) { return platform.id == supportId_; });
         const auto newPlatform = std::find_if(job.platforms.begin(), job.platforms.end(),
@@ -422,11 +367,11 @@ void StarfallSalvageGame::simulatePlayer(const FrameJob& job)
     }
     lastPhysicsPlatforms_ = job.platforms;
 
-    if (job.time.dtSeconds > 0.0) {
+    if (deltaTime > 0.0F) {
         invulnerableSeconds_ = std::max(0.0F, invulnerableSeconds_ -
-                                               static_cast<float>(job.time.dtSeconds));
+                                               deltaTime);
     }
-    if (!job.canMove || job.time.dtSeconds <= 0.0) return;
+    if (!job.canMove || deltaTime <= 0.0F) return;
 
     if (job.input.jump && jumpsUsed_ < StarfallSalvage::maximumJumps) {
         player_.setVelocityY(-StarfallSalvage::jumpSpeed);
@@ -434,8 +379,8 @@ void StarfallSalvageGame::simulatePlayer(const FrameJob& job)
         grounded_ = false;
         supportId_ = 0;
     }
-    const int steps = std::max(1, static_cast<int>(std::ceil(job.time.dtSeconds / 0.01)));
-    const float step = static_cast<float>(job.time.dtSeconds / steps);
+    const int steps = std::max(1, static_cast<int>(std::ceil(deltaTime / 0.01F)));
+    const float step = deltaTime / static_cast<float>(steps);
     for (int i = 0; i < steps; ++i) {
         const Rect previous = player_.getBounds();
         player_.setVelocityX(job.input.axis * StarfallSalvage::playerSpeed);

@@ -1,16 +1,14 @@
 #pragma once
 
 #include "Entity.hpp"
+#include "FrameWorkers.hpp"
 #include "Game.hpp"
 #include "Multiplayer.hpp"
 #include "StarfallSalvageRules.hpp"
 
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 class Engine;
@@ -18,7 +16,7 @@ class Engine;
 class StarfallSalvageGame final : public Game {
 public:
     StarfallSalvageGame(Engine& engine, Multiplayer::Config config);
-    ~StarfallSalvageGame() override;
+    ~StarfallSalvageGame() override = default;
 
     StarfallSalvageGame(const StarfallSalvageGame&) = delete;
     StarfallSalvageGame& operator=(const StarfallSalvageGame&) = delete;
@@ -36,7 +34,6 @@ private:
     };
 
     struct FrameJob {
-        FrameTime time{};
         InputFrame input{};
         bool canMove = false;
         bool gateOpen = false;
@@ -45,10 +42,8 @@ private:
         std::vector<Multiplayer::Player> remote;
     };
 
-    void physicsLoop();
-    void signalLoop();
-    void workerDone();
-    void simulatePlayer(const FrameJob& job);
+    void updateSignals(const FrameJob& job, float deltaTime);
+    void simulatePlayer(const FrameJob& job, float deltaTime);
     void resolveBlocker(const Rect& blocker, std::uint32_t platformId, const Rect& previous);
     void respawn();
 
@@ -81,14 +76,7 @@ private:
     bool cameraInitialized_ = false;
     bool diagnostics_ = false;
 
-    std::mutex frameMutex_;
-    std::condition_variable frameCv_;
     FrameJob frameJob_{};
-    std::uint64_t generation_ = 0;
-    unsigned workersDone_ = 0;
-    bool stopping_ = false;
-    std::thread physicsThread_;
-    std::thread signalThread_;
     std::uint64_t physicsFrames_ = 0;
     std::uint64_t signalFrames_ = 0;
 
@@ -105,4 +93,7 @@ private:
     bool proportionalScale_ = true;
     std::string lastStatus_;
     std::size_t lastRemoteCount_ = 0;
+
+    // Destroy first so workers join before the frame inputs or game state die.
+    FrameWorkers workers_;
 };
