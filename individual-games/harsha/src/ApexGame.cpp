@@ -46,7 +46,8 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
                      "A/D aim, Space charge. P pause, 1/2/3 = 0.5x/1x/2x game time. Esc quit.\n";
     } else {
         std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
-                     "release to leap. F1 to toggle scaling, Esc to quit.\n"
+                     "release to leap. P pause, 1/2/3 = 0.5x/1x/2x game time. "
+                     "F1 to toggle scaling, Esc to quit.\n"
                      "Optional: ./apex-ascent --join [tcp://host:port]\n";
     }
 }
@@ -98,29 +99,27 @@ void ApexGame::buildLevel()
 
 void ApexGame::handleInput(Engine& engine)
 {
-    // Online-only: local game timeline isolation (does not affect peers or server).
-    if (session_) {
-        Timeline& gameTime = engine.gameTime();
-        if (Input::isKeyJustPressed(SDL_SCANCODE_P)) {
-            gameTime.togglePause();
-        }
-        if (Input::isKeyJustPressed(SDL_SCANCODE_1)) {
-            gameTime.setScale(0.5);
-        }
-        if (Input::isKeyJustPressed(SDL_SCANCODE_2)) {
-            gameTime.setScale(1.0);
-        }
-        if (Input::isKeyJustPressed(SDL_SCANCODE_3)) {
-            gameTime.setScale(2.0);
-        }
+    // Local game timeline, offline and online (online it does not affect peers or server).
+    Timeline& gameTime = engine.gameTime();
+    if (Input::isKeyJustPressed(SDL_SCANCODE_P)) {
+        gameTime.togglePause();
+    }
+    if (Input::isKeyJustPressed(SDL_SCANCODE_1)) {
+        gameTime.setScale(0.5);
+    }
+    if (Input::isKeyJustPressed(SDL_SCANCODE_2)) {
+        gameTime.setScale(1.0);
+    }
+    if (Input::isKeyJustPressed(SDL_SCANCODE_3)) {
+        gameTime.setScale(2.0);
+    }
 
-        // Paused: freeze the climber. Only quit and the timeline keys above act.
-        if (gameTime.isPaused()) {
-            if (Input::isKeyJustPressed(SDL_SCANCODE_ESCAPE)) {
-                engine.quit();
-            }
-            return;
+    // Paused: freeze the climber. Only quit and the timeline keys above act.
+    if (gameTime.isPaused()) {
+        if (Input::isKeyJustPressed(SDL_SCANCODE_ESCAPE)) {
+            engine.quit();
         }
+        return;
     }
 
     // Aim/charge only while grounded — no air control once jumping.
@@ -175,14 +174,14 @@ void ApexGame::update(float deltaTime, Engine& engine)
 {
     currentScaleMode_ = engine.getScaleMode();
 
+    const Timeline& gameTime = engine.gameTime();
+    gameTimePaused_ = gameTime.isPaused();
+    gameTimeScale_ = gameTime.scale();
+
     // Refresh snapshots before moving-platform carry (server poses).
     // NetworkClient uses realTime, so pause/scale never freezes the link.
     if (session_) {
         session_->update();
-
-        const Timeline& gameTime = engine.gameTime();
-        gameTimePaused_ = gameTime.isPaused();
-        gameTimeScale_ = gameTime.scale();
 
         char title[128];
         if (gameTimePaused_) {
@@ -205,22 +204,31 @@ void ApexGame::update(float deltaTime, Engine& engine)
     // Ride the platform last, on this thread: the platform worker only
     // measured the carry. Movement adds up, so applying it after the player's
     // own move lands in the same place as applying it before.
-    if (carryDx_ != 0.0F || carryDy_ != 0.0F) {
+    // Not while paused: online, the server keeps moving the platform on real
+    // time, but a paused climber must stay where it is.
+    if (!gameTimePaused_ && (carryDx_ != 0.0F || carryDy_ != 0.0F)) {
         player_.setPosition(player_.getX() + carryDx_, player_.getY() + carryDy_);
         previousPlayerBottom_ += carryDy_;
     }
 
-    handleCollisions();
+    // Paused: the climber's grounded state and animation stay frozen too.
+    // Otherwise a server platform sliding away (and back) while paused flips
+    // the anim to Fall, then to a Land clip that cannot advance at dt 0.
+    if (!gameTimePaused_) {
+        handleCollisions();
+    }
     updateCamera(deltaTime);
 
-    PlayerAnimation::AnimInput animInput;
-    animInput.onGround = isOnGround_;
-    animInput.charging = isCharging_;
-    animInput.velocityX = player_.getVelocityX();
-    animInput.velocityY = player_.getVelocityY();
-    // Prefer aim while charging; otherwise use horizontal velocity.
-    animInput.facingIntent = isCharging_ ? aimDirection_ : player_.getVelocityX();
-    playerAnim_.update(deltaTime, animInput);
+    if (!gameTimePaused_) {
+        PlayerAnimation::AnimInput animInput;
+        animInput.onGround = isOnGround_;
+        animInput.charging = isCharging_;
+        animInput.velocityX = player_.getVelocityX();
+        animInput.velocityY = player_.getVelocityY();
+        // Prefer aim while charging; otherwise use horizontal velocity.
+        animInput.facingIntent = isCharging_ ? aimDirection_ : player_.getVelocityX();
+        playerAnim_.update(deltaTime, animInput);
+    }
 
     updateNetwork();
 
