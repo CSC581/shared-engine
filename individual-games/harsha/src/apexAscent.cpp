@@ -8,6 +8,7 @@
 #include "Engine.hpp"
 #include "Multiplayer.hpp"
 #include "NetworkServerHost.hpp"
+#include "TimeUnits.hpp"
 
 #include <exception>
 #include <iostream>
@@ -61,7 +62,11 @@ int main(int argc, char* argv[])
         if (options.online) {
             std::cout << "Starting Apex in " << Multiplayer::modeName(options.network.mode)
                       << " mode\n";
-            session = Multiplayer::Session::open(std::move(options.network), engine.realTime());
+            // Send on game time so 0.5x / 2x halve / double Apex's message
+            // rate (§4); a real-time heartbeat keeps a paused climber joined.
+            options.network.sendIntervalGameTics = kGameTicsPerSecond / 30;
+            session = Multiplayer::Session::open(std::move(options.network), engine.realTime(),
+                                                 &engine.gameTime());
         }
 
         ApexGame game(engine, std::move(session));

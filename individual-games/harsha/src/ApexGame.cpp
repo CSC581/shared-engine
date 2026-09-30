@@ -20,7 +20,11 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
       worldHeight_(viewHeight_ * static_cast<float>(roomCount)),
       startX_(worldWidth_ * 0.5F - playerWidth * 0.5F),
       startY_(worldHeight_ - 140.0F - playerHeight),
-      currentScaleMode_(engine.getScaleMode())
+      currentScaleMode_(engine.getScaleMode()),
+      workers_({
+          [this](float dt) { updateMovingPlatforms(dt); },
+          [this](float dt) { updatePlayerPhysics(dt); },
+      })
 {
     player_.setPosition(startX_, startY_);
     previousPlayerBottom_ = startY_ + playerHeight;
@@ -191,27 +195,20 @@ void ApexGame::update(float deltaTime, Engine& engine)
         SDL_SetWindowTitle(engine.getWindow(), title);
     }
 
-    if (isCharging_) {
-        chargePower_ += chargeSpeed * deltaTime;
-        if (chargePower_ > maxChargePower) {
-            chargePower_ = maxChargePower;
-        }
-    }
-
-    // Kill leftover horizontal slide after landing.
-    if (isOnGround_) {
-        player_.setVelocityX(player_.getVelocityX() * std::pow(groundFriction, deltaTime));
-    }
-
-    updateMovingPlatforms(deltaTime);
-
     // Capture before this frame's movement for the landing check.
     previousPlayerBottom_ = player_.getY() + playerHeight;
 
-    if (!isOnGround_) {
-        Physics::applyGravity(player_, deltaTime);
+    // Platforms and player physics run in parallel, one worker each; this
+    // returns once both are done, so everything below reads finished results.
+    workers_.runFrame(deltaTime);
+
+    // Ride the platform last, on this thread: the platform worker only
+    // measured the carry. Movement adds up, so applying it after the player's
+    // own move lands in the same place as applying it before.
+    if (carryDx_ != 0.0F || carryDy_ != 0.0F) {
+        player_.setPosition(player_.getX() + carryDx_, player_.getY() + carryDy_);
+        previousPlayerBottom_ += carryDy_;
     }
-    player_.update(deltaTime);
 
     handleCollisions();
     updateCamera(deltaTime);
@@ -305,8 +302,35 @@ void ApexGame::updateCamera(float deltaTime)
     }
 }
 
+// Player worker thread: touches only the player and its charge, never a
+// platform.
+void ApexGame::updatePlayerPhysics(float deltaTime)
+{
+    if (isCharging_) {
+        chargePower_ += chargeSpeed * deltaTime;
+        if (chargePower_ > maxChargePower) {
+            chargePower_ = maxChargePower;
+        }
+    }
+
+    // Kill leftover horizontal slide after landing.
+    if (isOnGround_) {
+        player_.setVelocityX(player_.getVelocityX() * std::pow(groundFriction, deltaTime));
+    }
+
+    if (!isOnGround_) {
+        Physics::applyGravity(player_, deltaTime);
+    }
+    player_.update(deltaTime);
+}
+
+// Platform worker thread: moves platforms and records the carry, but never
+// writes the player — the player worker is moving it at the same time.
 void ApexGame::updateMovingPlatforms(float deltaTime)
 {
+    carryDx_ = 0.0F;
+    carryDy_ = 0.0F;
+
     // Online + connected: server owns networked movers (no local path advance).
     if (session_ && session_->state() == Multiplayer::State::Ready) {
         applyServerMovingPlatforms();
@@ -336,8 +360,8 @@ void ApexGame::updateMovingPlatforms(float deltaTime)
 
         // Carry the player with the platform they were standing on.
         if (&platform == groundedMovingPlatform_) {
-            player_.setPosition(player_.getX() + (platform.getX() - prevX),
-                                 player_.getY() + (platform.getY() - prevY));
+            carryDx_ += platform.getX() - prevX;
+            carryDy_ += platform.getY() - prevY;
         }
     }
 }
@@ -368,8 +392,8 @@ void ApexGame::applyServerMovingPlatforms()
 
         // First snapshot after connect only snaps pose; later frames carry by delta.
         if (path.serverPoseInitialized && &platform == groundedMovingPlatform_) {
-            player_.setPosition(player_.getX() + (platform.getX() - prevX),
-                                 player_.getY() + (platform.getY() - prevY));
+            carryDx_ += platform.getX() - prevX;
+            carryDy_ += platform.getY() - prevY;
         }
         path.serverPoseInitialized = true;
     }

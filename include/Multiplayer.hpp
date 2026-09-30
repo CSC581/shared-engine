@@ -116,6 +116,19 @@ struct Config {
     // Shown to other players, and carried by both architectures. May be empty.
     std::string playerName;
 
+    // --- Send pacing, both architectures (see SendPacer). ---
+
+    // Game time between position sends, in the game clock's tics (the engine's
+    // game time counts kGameTicsPerSecond per second). 0 sends on every
+    // publishLocalPlayer(). Anything else needs a game clock passed to open(),
+    // and makes the send rate follow the game's speed: halved at 0.5x, doubled
+    // at 2x.
+    std::int64_t sendIntervalGameTics = 0;
+    // Real time between sends while game time is not advancing enough to send,
+    // in the real clock's tics (nanoseconds for RealTimeClock). Keeps a paused
+    // client from being timed out. Used only when sendIntervalGameTics > 0.
+    std::int64_t heartbeatIntervalRealTics = 250'000'000;
+
     // --- PeerToPeer only; ignored in ClientServer, where the server assigns
     // identity and there is nothing to bind or discover. ---
 
@@ -145,7 +158,12 @@ public:
     // `realTime` must outlive the session, and must be real time rather than
     // game time — a session running on a paused clock could never reconnect,
     // and could never report the unpause.
-    static std::unique_ptr<Session> open(Config config, const TimeSource& realTime);
+    //
+    // `gameTime` is needed only to pace sends (Config::sendIntervalGameTics)
+    // and must then outlive the session too. Pacing without it throws
+    // std::invalid_argument — a configuration mistake, not a network one.
+    static std::unique_ptr<Session> open(Config config, const TimeSource& realTime,
+                                         const TimeSource* gameTime = nullptr);
 
     virtual ~Session() = default;
 
@@ -161,10 +179,12 @@ public:
     // Where this player is now, and anything else this game wants other
     // players to know about it.
     //
-    // Call it as often as the game needs and no more. Staying in the session
-    // is not this call's job: a session announces itself on its own timer, so
-    // a game that is paused, loading, or simply not moving anybody does not
-    // quietly fall out of the session for having nothing to say.
+    // Call it once a frame, including while paused. With send pacing on, the
+    // session decides which calls actually send: one per send interval of game
+    // time, plus a real-time heartbeat while the game is paused. Without
+    // pacing every call sends. A peer-to-peer session also announces itself on
+    // its own timer; a client-server one stays in the session only through
+    // these sends, so a game that stops calling this is timed out.
     //
     // `data` is this game's own business; see Player::data. Both architectures
     // carry up to Net::maxPlayerDataLength bytes of it and neither interprets

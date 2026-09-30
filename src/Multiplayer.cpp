@@ -2,6 +2,7 @@
 
 #include "NetworkClient.hpp"
 #include "PeerSession.hpp"
+#include "SendPacer.hpp"
 #include "WorldStateClient.hpp"
 
 #include <algorithm>
@@ -50,8 +51,10 @@ AuthorityState authorityStateOf(Network::ConnectionState state)
 // ---------------------------------------------------------------------------
 class ClientServerSession final : public Session {
 public:
-    ClientServerSession(Config config, const TimeSource& realTime)
-        : config_(std::move(config)), client_(realTime, config_.serverEndpoint)
+    ClientServerSession(Config config, const TimeSource& realTime, const TimeSource* gameTime)
+        : config_(std::move(config)),
+          client_(realTime, config_.serverEndpoint),
+          pacer_(gameTime, config_.sendIntervalGameTics, realTime, config_.heartbeatIntervalRealTics)
     {
         // Sent with JOIN, so it must be set before starting.
         client_.setPlayerName(config_.playerName);
@@ -81,7 +84,7 @@ public:
 
     void publishLocalPlayer(float x, float y, const std::string& data) override
     {
-        if (client_.state() == Network::ConnectionState::Connected) {
+        if (client_.state() == Network::ConnectionState::Connected && pacer_.shouldSend()) {
             client_.submitPosition(x, y, data);
         }
     }
@@ -129,6 +132,7 @@ public:
 private:
     Config config_;
     Network::NetworkClient client_;
+    SendPacer pacer_;
     std::vector<Player> remote_;
     std::vector<Platform> platforms_;
 };
@@ -143,7 +147,9 @@ private:
 // ---------------------------------------------------------------------------
 class PeerToPeerSession final : public Session {
 public:
-    PeerToPeerSession(Config config, const TimeSource& realTime) : config_(std::move(config))
+    PeerToPeerSession(Config config, const TimeSource& realTime, const TimeSource* gameTime)
+        : config_(std::move(config)),
+          pacer_(gameTime, config_.sendIntervalGameTics, realTime, config_.heartbeatIntervalRealTics)
     {
         Peer::PeerSession::Config mesh;
         mesh.id = config_.peerId;
@@ -215,7 +221,7 @@ public:
 
     void publishLocalPlayer(float x, float y, const std::string& data) override
     {
-        if (!mesh_) {
+        if (!mesh_ || !pacer_.shouldSend()) {
             return;
         }
 
@@ -294,6 +300,7 @@ private:
     };
 
     Config config_;
+    SendPacer pacer_;
     std::unique_ptr<Peer::PeerSession> mesh_;
     std::unique_ptr<Network::WorldStateClient> authority_;
     std::map<PlayerId, Known> known_;
@@ -305,12 +312,13 @@ private:
 
 } // namespace
 
-std::unique_ptr<Session> Session::open(Config config, const TimeSource& realTime)
+std::unique_ptr<Session> Session::open(Config config, const TimeSource& realTime,
+                                       const TimeSource* gameTime)
 {
     if (config.mode == Mode::PeerToPeer) {
-        return std::make_unique<PeerToPeerSession>(std::move(config), realTime);
+        return std::make_unique<PeerToPeerSession>(std::move(config), realTime, gameTime);
     }
-    return std::make_unique<ClientServerSession>(std::move(config), realTime);
+    return std::make_unique<ClientServerSession>(std::move(config), realTime, gameTime);
 }
 
 const char* modeName(Mode mode)

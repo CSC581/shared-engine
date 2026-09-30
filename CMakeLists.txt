@@ -38,6 +38,16 @@ target_include_directories(engine-time PUBLIC include)
 find_package(Threads REQUIRED)
 target_link_libraries(engine-time PUBLIC Threads::Threads)
 
+# SDL-free frame workers (Section 3): persistent threads that split a game's
+# per-frame update, with a barrier so the main thread reads their results
+# race-free. Its own library so a test can link it without SDL.
+add_library(engine-threads STATIC
+    src/FrameWorkers.cpp
+)
+
+target_include_directories(engine-threads PUBLIC include)
+target_link_libraries(engine-threads PUBLIC Threads::Threads)
+
 # SDL-free networking: protocol, session/state store, the host that puts that
 # store on the network (handshake, per-client workers, shutdown), and the
 # non-blocking ZeroMQ client adapter. A headless server can link this without
@@ -71,6 +81,7 @@ target_link_libraries(peer-core PUBLIC cppzmq-static Threads::Threads)
 # interface twice, once on each; a game links this instead of either.
 add_library(multiplayer STATIC
     src/Multiplayer.cpp
+    src/SendPacer.cpp
 )
 
 target_include_directories(multiplayer PUBLIC include)
@@ -99,7 +110,7 @@ add_library(engine STATIC
 )
 
 target_include_directories(engine PUBLIC include)
-target_link_libraries(engine PUBLIC SDL3::SDL3 engine-geometry)
+target_link_libraries(engine PUBLIC SDL3::SDL3 engine-geometry engine-threads)
 
 enable_testing()
 
@@ -112,6 +123,11 @@ add_executable(input-tests tests/InputTests.cpp)
 target_link_libraries(input-tests PRIVATE engine)
 
 add_test(NAME input-tests COMMAND input-tests)
+
+add_executable(frame-workers-tests tests/FrameWorkersTests.cpp)
+target_link_libraries(frame-workers-tests PRIVATE engine-threads)
+
+add_test(NAME frame-workers-tests COMMAND frame-workers-tests)
 
 add_executable(collision-tests tests/CollisionTests.cpp)
 target_link_libraries(collision-tests PRIVATE engine-geometry)
