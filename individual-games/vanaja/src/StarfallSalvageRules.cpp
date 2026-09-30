@@ -1,4 +1,5 @@
 #include "StarfallSalvageRules.hpp"
+#include "Collision.hpp"
 
 #include "StarfallSalvageWorld.hpp"
 
@@ -98,6 +99,48 @@ MissionStatus evaluateMission(const std::vector<Claim>& claims)
     return result;
 }
 
+std::uint8_t cargoAt(const Rect& player, std::uint8_t recoveredMask,
+                     bool canCollect, float deltaTime)
+{
+    if (!canCollect || deltaTime <= 0.0F) return 0;
+
+    std::uint8_t pickedUp = 0;
+    for (std::size_t i = 0; i < cargo.size(); ++i) {
+        const auto bit = static_cast<std::uint8_t>(1U << i);
+        if ((recoveredMask & bit) == 0 && Collision::intersects(player, cargo[i])) {
+            pickedUp |= bit;
+        }
+    }
+    return pickedUp;
+}
+
+std::uint8_t creditedCargoMask(const std::vector<Claim>& claims, std::uint32_t playerId)
+{
+    if (playerId == 0) return 0;
+
+    std::array<std::uint32_t, cargo.size()> owners{};
+    std::set<std::uint32_t> seen;
+    for (const Claim& claim : claims) {
+        if (claim.playerId == 0 || !seen.insert(claim.playerId).second) continue;
+        std::uint8_t mask = 0;
+        std::uint8_t claimed = 0;
+        int control = -1;
+        if (!decodeState(claim.data, mask, control, claimed)) continue;
+        for (std::size_t i = 0; i < cargo.size(); ++i) {
+            const auto bit = static_cast<std::uint8_t>(1U << i);
+            if ((claimed & bit) != 0 && (owners[i] == 0 || claim.playerId < owners[i])) {
+                owners[i] = claim.playerId;
+            }
+        }
+    }
+
+    std::uint8_t credited = 0;
+    for (std::size_t i = 0; i < cargo.size(); ++i) {
+        if (owners[i] == playerId) credited |= static_cast<std::uint8_t>(1U << i);
+    }
+    return credited;
+}
+
 CargoWinner chooseCargoWinner(const std::vector<Claim>& claims)
 {
     std::set<std::uint32_t> seen;
@@ -108,10 +151,9 @@ CargoWinner chooseCargoWinner(const std::vector<Claim>& claims)
         std::uint8_t personalMask = 0;
         int control = -1;
         if (!decodeState(claim.data, mask, control, personalMask)) continue;
+        const std::uint8_t credited = creditedCargoMask(claims, claim.playerId);
         int points = 0;
-        for (std::size_t i = 0; i < cargo.size(); ++i) {
-            points += (personalMask >> i) & 1U;
-        }
+        for (std::size_t i = 0; i < cargo.size(); ++i) points += (credited >> i) & 1U;
         if (winner.playerId == 0 || points > winner.crates ||
             (points == winner.crates && claim.playerId < winner.playerId)) {
             winner = {claim.playerId, points};
@@ -125,7 +167,8 @@ std::int64_t frameIntervalNs(double scale)
     if (!std::isfinite(scale) || (scale != 0.5 && scale != 1.0 && scale != 2.0)) {
         scale = 1.0;
     }
-    return static_cast<std::int64_t>(1'000'000'000.0 / (25.0 * scale));
+    return static_cast<std::int64_t>(static_cast<double>(kNsPerSec) /
+                                     (static_cast<double>(normalLoopHz) * scale));
 }
 
 } // namespace StarfallSalvage

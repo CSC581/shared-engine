@@ -5,6 +5,7 @@
 #include "Input.hpp"
 #include "Physics.hpp"
 #include "StarfallSalvageWorld.hpp"
+#include "TimeUnits.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -135,34 +137,23 @@ int recoveredCargo(std::uint8_t mask)
 } // namespace
 
 StarfallSalvageGame::StarfallSalvageGame(Engine& engine, Multiplayer::Config config)
-    : session_(Multiplayer::Session::open(config, engine.realTime())), config_(std::move(config))
+    : networkTime_(engine.realTime(), kNsPerUs),
+      session_(Multiplayer::Session::open(config, engine.realTime(), &networkTime_)),
+      config_(std::move(config)),
+      workers_({
+          [this](float dt) {
+              simulatePlayer(frameJob_, dt);
+              ++physicsFrames_;
+          },
+          [this](float dt) {
+              updateSignals(frameJob_, dt);
+              ++signalFrames_;
+          },
+      })
 {
+    networkTime_.setScale(engine.gameTime().scale());
     Physics::setGravity(StarfallSalvage::gravity);
     engine.setClearColor({7, 14, 31});
-    physicsThread_ = std::thread([this] { physicsLoop(); });
-    try {
-        signalThread_ = std::thread([this] { signalLoop(); });
-    } catch (...) {
-        {
-            const std::lock_guard<std::mutex> lock(frameMutex_);
-            stopping_ = true;
-        }
-        frameCv_.notify_all();
-        physicsThread_.join();
-        throw;
-    }
-}
-
-StarfallSalvageGame::~StarfallSalvageGame()
-{
-    {
-        const std::lock_guard<std::mutex> lock(frameMutex_);
-        stopping_ = true;
-    }
-    frameCv_.notify_all();
-    if (physicsThread_.joinable()) physicsThread_.join();
-    if (signalThread_.joinable()) signalThread_.join();
-    session_.reset();
 }
 
 void StarfallSalvageGame::handleInput(Engine& engine)
@@ -173,6 +164,9 @@ void StarfallSalvageGame::handleInput(Engine& engine)
     if (Input::isKeyJustPressed(SDL_SCANCODE_1)) engine.gameTime().setScale(0.5);
     if (Input::isKeyJustPressed(SDL_SCANCODE_2)) engine.gameTime().setScale(1.0);
     if (Input::isKeyJustPressed(SDL_SCANCODE_3)) engine.gameTime().setScale(2.0);
+    if (networkTime_.scale() != engine.gameTime().scale()) {
+        networkTime_.setScale(engine.gameTime().scale());
+    }
     if (lives_ == 0 && Input::isKeyJustPressed(SDL_SCANCODE_R)) {
         lives_ = 3;
         respawn();
@@ -242,15 +236,11 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
         spawned_ = true;
     }
 
-    {
-        std::unique_lock<std::mutex> lock(frameMutex_);
-        frameJob_ = FrameJob{time, input_, canMove, gateOpen_, session_->localPlayerId(),
-                             platforms_, remote_};
-        workersDone_ = 0;
-        ++generation_;
-        frameCv_.notify_all();
-        frameCv_.wait(lock, [this] { return stopping_ || workersDone_ == 2; });
-    }
+    // Workers read this fixed snapshot and write separate results. The main
+    // thread resumes only after both tasks have completed the frame.
+    frameJob_ = FrameJob{input_, canMove, gateOpen_, paused_, session_->localPlayerId(),
+                         platforms_, remote_};
+    workers_.runFrame(static_cast<float>(time.dtSeconds));
 
     if (spawned_) {
         const float target = StarfallSalvage::cameraTargetX(player_.getX());
@@ -267,16 +257,11 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     const Rect localBounds = player_.getBounds();
     const std::uint8_t previousCargoMask = cargoMask_;
     cargoMask_ |= remoteMission_.cargoMask;
-    if (canMove && time.dtSeconds > 0.0) {
-        for (std::size_t i = 0; i < StarfallSalvage::cargo.size(); ++i) {
-            const auto bit = static_cast<std::uint8_t>(1U << i);
-            if ((cargoMask_ & bit) == 0 &&
-                Collision::intersects(localBounds, StarfallSalvage::cargo[i])) {
-                cargoMask_ |= bit;
-                personalCargoMask_ |= bit;
-            }
-        }
-    }
+    const auto pickedUp = StarfallSalvage::cargoAt(localBounds, cargoMask_,
+                                                   canMove && lives_ > 0,
+                                                   static_cast<float>(time.dtSeconds));
+    cargoMask_ |= pickedUp;
+    personalCargoMask_ |= pickedUp;
     if (cargoMask_ != previousCargoMask) cargoFlashSeconds_ = 0.75F;
     cargoFlashSeconds_ = std::max(0.0F, cargoFlashSeconds_ -
                                         static_cast<float>(time.dtSeconds));
@@ -302,18 +287,19 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     const std::string localData = StarfallSalvage::encodeState(cargoMask_, control,
                                                             personalCargoMask_);
 
+    std::vector<StarfallSalvage::Claim> claims;
+    claims.reserve(remote_.size() + 1);
+    for (const auto& player : remote_) {
+        claims.push_back({player.id, player.x, player.y, player.data});
+    }
+    if (ready && spawned_) {
+        claims.push_back({session_->localPlayerId(), localBounds.x, localBounds.y, localData});
+    }
+    creditedCargoMask_ = StarfallSalvage::creditedCargoMask(claims, session_->localPlayerId());
+
     cargoWinner_ = {};
     winnerName_.clear();
     if (missionComplete_) {
-        std::vector<StarfallSalvage::Claim> claims;
-        claims.reserve(remote_.size() + 1);
-        for (const auto& player : remote_) {
-            claims.push_back({player.id, player.x, player.y, player.data});
-        }
-        if (ready && spawned_) {
-            claims.push_back({session_->localPlayerId(), localBounds.x, localBounds.y,
-                              localData});
-        }
         cargoWinner_ = StarfallSalvage::chooseCargoWinner(claims);
         if (cargoWinner_.playerId == session_->localPlayerId()) {
             winnerName_ = config_.playerName;
@@ -347,61 +333,28 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     }
 }
 
-void StarfallSalvageGame::physicsLoop()
+void StarfallSalvageGame::updateSignals(const FrameJob& job, float deltaTime)
 {
-    std::uint64_t seen = 0;
-    while (true) {
-        FrameJob job;
-        {
-            std::unique_lock<std::mutex> lock(frameMutex_);
-            frameCv_.wait(lock, [this, seen] { return stopping_ || generation_ != seen; });
-            if (stopping_) return;
-            seen = generation_;
-            job = frameJob_;
+    std::vector<StarfallSalvage::Claim> claims;
+    claims.reserve(job.remote.size());
+    for (const auto& player : job.remote) {
+        if (player.id != job.localId) {
+            claims.push_back({player.id, player.x, player.y, player.data});
         }
-        simulatePlayer(job);
-        ++physicsFrames_;
-        workerDone();
     }
+    remoteMission_ = StarfallSalvage::evaluateMission(claims);
+    pulse_ = std::fmod(pulse_ + deltaTime * 0.55F, 1.0F);
 }
 
-void StarfallSalvageGame::signalLoop()
+void StarfallSalvageGame::simulatePlayer(const FrameJob& job, float deltaTime)
 {
-    std::uint64_t seen = 0;
-    while (true) {
-        FrameJob job;
-        {
-            std::unique_lock<std::mutex> lock(frameMutex_);
-            frameCv_.wait(lock, [this, seen] { return stopping_ || generation_ != seen; });
-            if (stopping_) return;
-            seen = generation_;
-            job = frameJob_;
-        }
-
-        std::vector<StarfallSalvage::Claim> claims;
-        claims.reserve(job.remote.size());
-        for (const auto& player : job.remote) {
-            if (player.id != job.localId) {
-                claims.push_back({player.id, player.x, player.y, player.data});
-            }
-        }
-        remoteMission_ = StarfallSalvage::evaluateMission(claims);
-        pulse_ = std::fmod(pulse_ + static_cast<float>(job.time.dtSeconds) * 0.55F, 1.0F);
-        ++signalFrames_;
-        workerDone();
+    if (job.paused && supportId_ != 0) {
+        // The server's shuttle keeps moving, but this player's paused position does not.
+        // Detach so resuming cannot apply all of the missed shuttle travel at once.
+        supportId_ = 0;
+        grounded_ = false;
     }
-}
-
-void StarfallSalvageGame::workerDone()
-{
-    const std::lock_guard<std::mutex> lock(frameMutex_);
-    ++workersDone_;
-    if (workersDone_ == 2) frameCv_.notify_all();
-}
-
-void StarfallSalvageGame::simulatePlayer(const FrameJob& job)
-{
-    if (supportId_ != 0 && job.canMove && job.time.dtSeconds > 0.0) {
+    if (!job.paused && supportId_ != 0 && job.canMove) {
         const auto oldPlatform = std::find_if(lastPhysicsPlatforms_.begin(), lastPhysicsPlatforms_.end(),
             [this](const auto& platform) { return platform.id == supportId_; });
         const auto newPlatform = std::find_if(job.platforms.begin(), job.platforms.end(),
@@ -422,11 +375,11 @@ void StarfallSalvageGame::simulatePlayer(const FrameJob& job)
     }
     lastPhysicsPlatforms_ = job.platforms;
 
-    if (job.time.dtSeconds > 0.0) {
+    if (deltaTime > 0.0F) {
         invulnerableSeconds_ = std::max(0.0F, invulnerableSeconds_ -
-                                               static_cast<float>(job.time.dtSeconds));
+                                               deltaTime);
     }
-    if (!job.canMove || job.time.dtSeconds <= 0.0) return;
+    if (job.paused || !job.canMove || deltaTime <= 0.0F) return;
 
     if (job.input.jump && jumpsUsed_ < StarfallSalvage::maximumJumps) {
         player_.setVelocityY(-StarfallSalvage::jumpSpeed);
@@ -434,8 +387,8 @@ void StarfallSalvageGame::simulatePlayer(const FrameJob& job)
         grounded_ = false;
         supportId_ = 0;
     }
-    const int steps = std::max(1, static_cast<int>(std::ceil(job.time.dtSeconds / 0.01)));
-    const float step = static_cast<float>(job.time.dtSeconds / steps);
+    const int steps = std::max(1, static_cast<int>(std::ceil(deltaTime / 0.01F)));
+    const float step = deltaTime / static_cast<float>(steps);
     for (int i = 0; i < steps; ++i) {
         const Rect previous = player_.getBounds();
         player_.setVelocityX(job.input.axis * StarfallSalvage::playerSpeed);
@@ -713,7 +666,7 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
                         "A/D MOVE   SPACE DOUBLE-JUMP   E RELAY   P PAUSE   1/2/3 SPEED   F1 SCALE   F2 INFO");
     SDL_SetRenderDrawColor(renderer, 255, 203, 127, 255);
     SDL_RenderDebugTextFormat(renderer, 824, 516, "YOU %d CARGO",
-                              recoveredCargo(personalCargoMask_));
+                              recoveredCargo(creditedCargoMask_));
 
     if (lives_ == 0 && session_->state() == Multiplayer::State::Ready) {
         rect(renderer, 285, 204, 390, 78, {83, 27, 45});
