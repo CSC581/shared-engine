@@ -30,6 +30,11 @@ constexpr float bossHeight = 132.0F;
 constexpr float bossWalkSpeed = 150.0F;
 constexpr float bossJumpSpeed = 700.0F;
 constexpr float bossGravity = 1500.0F;
+// How close the boss walks to either edge of the screen before turning. The
+// client needs these too, to predict the boss between server snapshots.
+constexpr float bossWallMargin = 20.0F;
+constexpr float bossMinX = bossWallMargin;
+constexpr float bossMaxX = windowWidth - bossWallMargin - bossWidth;
 constexpr float shadowBallSize = 30.0F;
 constexpr float shadowBallSpeed = 340.0F;
 // Damage it takes to faint. The server owns this HP: a fainted boss vanishes
