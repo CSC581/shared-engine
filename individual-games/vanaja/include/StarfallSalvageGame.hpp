@@ -38,6 +38,7 @@ private:
         InputFrame input{};
         bool canMove = false;
         bool gateOpen = false;
+        bool paused = false;
         Multiplayer::PlayerId localId = 0;
         std::vector<Multiplayer::Platform> platforms;
         std::vector<Multiplayer::Player> remote;

@@ -238,7 +238,7 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
 
     // Workers read this fixed snapshot and write separate results. The main
     // thread resumes only after both tasks have completed the frame.
-    frameJob_ = FrameJob{input_, canMove, gateOpen_, session_->localPlayerId(),
+    frameJob_ = FrameJob{input_, canMove, gateOpen_, paused_, session_->localPlayerId(),
                          platforms_, remote_};
     workers_.runFrame(static_cast<float>(time.dtSeconds));
 
@@ -348,7 +348,13 @@ void StarfallSalvageGame::updateSignals(const FrameJob& job, float deltaTime)
 
 void StarfallSalvageGame::simulatePlayer(const FrameJob& job, float deltaTime)
 {
-    if (supportId_ != 0 && job.canMove) {
+    if (job.paused && supportId_ != 0) {
+        // The server's shuttle keeps moving, but this player's paused position does not.
+        // Detach so resuming cannot apply all of the missed shuttle travel at once.
+        supportId_ = 0;
+        grounded_ = false;
+    }
+    if (!job.paused && supportId_ != 0 && job.canMove) {
         const auto oldPlatform = std::find_if(lastPhysicsPlatforms_.begin(), lastPhysicsPlatforms_.end(),
             [this](const auto& platform) { return platform.id == supportId_; });
         const auto newPlatform = std::find_if(job.platforms.begin(), job.platforms.end(),
@@ -373,7 +379,7 @@ void StarfallSalvageGame::simulatePlayer(const FrameJob& job, float deltaTime)
         invulnerableSeconds_ = std::max(0.0F, invulnerableSeconds_ -
                                                deltaTime);
     }
-    if (!job.canMove || deltaTime <= 0.0F) return;
+    if (job.paused || !job.canMove || deltaTime <= 0.0F) return;
 
     if (job.input.jump && jumpsUsed_ < StarfallSalvage::maximumJumps) {
         player_.setVelocityY(-StarfallSalvage::jumpSpeed);

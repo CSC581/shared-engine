@@ -141,8 +141,8 @@ Pausing stops local movement and game-timed effects, but polling and recovery
 continue. Network publishing keeps its current speed during pause, so the
 server can send fresh player and platform positions instead of leaving them
 frozen between sparse heartbeats. This sends more messages while paused than
-the engine's minimum heartbeat. If your astronaut is on a shuttle, the shuttle
-still carries them while paused.
+the engine's minimum heartbeat. Your astronaut stays still even on a moving
+shuttle. If it moves away, the astronaut may fall when you resume.
 
 To see accepted player messages in client-server mode, start the server with:
 
