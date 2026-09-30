@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Entity.hpp"
+#include "TimeUnits.hpp"
 
 #include <array>
 #include <cstdint>
@@ -8,6 +9,9 @@
 #include <vector>
 
 namespace StarfallSalvage {
+
+constexpr std::int64_t normalLoopHz = 25;
+constexpr std::int64_t positionSendIntervalGameTics = kGameTicsPerSecond / normalLoopHz;
 
 struct Claim {
     std::uint32_t playerId = 0;

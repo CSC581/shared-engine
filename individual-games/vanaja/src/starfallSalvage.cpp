@@ -1,6 +1,7 @@
 #include "Engine.hpp"
 #include "Multiplayer.hpp"
 #include "StarfallSalvageGame.hpp"
+#include "StarfallSalvageRules.hpp"
 #include "StarfallSalvageWorld.hpp"
 
 #include <algorithm>
@@ -133,6 +134,7 @@ int main(int argc, char* argv[])
     }
 
     try {
+        config.sendIntervalGameTics = StarfallSalvage::positionSendIntervalGameTics;
         const std::string title = "Starfall Salvage - " + config.playerName;
         Engine engine(title.c_str(), StarfallSalvage::width, StarfallSalvage::height);
         engine.gameTime().setScale(initialScale);

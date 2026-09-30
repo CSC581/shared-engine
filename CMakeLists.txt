@@ -324,5 +324,5 @@ target_include_directories(starfall-salvage-server PRIVATE
 add_executable(starfall-salvage-tests
     individual-games/vanaja/tests/StarfallSalvageTests.cpp
 )
-target_link_libraries(starfall-salvage-tests PRIVATE starfall-salvage-rules)
+target_link_libraries(starfall-salvage-tests PRIVATE starfall-salvage-rules multiplayer)
 add_test(NAME starfall-salvage-tests COMMAND starfall-salvage-tests)

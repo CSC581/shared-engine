@@ -125,7 +125,8 @@ std::int64_t frameIntervalNs(double scale)
     if (!std::isfinite(scale) || (scale != 0.5 && scale != 1.0 && scale != 2.0)) {
         scale = 1.0;
     }
-    return static_cast<std::int64_t>(1'000'000'000.0 / (25.0 * scale));
+    return static_cast<std::int64_t>(static_cast<double>(kNsPerSec) /
+                                     (static_cast<double>(normalLoopHz) * scale));
 }
 
 } // namespace StarfallSalvage

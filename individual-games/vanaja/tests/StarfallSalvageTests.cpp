@@ -1,8 +1,12 @@
 #include "StarfallSalvageRules.hpp"
 #include "StarfallSalvageWorld.hpp"
+#include "DeltaTimer.hpp"
+#include "SendPacer.hpp"
+#include "Timeline.hpp"
 
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 #define EXPECT(condition) do { \
@@ -13,6 +17,78 @@
 } while (false)
 
 namespace {
+
+class TestClock final : public TimeSource {
+public:
+    std::int64_t now() const override { return elapsed; }
+    std::int64_t elapsed = 0;
+};
+
+int checkTimeAndPacing()
+{
+    constexpr std::int64_t heartbeat = 250 * kNsPerMs;
+    for (const double scale : {0.5, 1.0, 2.0}) {
+        TestClock real;
+        Timeline gameTime(real, kNsPerUs);
+        gameTime.setScale(scale);
+        DeltaTimer timer(gameTime, 50'000);
+        Multiplayer::SendPacer pacer(&gameTime,
+            StarfallSalvage::positionSendIntervalGameTics, real, heartbeat);
+        const auto interval = StarfallSalvage::frameIntervalNs(scale);
+        int sends = 0;
+        std::int64_t totalGameTics = 0;
+        EXPECT(pacer.shouldSend()); // initial publication is immediate
+        EXPECT(!pacer.shouldSend());
+
+        for (std::int64_t elapsed = 0; elapsed < 2 * kNsPerSec; elapsed += interval) {
+            real.elapsed += interval;
+            const auto delta = timer.tick();
+            // Changing both loop frequency and time scale keeps each step at
+            // 40 ms of game time, below the engine's 50 ms clamp.
+            EXPECT(delta == StarfallSalvage::positionSendIntervalGameTics);
+            EXPECT(!timer.lastWasClamped());
+            totalGameTics += delta;
+            if (pacer.shouldSend()) ++sends;
+            EXPECT(!pacer.shouldSend());
+        }
+        EXPECT(sends == static_cast<int>(2 * StarfallSalvage::normalLoopHz * scale));
+        EXPECT(totalGameTics == static_cast<std::int64_t>(2 * kGameTicsPerSecond * scale));
+
+        gameTime.pause();
+        const auto pausedAt = gameTime.now();
+        auto lastHeartbeat = real.now();
+        int heartbeats = 0;
+        for (std::int64_t elapsed = 0; elapsed < 2 * kNsPerSec; elapsed += interval) {
+            real.elapsed += interval;
+            EXPECT(timer.tick() == 0);
+            EXPECT(gameTime.now() == pausedAt);
+            if (pacer.shouldSend()) {
+                const auto gap = real.now() - lastHeartbeat;
+                EXPECT(gap >= heartbeat && gap <= heartbeat + interval);
+                lastHeartbeat = real.now();
+                ++heartbeats;
+            }
+            EXPECT(!pacer.shouldSend());
+        }
+        EXPECT(heartbeats >= 6 && heartbeats <= 8);
+
+        // A speed change while paused must not advance game time. Resuming
+        // and a later long stall must not trigger catch-up message bursts.
+        gameTime.setScale(scale == 2.0 ? 0.5 : 2.0);
+        EXPECT(gameTime.now() == pausedAt);
+        gameTime.unpause();
+        real.elapsed += StarfallSalvage::frameIntervalNs(gameTime.scale());
+        EXPECT(timer.tick() == StarfallSalvage::positionSendIntervalGameTics);
+        EXPECT(pacer.shouldSend());
+        EXPECT(!pacer.shouldSend());
+        real.elapsed += 5 * kNsPerSec;
+        EXPECT(timer.tick() == 50'000);
+        EXPECT(timer.lastWasClamped());
+        EXPECT(pacer.shouldSend());
+        EXPECT(!pacer.shouldSend());
+    }
+    return 0;
+}
 
 StarfallSalvage::Claim onPad(std::uint32_t id, int pad, std::uint8_t cargoMask)
 {
@@ -130,6 +206,10 @@ int main()
     EXPECT(StarfallSalvage::frameIntervalNs(1.0) == 40'000'000);
     EXPECT(StarfallSalvage::frameIntervalNs(2.0) == 20'000'000);
     EXPECT(StarfallSalvage::frameIntervalNs(0.0) == 40'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(-1.0) == 40'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(std::numeric_limits<double>::infinity()) == 40'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(std::numeric_limits<double>::quiet_NaN()) == 40'000'000);
+    EXPECT(checkTimeAndPacing() == 0);
 
     const auto config = StarfallSalvage::serverConfig();
     EXPECT(config.platforms.size() == 5);
@@ -153,5 +233,5 @@ int main()
     EXPECT(StarfallSalvage::cameraTargetX(1550.0F) == 640.0F);
     EXPECT(StarfallSalvage::cameraTargetX(2000.0F) == 640.0F);
 
-    std::cout << "Starfall Salvage cooperative rules passed\n";
+    std::cout << "Starfall Salvage cooperative rules and time/pacing checks passed\n";
 }
