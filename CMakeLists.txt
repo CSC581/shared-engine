@@ -283,9 +283,8 @@ add_custom_command(TARGET pokemon-hunt POST_BUILD
     COMMENT "Copying Pokemon Hunt sprites next to pokemon-hunt"
 )
 
-add_executable(pokemon-hunt-server individual-games/skim253/pokemon-hunt/PokemonHuntServer.cpp
-    individual-games/skim253/pokemon-hunt/PokemonHuntTransport.cpp)
-target_link_libraries(pokemon-hunt-server PRIVATE network-core engine-geometry Threads::Threads)
+add_executable(pokemon-hunt-server individual-games/skim253/pokemon-hunt/PokemonHuntServer.cpp)
+target_link_libraries(pokemon-hunt-server PRIVATE multiplayer engine-geometry Threads::Threads)
 
 # Runtime art next to the binary so SDL_GetBasePath() + "media/apex-ascent/"
 # works regardless of the caller's working directory.
