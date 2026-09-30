@@ -5,6 +5,7 @@
 
 #include "Engine.hpp"
 #include "Entity.hpp"
+#include "FrameWorkers.hpp"
 #include "Game.hpp"
 #include "Multiplayer.hpp"
 #include "animation/PlayerAnimation.hpp"
@@ -62,6 +63,7 @@ private:
     void updateCamera(float deltaTime);
     void updateMovingPlatforms(float deltaTime);
     void applyServerMovingPlatforms();
+    void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
     bool isMovingPlatform(const Entity& platform) const;
 
@@ -105,4 +107,15 @@ private:
     // Online timeline proof (APX-M4); unused offline.
     bool gameTimePaused_ = false;
     double gameTimeScale_ = 1.0;
+
+    // How far the platform the player stands on moved this frame. The platform
+    // worker records it; the main thread applies it after both workers finish,
+    // so the two threads never write the player at the same time.
+    float carryDx_ = 0.0F;
+    float carryDy_ = 0.0F;
+
+    // Section 3: platforms and player physics each run on their own thread
+    // every frame. Declared last so its threads are joined before any member
+    // they use is destroyed.
+    FrameWorkers workers_;
 };
