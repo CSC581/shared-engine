@@ -1,26 +1,16 @@
-// Headless server for Pokemon Hunt. It owns the boss (Mewtwo) and its shadow
-// balls; the Pokemon (players) belong to their clients.
+// Headless server for Pokemon Hunt. It runs the engine's NetworkServerHost as
+// is, plus Mewtwo as a bot player that joins both the client-server session
+// and the peer-to-peer mesh. The bot publishes the boss in its player data and
+// reads each Pokemon's damage from theirs.
 //
-//   ./build/pokemon-hunt-server                     # tcp://*:5600
-//   ./build/pokemon-hunt-server --advertise 192.168.1.10
-//
-// Same design as the engine's network-server (sandbox/NetworkServerMain.cpp):
-// a JOIN handshake, one blocking REP worker thread per client (no
-// Router/Dealer), and a thread moving world objects on real time. Kept as a
-// game-local copy so the shared sandbox stays untouched.
-//
-// The engine's NetworkServer only knows ping-pong platforms, and a boss has to
-// walk, jump and attack. So this server runs its own Boss on real time and
-// puts the boss and its shadow balls into every snapshot in place of the
-// platforms. Clients see them through Multiplayer::Session::platforms() in
-// both client-server and peer-to-peer mode. The boss and its shadow balls are
-// engine Entities, moved by the engine's Physics (SDL-free engine-geometry).
+//   ./build/pokemon-hunt-server            # tcp://*:5600, boss peer on 7290
+//   ./build/pokemon-hunt-server --rates    # log each player's send rate
 #include "Collision.hpp"
+#include "Endpoint.hpp"
 #include "Entity.hpp"
-#include "NetworkServer.hpp"
+#include "Multiplayer.hpp"
+#include "NetworkServerHost.hpp"
 #include "Physics.hpp"
-#include "NetworkProtocol.hpp"
-#include "PokemonHuntTransport.hpp"
 #include "PokemonHuntWorld.hpp"
 #include "TimeSource.hpp"
 
@@ -29,7 +19,6 @@
 #include <chrono>
 #include <csignal>
 #include <exception>
-#include <future>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -67,17 +56,27 @@ namespace
     constexpr auto worldTickInterval = std::chrono::milliseconds(16);
     // Longest step the world takes at once, so a stall does not teleport the boss.
     constexpr float maxWorldStep = 0.05F;
-    // Blocking sockets wake this often so shutdown can reach them.
-    constexpr auto socketReceiveTimeout = std::chrono::milliseconds(500);
+    constexpr auto trafficLogInterval = std::chrono::milliseconds(1000);
 
     constexpr const char *defaultAdvertiseHost = "127.0.0.1";
-    constexpr const char *workerBindEndpoint = "tcp://0.0.0.0:*";
+    // A restarted server greets peer 1, whose roster reintroduces Mewtwo to
+    // the rest of a mesh that is already running.
+    constexpr const char *defaultFirstPeerEndpoint = "tcp://127.0.0.1:7300";
 
     std::atomic<bool> g_running{true};
 
     void onSignal(int)
     {
         g_running.store(false);
+    }
+
+    // The host logs from its own threads, and the bot from the main one.
+    std::mutex g_logMutex;
+
+    void say(const std::string &line)
+    {
+        const std::lock_guard<std::mutex> lock(g_logMutex);
+        std::cout << line << std::endl;
     }
 
     // ---------------------------------------------------------------------------
@@ -87,7 +86,7 @@ namespace
     // seconds either jumps or stops to charge up and fire a shadow ball. It owns
     // its HP: when that runs out it vanishes, and drops back in at a random spot
     // bossRespawnSeconds later.
-    // Thread-safe: the world thread advances it while client workers read it.
+    // Used only by the bot's loop, on the main thread.
     class Boss
     {
     public:
@@ -96,8 +95,6 @@ namespace
 
         void update(float dt)
         {
-            const std::lock_guard<std::mutex> lock(mutex_);
-
             if (fainted_)
             {
                 updateFainted(dt);
@@ -124,14 +121,21 @@ namespace
         }
 
         // `damage` is the running total one Pokemon reports with every position;
-        // only what is new since its last report comes off the HP. Damage that
-        // lands while the boss is fainted is spent on nothing.
-        void reportDamage(Network::PlayerId player, long long damage)
+        // only what is new since its last report comes off the HP. `player` must
+        // be unique across every session the bot is in. Damage that lands while
+        // the boss is fainted is spent on nothing.
+        void reportDamage(std::uint64_t player, long long damage)
         {
-            const std::lock_guard<std::mutex> lock(mutex_);
             long long &last = reported_[player];
+            // A total that went down is a new Pokemon that took over a departed
+            // one's id; it starts counting from here.
+            if (damage < last)
+            {
+                last = damage;
+                return;
+            }
             const long long fresh = damage - last;
-            if (fresh <= 0)
+            if (fresh == 0)
             {
                 return;
             }
@@ -147,10 +151,9 @@ namespace
             }
         }
 
-        std::vector<Network::PlatformState> objects() const
+        std::vector<Multiplayer::Platform> objects() const
         {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            std::vector<Network::PlatformState> result;
+            std::vector<Multiplayer::Platform> result;
             result.push_back(statusObject());
             if (fainted_)
             {
@@ -164,6 +167,9 @@ namespace
             }
             return result;
         }
+
+        float x() const { return body_.getX(); }
+        float y() const { return body_.getY(); }
 
     private:
         enum class State
@@ -179,7 +185,7 @@ namespace
             Entity body;
         };
 
-        static Network::PlatformState toPlatform(std::uint32_t id, const Entity &entity)
+        static Multiplayer::Platform toPlatform(std::uint32_t id, const Entity &entity)
         {
             const Rect bounds = entity.getBounds();
             return {id, bounds.x, bounds.y, bounds.width, bounds.height};
@@ -187,7 +193,7 @@ namespace
 
         float direction() const { return facingLeft_ ? -1.0F : 1.0F; }
 
-        // --- update() steps; the caller holds mutex_. ----------------------------
+        // --- update() steps. -----------------------------------------------------
         void updateFainted(float dt)
         {
             respawnIn_ -= dt;
@@ -309,7 +315,8 @@ namespace
             respawnIn_ = bossRespawnSeconds;
             ++knockouts_;
             balls_.clear();
-            std::cout << "Mewtwo fainted (KO " << knockouts_ << "); back in " << bossRespawnSeconds << "s\n";
+            say("Mewtwo fainted (KO " + std::to_string(knockouts_) + "); back in " +
+                std::to_string(static_cast<int>(bossRespawnSeconds)) + "s");
         }
 
         // Back at full health, dropping in from above the screen at a random x.
@@ -322,12 +329,12 @@ namespace
             facingLeft_ = std::uniform_int_distribution<int>(0, 1)(random_) == 0;
             state_ = State::Jumping;
             timer_ = nextActionDelay();
-            std::cout << "Mewtwo is back at x=" << static_cast<int>(body_.getX()) << '\n';
+            say("Mewtwo is back at x=" + std::to_string(static_cast<int>(body_.getX())));
         }
 
-        // --- objects() pieces; the caller holds mutex_. --------------------------
+        // --- objects() pieces. ---------------------------------------------------
         // See bossStatusId for how the fields are packed.
-        Network::PlatformState statusObject() const
+        Multiplayer::Platform statusObject() const
         {
             const float respawnIn = fainted_ ? std::max(respawnIn_, 0.0F) : 0.0F;
             return {bossStatusId, static_cast<float>(hp_), respawnIn, static_cast<float>(knockouts_ + 1), 1.0F};
@@ -347,7 +354,6 @@ namespace
             return result;
         }
 
-        mutable std::mutex mutex_;
         std::mt19937 random_{std::random_device{}()};
         State state_ = State::Walking;
         Entity body_{(windowWidth - bossWidth) * 0.5F, groundY - bossHeight, bossWidth, bossHeight};
@@ -359,191 +365,105 @@ namespace
         bool fainted_ = false;
         float respawnIn_ = 0.0F;
         long long knockouts_ = 0;
-        std::unordered_map<Network::PlayerId, long long> reported_;
+        std::unordered_map<std::uint64_t, long long> reported_;
     };
 
     // ---------------------------------------------------------------------------
-    // Requests
+    // The bot
     // ---------------------------------------------------------------------------
-    // Lets the engine server handle the request, then puts this game in: the
-    // damage the Pokemon reported comes off the boss, and the reply carries the
-    // boss in place of the engine's (empty) platform list. Damage is only read
-    // from a position the engine server accepted, so a request with somebody
-    // else's player id or a stale sequence cannot hurt the boss.
-    Network::Message handleWithBoss(Network::NetworkServer &server, Boss &boss,
-                                    const Network::Message &requestMessage)
+    // Mewtwo as a player: one engine session per architecture, each carrying
+    // the same boss. Every tick it moves the boss on real time, reads the
+    // damage the Pokemon report in their own data, and publishes the boss world
+    // as its data.
+    class BossBot
     {
-        const Network::Message handled = server.handle(requestMessage);
-        Network::Reply reply;
-        std::string error;
-        if (!Network::decodeReply(handled, reply, error) || reply.type != Network::ReplyType::Snapshot)
+    public:
+        explicit BossBot(const TimeSource &clock) : clock_(clock) {}
+
+        // A link that fails to open (a taken port, say) is reported and left
+        // out; the other mode still works.
+        void join(const std::string &label, const Multiplayer::Config &config)
         {
-            return handled;
-        }
-
-        Network::Request request;
-        long long damage = 0;
-        if (Network::decodeRequest(requestMessage, request, error) &&
-            request.type == Network::RequestType::Position && parseDamageDealt(request.position.data, damage))
-        {
-            boss.reportDamage(request.playerId, damage);
-        }
-
-        reply.snapshot.platforms = boss.objects();
-        return Network::encodeSnapshot(reply.snapshot);
-    }
-
-    // Lets the engine server handle a JOIN. If it welcomes the player, the reply
-    // becomes a WELCOME pointing at `sessionEndpoint` with the boss in its
-    // snapshot, and true comes back; otherwise `reply` is the server's own answer.
-    bool welcomeWithBoss(Network::NetworkServer &server, Boss &boss, const Network::Message &requestMessage,
-                         const std::string &sessionEndpoint, Network::Message &reply,
-                         Network::PlayerId &playerId)
-    {
-        const Network::Message handled = server.handle(requestMessage);
-        Network::Reply welcome;
-        std::string error;
-        if (!Network::decodeReply(handled, welcome, error) || welcome.type != Network::ReplyType::Welcome)
-        {
-            reply = handled;
-            return false;
-        }
-        welcome.snapshot.platforms = boss.objects();
-        playerId = welcome.playerId;
-        reply = Network::encodeWelcome(welcome.playerId, welcome.snapshot, sessionEndpoint);
-        return true;
-    }
-
-    // ---------------------------------------------------------------------------
-    // Client workers
-    // ---------------------------------------------------------------------------
-    struct ClientWorker
-    {
-        std::shared_ptr<std::atomic<bool>> alive;
-        std::thread thread;
-    };
-
-    // Every worker thread, and the session endpoint of every live session.
-    struct ClientRegistry
-    {
-        std::mutex workersMutex;
-        std::vector<ClientWorker> workers;
-        std::mutex endpointsMutex;
-        std::unordered_map<Network::SessionToken, std::string> endpointsByToken;
-
-        void addWorker(ClientWorker worker)
-        {
-            const std::lock_guard<std::mutex> lock(workersMutex);
-            workers.push_back(std::move(worker));
-        }
-
-        // Empty when this token has no live session.
-        std::string endpointFor(const Network::SessionToken &token)
-        {
-            const std::lock_guard<std::mutex> lock(endpointsMutex);
-            const auto existing = endpointsByToken.find(token);
-            return existing != endpointsByToken.end() ? existing->second : std::string();
-        }
-
-        void setEndpoint(const Network::SessionToken &token, const std::string &endpoint)
-        {
-            const std::lock_guard<std::mutex> lock(endpointsMutex);
-            endpointsByToken[token] = endpoint;
-        }
-
-        void forgetEndpoint(const Network::SessionToken &token)
-        {
-            const std::lock_guard<std::mutex> lock(endpointsMutex);
-            endpointsByToken.erase(token);
-        }
-
-        void stopAll()
-        {
-            const std::lock_guard<std::mutex> lock(workersMutex);
-            for (ClientWorker &worker : workers)
+            auto session = Multiplayer::Session::open(config, clock_);
+            if (session->state() == Multiplayer::State::Failed)
             {
-                if (worker.alive)
+                say("Mewtwo could not join " + label + ": " + session->status());
+                return;
+            }
+            links_.push_back({label, std::move(session), false});
+        }
+
+        void run()
+        {
+            auto last = std::chrono::steady_clock::now();
+            while (g_running.load())
+            {
+                std::this_thread::sleep_for(worldTickInterval);
+                const auto now = std::chrono::steady_clock::now();
+                const float dt = std::min(std::chrono::duration<float>(now - last).count(), maxWorldStep);
+                last = now;
+
+                boss_.update(dt);
+                for (std::size_t i = 0; i < links_.size(); ++i)
                 {
-                    worker.alive->store(false);
+                    links_[i].session->update();
+                    reportReadiness(links_[i]);
+                    readDamage(i, *links_[i].session);
+                }
+
+                const std::string data = encodeBossWorld(boss_.objects());
+                for (Link &link : links_)
+                {
+                    link.session->publishLocalPlayer(boss_.x(), boss_.y(), data);
                 }
             }
         }
 
-        void joinAll()
+    private:
+        struct Link
         {
-            const std::lock_guard<std::mutex> lock(workersMutex);
-            for (ClientWorker &worker : workers)
+            std::string label;
+            std::unique_ptr<Multiplayer::Session> session;
+            bool announced;
+        };
+
+        static void reportReadiness(Link &link)
+        {
+            if (!link.announced && link.session->state() == Multiplayer::State::Ready)
             {
-                if (worker.thread.joinable())
+                link.announced = true;
+                say("Mewtwo joined the " + link.label + " session");
+            }
+        }
+
+        // Player ids are only unique within one session, so the link index
+        // goes into the key too.
+        void readDamage(std::size_t linkIndex, const Multiplayer::Session &session)
+        {
+            for (const Multiplayer::Player &player : session.remotePlayers())
+            {
+                long long damage = 0;
+                if (parseDamageDealt(player.data, damage))
                 {
-                    worker.thread.join();
+                    boss_.reportDamage((static_cast<std::uint64_t>(linkIndex) << 32) | player.id, damage);
                 }
             }
-            workers.clear();
         }
+
+        const TimeSource &clock_;
+        Boss boss_;
+        std::vector<Link> links_;
     };
 
-    // Answers this client's requests until it leaves or the worker is cancelled.
-    void serveClient(ReplySocket &socket, Network::NetworkServer &server, Boss &boss,
-                     const std::atomic<bool> &alive)
-    {
-        while (alive.load() && g_running.load())
-        {
-            Network::Message requestMessage;
-            if (!socket.receive(requestMessage))
-            {
-                continue;
-            }
-
-            Network::Request request;
-            std::string error;
-            const bool decoded = Network::decodeRequest(requestMessage, request, error);
-            socket.send(handleWithBoss(server, boss, requestMessage));
-
-            if (decoded && request.type == Network::RequestType::Leave)
-            {
-                break;
-            }
-        }
-    }
-
-    // One blocking REP loop per connected client. A slow client only stalls this
-    // thread — other workers keep serving. Sockets stay on the worker thread
-    // (ZeroMQ sockets are not thread-safe).
-    void runClientWorker(Transport &transport, Network::NetworkServer &server, Boss &boss,
-                         std::promise<std::string> endpointReady, std::shared_ptr<std::atomic<bool>> alive,
-                         Network::SessionToken sessionToken, ClientRegistry &registry)
-    {
-        try
-        {
-            ReplySocket socket(transport, socketReceiveTimeout);
-            // Bind on all interfaces; main rewrites the host for WELCOME via --advertise.
-            endpointReady.set_value(socket.bind(workerBindEndpoint));
-            serveClient(socket, server, boss, *alive);
-        }
-        catch (...)
-        {
-            try
-            {
-                endpointReady.set_value({});
-            }
-            catch (const std::future_error &)
-            {
-                // Endpoint was already published before the failure.
-            }
-        }
-
-        registry.forgetEndpoint(sessionToken);
-        alive->store(false);
-    }
-
     // ---------------------------------------------------------------------------
-    // The server
+    // Setup
     // ---------------------------------------------------------------------------
     struct ServerOptions
     {
         std::string handshakeEndpoint = defaultServerBind;
         std::string advertiseHost = defaultAdvertiseHost;
+        std::string firstPeer = defaultFirstPeerEndpoint;
+        bool logRates = false;
     };
 
     bool parseArgs(int argc, char *argv[], ServerOptions &options)
@@ -551,14 +471,19 @@ namespace
         for (int i = 1; i < argc; ++i)
         {
             const std::string arg = argv[i];
-            if (arg == "--advertise")
+            if (arg == "--rates")
+            {
+                options.logRates = true;
+                continue;
+            }
+            if (arg == "--advertise" || arg == "--peer")
             {
                 if (i + 1 >= argc)
                 {
-                    std::cerr << "pokemon-hunt-server: --advertise requires a host\n";
+                    std::cerr << "pokemon-hunt-server: " << arg << " requires a value\n";
                     return false;
                 }
-                options.advertiseHost = argv[++i];
+                (arg == "--advertise" ? options.advertiseHost : options.firstPeer) = argv[++i];
                 continue;
             }
             if (arg.rfind("--", 0) == 0)
@@ -578,178 +503,44 @@ namespace
         return config;
     }
 
-    class PokemonHuntServer
+    Network::HostConfig makeHostConfig(const ServerOptions &options)
     {
-    public:
-        explicit PokemonHuntServer(ServerOptions options)
-            : options_(std::move(options)),
-              server_(clock_, makeServerConfig())
+        Network::HostConfig config;
+        config.mode = Network::HostMode::Dedicated;
+        config.bindEndpoint = options.handshakeEndpoint;
+        config.advertiseHost = options.advertiseHost;
+        config.log = say;
+        if (options.logRates)
         {
+            config.trafficLogInterval = trafficLogInterval;
         }
+        return config;
+    }
 
-        ~PokemonHuntServer() { shutdown(); }
+    // Mewtwo joins its own host over loopback, like any client would.
+    Multiplayer::Config clientServerLink(const Network::NetworkServerHost &host)
+    {
+        Multiplayer::Config config;
+        config.mode = Multiplayer::Mode::ClientServer;
+        config.serverEndpoint = Net::rewriteTcpEndpointHost(host.boundEndpoint(), "127.0.0.1");
+        config.playerName = bossPlayerName;
+        return config;
+    }
 
-        PokemonHuntServer(const PokemonHuntServer &) = delete;
-        PokemonHuntServer &operator=(const PokemonHuntServer &) = delete;
-
-        // Serves JOINs until Ctrl-C. Returns the process exit code.
-        int run()
-        {
-            int exitCode = 0;
-            try
-            {
-                ReplySocket handshake(transport_, socketReceiveTimeout);
-                handshake.bind(options_.handshakeEndpoint);
-                startWorldThread();
-                printBanner();
-                acceptJoins(handshake);
-            }
-            catch (const std::exception &exception)
-            {
-                std::cerr << "Network server error: " << exception.what() << '\n';
-                exitCode = 1;
-            }
-            shutdown();
-            return exitCode;
-        }
-
-    private:
-        // The boss runs on the server's real time, whatever speed any client
-        // runs at, so it is in the same place on every screen.
-        void startWorldThread()
-        {
-            worldThread_ = std::thread([this]
-                                       {
-            auto last = std::chrono::steady_clock::now();
-            while (g_running.load()) {
-                std::this_thread::sleep_for(worldTickInterval);
-                const auto now = std::chrono::steady_clock::now();
-                const float dt = std::min(std::chrono::duration<float>(now - last).count(), maxWorldStep);
-                last = now;
-                boss_.update(dt);
-                server_.update();
-            } });
-        }
-
-        void printBanner() const
-        {
-            std::cout << "Network server handshake listening on " << options_.handshakeEndpoint << '\n';
-            std::cout << "Session endpoints advertise host " << options_.advertiseHost << '\n';
-            std::cout << "Each JOIN spawns a dedicated per-client REP worker (no Router/Dealer).\n";
-            std::cout << "A wild Mewtwo appeared! It moves on the server's real time.\n";
-        }
-
-        void acceptJoins(ReplySocket &handshake)
-        {
-            while (g_running.load())
-            {
-                Network::Message requestMessage;
-                if (!handshake.receive(requestMessage))
-                {
-                    continue;
-                }
-                handshake.send(handleHandshake(requestMessage));
-            }
-        }
-
-        Network::Message handleHandshake(const Network::Message &requestMessage)
-        {
-            Network::Request request;
-            std::string error;
-            if (!Network::decodeRequest(requestMessage, request, error))
-            {
-                return Network::encodeError(error);
-            }
-            if (request.type != Network::RequestType::Join)
-            {
-                return Network::encodeError("handshake accepts JOIN only");
-            }
-
-            // Rejoin: reuse the existing worker endpoint when this token is live.
-            const std::string existing = registry_.endpointFor(request.sessionToken);
-            if (!existing.empty())
-            {
-                Network::Message reply;
-                Network::PlayerId playerId = 0;
-                welcomeWithBoss(server_, boss_, requestMessage, existing, reply, playerId);
-                return reply;
-            }
-            return joinNewClient(requestMessage, request.sessionToken);
-        }
-
-        // Starts a worker for a new session, then welcomes the player to it.
-        Network::Message joinNewClient(const Network::Message &requestMessage, const Network::SessionToken &token)
-        {
-            auto alive = std::make_shared<std::atomic<bool>>(true);
-            const std::string sessionEndpoint = startWorker(token, alive);
-            if (sessionEndpoint.empty())
-            {
-                alive->store(false);
-                return Network::encodeError("could not start client worker");
-            }
-
-            Network::Message reply;
-            Network::PlayerId playerId = 0;
-            if (!welcomeWithBoss(server_, boss_, requestMessage, sessionEndpoint, reply, playerId))
-            {
-                alive->store(false);
-                return reply;
-            }
-
-            registry_.setEndpoint(token, sessionEndpoint);
-            std::cout << "Client player " << playerId << " -> " << sessionEndpoint << '\n';
-            return reply;
-        }
-
-        // Returns the endpoint to advertise for the new worker, or empty if it
-        // could not bind.
-        std::string startWorker(const Network::SessionToken &token, const std::shared_ptr<std::atomic<bool>> &alive)
-        {
-            std::promise<std::string> endpointReady;
-            std::future<std::string> endpointFuture = endpointReady.get_future();
-
-            ClientWorker worker;
-            worker.alive = alive;
-            worker.thread = std::thread(runClientWorker, std::ref(transport_), std::ref(server_), std::ref(boss_),
-                                        std::move(endpointReady), alive, token, std::ref(registry_));
-            registry_.addWorker(std::move(worker));
-
-            const std::string boundEndpoint = endpointFuture.get();
-            if (boundEndpoint.empty())
-            {
-                return {};
-            }
-            return Network::rewriteTcpEndpointHost(boundEndpoint, options_.advertiseHost);
-        }
-
-        // Stop background work while the server and transport are still alive (no detached UAF).
-        void shutdown()
-        {
-            if (shutDown_)
-            {
-                return;
-            }
-            shutDown_ = true;
-            g_running.store(false);
-            registry_.stopAll();
-            transport_.shutdown();
-
-            if (worldThread_.joinable())
-            {
-                worldThread_.join();
-            }
-            registry_.joinAll();
-        }
-
-        ServerOptions options_;
-        Transport transport_;
-        RealTimeClock clock_;
-        Network::NetworkServer server_;
-        Boss boss_;
-        ClientRegistry registry_;
-        std::thread worldThread_;
-        bool shutDown_ = false;
-    };
+    // Mewtwo is a peer with no world authority of its own to poll: it is the
+    // authority, and its state goes out on its own PUB like any peer's.
+    Multiplayer::Config peerLink(const ServerOptions &options)
+    {
+        Multiplayer::Config config;
+        config.mode = Multiplayer::Mode::PeerToPeer;
+        config.serverEndpoint.clear();
+        config.playerName = bossPlayerName;
+        config.peerId = bossPeerId;
+        config.basePort = bossPeerBasePort;
+        config.advertiseHost = options.advertiseHost;
+        config.bootstrapPeers = {options.firstPeer};
+        return config;
+    }
 
 } // namespace
 
@@ -764,6 +555,25 @@ int main(int argc, char *argv[])
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    PokemonHuntServer server(std::move(options));
-    return server.run();
+    try
+    {
+        // Declared in this order so the bot's sessions leave before the host
+        // they are connected to stops.
+        Network::NetworkServerHost host(makeServerConfig(), makeHostConfig(options));
+        host.start();
+        RealTimeClock clock;
+        BossBot bot(clock);
+        bot.join("client-server", clientServerLink(host));
+        bot.join("peer-to-peer", peerLink(options));
+
+        say("Mewtwo's peer listens on port " + std::to_string(bossPeerBasePort));
+        say("A wild Mewtwo appeared! It moves on the server's real time.");
+        bot.run();
+    }
+    catch (const std::exception &exception)
+    {
+        std::cerr << "pokemon-hunt-server: " << exception.what() << '\n';
+        return 1;
+    }
+    return 0;
 }

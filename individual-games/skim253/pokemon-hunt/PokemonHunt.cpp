@@ -5,8 +5,8 @@
 //   ./build/pokemon-hunt --pokemon pikachu                     # client-server
 //   ./build/pokemon-hunt --pokemon squirtle
 //
-//   ./build/pokemon-hunt --mode peer-to-peer --id 1 --port 7300 --pokemon charmander
-//   ./build/pokemon-hunt --mode peer-to-peer --id 2 --port 7302 --peer tcp://127.0.0.1:7300
+//   ./build/pokemon-hunt --mode peer-to-peer --pokemon charmander
+//   ./build/pokemon-hunt --mode peer-to-peer --pokemon bulbasaur
 //
 // Rules:
 //   Stomp Mewtwo (land on it from above)       -> 3 damage, +100 points
@@ -28,15 +28,9 @@
 //   Peer-to-peer (S5)   - --mode peer-to-peer: Pokemon go straight to each
 //                         other; only Mewtwo still comes from the server.
 //
-// Mewtwo's HP lives on the server with the rest of Mewtwo. Each Pokemon sends
-// the total damage it has dealt with its position; the server takes the new
-// part off the HP, and when it runs out Mewtwo vanishes and drops back in at a
-// random spot 5 seconds (server real time) later.
-//
-// In peer-to-peer mode the engine's session tells the server only where a
-// player is, not its data. So there this game keeps its own link to the
-// server (a Network::NetworkClient, used as is) to report damage and fetch
-// Mewtwo, while the Pokemon themselves still travel peer to peer.
+// Mewtwo is a bot player the server runs (see PokemonHuntWorld.hpp). Its data
+// carries the boss, and each Pokemon's data carries its total damage, which
+// the bot takes off Mewtwo's HP.
 #include "Collision.hpp"
 #include "Engine.hpp"
 #include "Entity.hpp"
@@ -44,7 +38,6 @@
 #include "Game.hpp"
 #include "Input.hpp"
 #include "Multiplayer.hpp"
-#include "NetworkClient.hpp"
 #include "Physics.hpp"
 #include "PokemonHuntConfig.hpp"
 #include "PokemonHuntData.hpp"
@@ -52,7 +45,6 @@
 #include "PokemonHuntPrediction.hpp"
 #include "PokemonHuntStyle.hpp"
 #include "PokemonHuntWorld.hpp"
-#include "SendPacer.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
 
@@ -78,16 +70,9 @@ using namespace PokemonHunt;
 // ---------------------------------------------------------------------------
 class PokemonHuntGame final : public Game {
 public:
-    // `authority` is this game's own link to Mewtwo's server, peer-to-peer
-    // only; null in client-server mode, where the session already talks to it.
-    // `authority` is paced like the session, on `gameTime` with a heartbeat
-    // on `realTime`; both clocks must outlive the game.
-    PokemonHuntGame(std::unique_ptr<Multiplayer::Session> session,
-                    std::unique_ptr<Network::NetworkClient> authority, const TimeSource& realTime,
-                    const TimeSource& gameTime, int kind, SDL_Renderer* renderer, const std::string& mediaDir)
+    PokemonHuntGame(std::unique_ptr<Multiplayer::Session> session, int kind, SDL_Renderer* renderer,
+                    const std::string& mediaDir)
         : session_(std::move(session)),
-          authority_(std::move(authority)),
-          authorityPacer_(&gameTime, sendIntervalGameTics, realTime, heartbeatIntervalRealTics),
           pokemon_(spawnX(kind), spawnY, pokemonSize, pokemonSize),
           shot_(0.0F, 0.0F, shotSize, shotSize),
           workers_({
@@ -491,12 +476,7 @@ private:
         local_.shot = shotActive_;
         local_.shotX = static_cast<int>(shot_.getX());
         local_.shotY = static_cast<int>(shot_.getY());
-        const std::string data = encode(local_);
-        session_->publishLocalPlayer(pokemon_.getX(), pokemon_.getY(), data);
-        if (authority_ && authority_->state() == Network::ConnectionState::Connected &&
-            authorityPacer_.shouldSend()) {
-            authority_->submitPosition(pokemon_.getX(), pokemon_.getY(), data);
-        }
+        session_->publishLocalPlayer(pokemon_.getX(), pokemon_.getY(), encode(local_));
     }
 
     void refreshWorld()
@@ -505,23 +485,20 @@ private:
         readBossStatus();
     }
 
-    // Everything the server owns, from whichever link carries it: the session
-    // in client-server mode, this game's own link in peer-to-peer mode. Kept
-    // as last received while a link is down, like the engine does. Snapshots
-    // come only as often as this client sends, which follows its game speed,
-    // so Mewtwo is moved on between them on real time (see WorldPredictor).
+    // Everything the server owns, read off Mewtwo's player data. Kept as last
+    // received while Mewtwo is missing, like the engine keeps platforms. In
+    // client-server mode it comes only as often as this client sends, which
+    // follows its game speed, so Mewtwo is moved on between updates on real
+    // time (see WorldPredictor).
     void fetchWorld()
     {
-        if (!authority_) {
-            predictor_.receive(session_->platforms(), now_);
-        } else {
-            authority_->poll();
-            if (authority_->state() == Network::ConnectionState::Connected) {
-                std::vector<Multiplayer::Platform> received;
-                for (const Network::PlatformState& object : authority_->snapshot().platforms) {
-                    received.push_back({object.id, object.x, object.y, object.width, object.height});
-                }
+        bossSeen_ = false;
+        std::vector<Multiplayer::Platform> received;
+        for (const Multiplayer::Player& player : session_->remotePlayers()) {
+            if (player.name == bossPlayerName && decodeBossWorld(player.data, received)) {
                 predictor_.receive(received, now_);
+                bossSeen_ = true;
+                break;
             }
         }
         world_ = predictor_.predict(now_);
@@ -539,12 +516,6 @@ private:
             }
             status_ = {true, hp, object.y, static_cast<long long>(object.width) - 1};
         }
-    }
-
-    bool connectedToBoss() const
-    {
-        return authority_ ? authority_->state() == Network::ConnectionState::Connected
-                          : session_->state() == Multiplayer::State::Ready;
     }
 
     // Null while Mewtwo is fainted, or before the server has been heard from.
@@ -587,7 +558,7 @@ private:
         if (session_->state() != Multiplayer::State::Ready) {
             return session_->status();
         }
-        if (!connectedToBoss() || (boss == nullptr && !bossFainted())) {
+        if (!bossSeen_ || (boss == nullptr && !bossFainted())) {
             return "waiting for Mewtwo... (is pokemon-hunt-server running?)";
         }
         return {};
@@ -619,11 +590,11 @@ private:
     }
 
     std::unique_ptr<Multiplayer::Session> session_;
-    std::unique_ptr<Network::NetworkClient> authority_;
-    Multiplayer::SendPacer authorityPacer_;
+    // Written by the network worker, read by main after runFrame().
     WorldPredictor predictor_;
     std::vector<Multiplayer::Platform> world_;
     BossStatus status_;
+    bool bossSeen_ = false;
     PokemonSprites pokemonSprites_;
     SpriteSheet bossSprite_;
     double animationTime_ = 0.0;
@@ -680,6 +651,7 @@ struct Options {
     bool idGiven = false;
     bool portGiven = false;
     bool peerGiven = false;
+    bool serverGiven = false;
 };
 
 int speciesFromName(const std::string& name)
@@ -699,7 +671,8 @@ void printUsage()
   --pokemon NAME    pikachu, charmander, squirtle or bulbasaur. Each Pokemon
                     can be in the party once; leave it out to get a free one.
   --mode MODE       client-server (default) or peer-to-peer.
-  --server ENDPOINT Mewtwo's server. Default tcp://127.0.0.1:5600.
+  --server ENDPOINT Mewtwo's server. Default tcp://127.0.0.1:5600, or in
+                    peer-to-peer mode Mewtwo's peer, tcp://127.0.0.1:7290.
 
 Peer-to-peer only:
   --id N            This peer's id, 1..8. Leave it out to take the first free
@@ -729,6 +702,7 @@ bool applyOption(const std::string& arg, const std::string& value, Options& opti
         }
     } else if (arg == "--server") {
         config.serverEndpoint = value;
+        options.serverGiven = true;
     } else if (arg == "--id") {
         const int id = std::atoi(value.c_str());
         if (id < 1 || id > maxPeerId) {
@@ -781,6 +755,9 @@ bool parseArgs(int argc, char* argv[], Options& options, int& exitCode)
             return false;
         }
     }
+    if (options.config.mode == Multiplayer::Mode::PeerToPeer && !options.serverGiven) {
+        options.config.serverEndpoint = defaultBossPeerEndpoint;
+    }
     return true;
 }
 
@@ -818,8 +795,9 @@ std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, co
     for (Multiplayer::PlayerId id = first; id <= last; ++id) {
         Multiplayer::Config attempt = options.config;
         attempt.peerId = id;
-        // Mewtwo comes over this game's own link to the server (see main),
-        // so the peer session carries Pokemon only.
+        // Mewtwo is a peer in the mesh, so there is no world authority to
+        // poll. Greeting its peer is how this Pokemon meets it, whichever of
+        // the two starts first.
         attempt.serverEndpoint.clear();
         if (!options.portGiven) {
             attempt.basePort = firstPeerBasePort + portsPerPeer * static_cast<int>(id - 1);
@@ -827,6 +805,7 @@ std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, co
         if (!options.peerGiven && id != 1) {
             attempt.bootstrapPeers = {firstPeerEndpoint};
         }
+        attempt.bootstrapPeers.push_back(options.config.serverEndpoint);
         auto candidate = Multiplayer::Session::open(attempt, clock, &gameClock);
         problem = sessionProblem(*candidate);
         if (problem.empty()) {
@@ -933,21 +912,7 @@ std::string mediaDirectory()
     return std::string(base != nullptr ? base : "") + "media/pokemon-hunt/";
 }
 
-// In peer-to-peer mode, this game's own link to Mewtwo's server; else null.
-std::unique_ptr<Network::NetworkClient> connectToBoss(const Multiplayer::Config& config, int kind,
-                                                      const TimeSource& clock)
-{
-    if (config.mode != Multiplayer::Mode::PeerToPeer) {
-        return nullptr;
-    }
-    auto authority = std::make_unique<Network::NetworkClient>(clock, config.serverEndpoint);
-    authority->setPlayerName(species[kind].name);
-    authority->start();
-    return authority;
-}
-
-int runGame(const Options& options, std::unique_ptr<Multiplayer::Session> session, int kind,
-            const TimeSource& clock, GameClock& gameClock)
+int runGame(std::unique_ptr<Multiplayer::Session> session, int kind, GameClock& gameClock)
 {
     try {
         Engine engine("Pokemon Hunt", windowWidth, windowHeight);
@@ -957,8 +922,7 @@ int runGame(const Options& options, std::unique_ptr<Multiplayer::Session> sessio
         // From here the session's sends follow this engine's pause and speed.
         gameClock.attach(engine.gameTime());
 
-        PokemonHuntGame game(std::move(session), connectToBoss(options.config, kind, clock), clock,
-                             engine.gameTime(), kind, engine.getRenderer(), mediaDirectory());
+        PokemonHuntGame game(std::move(session), kind, engine.getRenderer(), mediaDirectory());
         engine.run(game);
     } catch (const std::exception& exception) {
         std::cerr << "pokemon-hunt: " << exception.what() << '\n';
@@ -985,5 +949,5 @@ int main(int argc, char* argv[])
     if (!session) {
         return 1;
     }
-    return runGame(options, std::move(session), kind, clock, gameClock);
+    return runGame(std::move(session), kind, gameClock);
 }
