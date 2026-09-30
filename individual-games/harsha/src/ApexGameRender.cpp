@@ -2,8 +2,10 @@
 
 #include "ApexPresence.hpp"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <string>
 
 void ApexGame::render(SDL_Renderer* renderer) const
 {
@@ -127,5 +129,20 @@ void ApexGame::render(SDL_Renderer* renderer) const
         }
         SDL_SetRenderDrawColor(renderer, 200, 230, 180, 255);
         SDL_RenderDebugText(renderer, 20.0F, 80.0F, timeHud);
+
+        // A peer counts as Ready even alone, so a refused introduction (for
+        // example a duplicate --id) only shows up in status(). Normal status
+        // starts with the peer count; anything else is a problem to flag.
+        if (session_->mode() == Multiplayer::Mode::PeerToPeer &&
+            session_->state() == Multiplayer::State::Ready) {
+            const std::string status = session_->status();
+            const bool problem = status.empty() || !std::isdigit(static_cast<unsigned char>(status[0]));
+            if (problem) {
+                SDL_SetRenderDrawColor(renderer, 255, 140, 120, 255);
+            } else {
+                SDL_SetRenderDrawColor(renderer, 150, 170, 190, 255);
+            }
+            SDL_RenderDebugText(renderer, 20.0F, 100.0F, ("Peers: " + status).c_str());
+        }
     }
 }
