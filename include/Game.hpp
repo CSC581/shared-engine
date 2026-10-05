@@ -35,7 +35,7 @@ public:
     // pausing never has to know this exists.
     //
     // Override this one to read gameTimeUs (motion computed from absolute time
-    // never drifts) or to pass the FrameTime down to Entity::update. Note that
+    // never drifts) or to pass the FrameTime down to World::update. Note that
     // declaring either overload in a subclass hides the other for calls made
     // through that subclass; add `using Game::update;` if you need both by
     // name. Dispatch through a Game& -- which is all the engine ever does -- is

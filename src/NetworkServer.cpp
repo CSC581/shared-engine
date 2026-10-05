@@ -1,5 +1,7 @@
 #include "NetworkServer.hpp"
 
+#include "Components.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -217,27 +219,10 @@ void NetworkServer::advancePlatforms(std::int64_t now)
         }
         moved = true;
 
-        while (travel > 0.0F) {
-            if (platform.velocity > 0.0F) {
-                const float room = platform.pathLength - platform.distance;
-                if (room <= 0.0F) {
-                    platform.velocity = -platform.path.speed;
-                    continue;
-                }
-                const float step = std::min(travel, room);
-                platform.distance += step;
-                travel -= step;
-            } else {
-                const float room = platform.distance;
-                if (room <= 0.0F) {
-                    platform.velocity = platform.path.speed;
-                    continue;
-                }
-                const float step = std::min(travel, room);
-                platform.distance -= step;
-                travel -= step;
-            }
-        }
+        // The same bounce rule a PathMover component uses on the clients.
+        float direction = platform.velocity > 0.0F ? 1.0F : -1.0F;
+        platform.distance = PathMover::pingPong(platform.pathLength, travel, platform.distance, direction);
+        platform.velocity = direction * platform.path.speed;
 
         const float t = platform.distance / platform.pathLength;
         platform.state.x = platform.path.startX + (platform.path.endX - platform.path.startX) * t;

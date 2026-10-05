@@ -1,7 +1,9 @@
 #include "Engine.hpp"
 
+#include "Components.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
+#include "World.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -180,4 +182,31 @@ void Engine::applyScaleMode()
 void Engine::setScaleToggleKey(SDL_Scancode key)
 {
     scaleToggleKey_ = key;
+}
+
+void renderWorld(SDL_Renderer* renderer, const World& world, float cameraX, float cameraY)
+{
+    for (const auto& object : world.objects()) {
+        if (!object->isActive()) {
+            continue;
+        }
+
+        const auto* renderable = object->get<Renderable>();
+        if (renderable == nullptr || !renderable->visible) {
+            continue;
+        }
+
+        const Transform& transform = renderable->transform();
+        const SDL_FRect rect{
+            transform.x - cameraX, transform.y - cameraY, transform.width, transform.height};
+
+        if (renderable->texture != nullptr) {
+            SDL_RenderTexture(renderer, renderable->texture, nullptr, &rect);
+            continue;
+        }
+
+        const Color& color = renderable->color;
+        SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, color.alpha);
+        SDL_RenderFillRect(renderer, &rect);
+    }
 }
