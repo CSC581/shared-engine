@@ -200,3 +200,10 @@ void Behavior::update(const FrameTime& time)
         fn_(owner(), time);
     }
 }
+
+// --- NetworkIdentity ---------------------------------------------------------
+
+NetworkIdentity::NetworkIdentity(Kind kind, std::uint32_t id)
+    : kind(kind), id(id)
+{
+}

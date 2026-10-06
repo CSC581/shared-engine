@@ -3,23 +3,34 @@
 #include "FrameTime.hpp"
 #include "GameObject.hpp"
 
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Owns every GameObject in a scene and runs one frame of them.
 //
 // A frame is three passes, in this order:
 //   1. updateComponents()  every component's update(), in priority order
-//   2. resolveCollisions() Solid colliders pushed apart, onCollide called
+//   2. resolveCollisions() Solid colliders pushed apart, collision callbacks called
 //   3. flushDestroyed()    objects passed to destroy() are removed
 // update() runs all three. A game that splits work across FrameWorkers calls
 // updateComponents() once per worker with a different tag, then runs the other
 // two passes on the main thread.
 //
-// Creating and destroying objects, and attaching components, happen on the
-// thread that owns the World. Destruction is deferred, so it is safe from inside
-// a component's update() or a collision callback.
+// Threads: creating objects and attaching components happen only on the thread
+// that owns the World, never from a component's update() while updateComponents()
+// runs on several FrameWorkers at once (another worker may be walking the object
+// list). A game that spawns from an update() records what to spawn and creates
+// it on the owning thread after the workers finish.
+//
+// destroy() is the exception: it may be called from any thread, including
+// several update() calls running in parallel, and from collision callbacks.
+// It only queues the id; the object is removed at flushDestroyed(), on the
+// owning thread, once nothing is updating.
 class World {
 public:
     World() = default;
@@ -32,7 +43,8 @@ public:
     // until the object is destroyed and flushDestroyed() runs.
     GameObject& create(std::string tag = {});
 
-    // Marks the object for removal at the next flushDestroyed().
+    // Marks the object for removal at the next flushDestroyed(). Safe from any
+    // thread; see above.
     void destroy(ObjectId id);
 
     GameObject* find(ObjectId id);
@@ -70,6 +82,24 @@ public:
 
 private:
     std::vector<std::unique_ptr<GameObject>> objects_;
+    // Every component of every object, sorted into update order. Rebuilt only
+    // when structureVersion_ has moved past orderVersion_, that is when an
+    // object was created or destroyed or a component attached, instead of
+    // being re-sorted every frame. Guarded by orderMutex_ because
+    // updateComponents() may run on several FrameWorkers at once.
+    std::mutex orderMutex_;
+    std::vector<Component*> order_;
+    std::uint64_t structureVersion_ = 1;
+    std::uint64_t orderVersion_ = 0;
+
+    // Filled by destroy() from any thread, drained by flushDestroyed().
+    std::mutex pendingMutex_;
     std::vector<ObjectId> pendingDestroy_;
     ObjectId nextId_ = 1;
+
+    // Pairs that overlapped in the last collision pass, smaller id first.
+    // Compared with this pass's pairs to tell onEnter and onExit apart from
+    // onCollide. Ids, not pointers, so a destroyed object leaves nothing
+    // dangling.
+    std::set<std::pair<ObjectId, ObjectId>> contacts_;
 };

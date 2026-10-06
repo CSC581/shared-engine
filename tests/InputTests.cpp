@@ -1,7 +1,8 @@
 // Tests the input system the way a game would use it: a fake keyboard state
 // stands in for the hardware, so no window or SDL event loop is needed.
-#include "Entity.hpp"
+#include "Components.hpp"
 #include "Input.hpp"
+#include "World.hpp"
 
 #include <array>
 #include <cmath>
@@ -37,8 +38,9 @@ namespace
         return condition;
     }
 
-    // The same control scheme an individual game would write on top of the engine.
-    void applyPlayerControls(Entity &player, float speed)
+    // The same control scheme an individual game would write on top of the
+    // engine: a Behavior that turns held keys into the player's velocity.
+    void applyPlayerControls(GameObject &player, float speed)
     {
         float velocityX = 0.0F;
         float velocityY = 0.0F;
@@ -60,8 +62,13 @@ namespace
             velocityY += speed;
         }
 
-        player.setVelocity(velocityX, velocityY);
+        Motion &motion = *player.get<Motion>();
+        motion.velocityX = velocityX;
+        motion.velocityY = velocityY;
     }
+
+    // Half a second of game time.
+    const FrameTime halfSecond{0.5, 0};
 
 } // namespace
 
@@ -99,11 +106,19 @@ int main()
     passed &= expect(Input::isKeyPressed(SDL_SCANCODE_D) && Input::isKeyPressed(SDL_SCANCODE_S),
                      "multiple keys should be readable at the same time");
 
-    // A game moving its controllable entity through the input system.
-    Entity player(0.0F, 0.0F, 10.0F, 10.0F);
-    applyPlayerControls(player, 200.0F);
-    player.update(0.5F);
-    passed &= expect(nearlyEqual(player.getX(), 100.0F) && nearlyEqual(player.getY(), 100.0F),
+    // A game moving its controllable object through the input system: the
+    // Behavior reads the keys, then Motion moves the Transform, every frame.
+    World world;
+    GameObject &player = world.create("player");
+    player.add<Transform>(0.0F, 0.0F, 10.0F, 10.0F);
+    player.add<Motion>();
+    player.add<Behavior>([](GameObject &self, const FrameTime &)
+                         { applyPlayerControls(self, 200.0F); });
+    player.setActive(true);
+    const Transform &body = *player.get<Transform>();
+
+    world.update(halfSecond);
+    passed &= expect(nearlyEqual(body.x, 100.0F) && nearlyEqual(body.y, 100.0F),
                      "D + S should move the player right and down");
 
     release(SDL_SCANCODE_D);
@@ -111,18 +126,16 @@ int main()
     press(SDL_SCANCODE_A);
     press(SDL_SCANCODE_W);
     Input::update();
-    applyPlayerControls(player, 200.0F);
-    player.update(0.5F);
-    passed &= expect(nearlyEqual(player.getX(), 0.0F) && nearlyEqual(player.getY(), 0.0F),
+    world.update(halfSecond);
+    passed &= expect(nearlyEqual(body.x, 0.0F) && nearlyEqual(body.y, 0.0F),
                      "A + W should move the player back left and up");
 
     // Opposing keys cancel out instead of jittering.
     press(SDL_SCANCODE_D);
     press(SDL_SCANCODE_S);
     Input::update();
-    applyPlayerControls(player, 200.0F);
-    player.update(0.5F);
-    passed &= expect(nearlyEqual(player.getX(), 0.0F) && nearlyEqual(player.getY(), 0.0F),
+    world.update(halfSecond);
+    passed &= expect(nearlyEqual(body.x, 0.0F) && nearlyEqual(body.y, 0.0F),
                      "opposite keys held together should cancel out");
 
     // Three-key chord plus the multi-key query helpers.

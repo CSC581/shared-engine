@@ -47,6 +47,10 @@ public:
     void leave();
 
     ConnectionState state() const;
+    // A request is out and its reply has not been read yet. REQ/REP allows one
+    // request in flight, so nothing else (a position, a LEAVE) can be sent
+    // until poll() reads it.
+    bool awaitingReply() const;
     PlayerId playerId() const;
     const WorldSnapshot& snapshot() const;
     const std::string& error() const;

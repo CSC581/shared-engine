@@ -21,6 +21,7 @@ struct SDL_Texture;
 //   Collider    takes part in World's collision pass
 //   Renderable  drawn by renderWorld()
 //   Behavior    game-specific per-frame logic
+//   NetworkIdentity  which networked player or platform this object stands for
 
 // Position and size. Every other built-in component depends on it.
 class Transform : public Component {
@@ -139,8 +140,12 @@ private:
 // Solid colliders block each other: an overlapping object with Motion is pushed
 // out and loses its velocity along that axis. Objects without Motion, or whose
 // Motion is kinematic, are never pushed. Trigger colliders never push or get
-// pushed; they only report the overlap. Either kind calls onCollide, every
-// frame the overlap lasts, with (this object, the other object).
+// pushed; they only report the overlap. Either kind calls back with (this
+// object, the other object):
+//   onEnter    once, on the first frame the two overlap
+//   onCollide  every frame the overlap lasts, including the first
+//   onExit     once, on the first frame they no longer overlap (or one of
+//              them was deactivated); skipped if either was destroyed
 //
 // Two colliders interact only when their layer masks share a bit.
 class Collider : public Component {
@@ -157,7 +162,9 @@ public:
 
     Kind kind;
     std::uint32_t layers;
+    Callback onEnter;
     Callback onCollide;
+    Callback onExit;
 
 private:
     Transform* transform_ = nullptr;
@@ -167,6 +174,12 @@ private:
 // the Transform when one is set. The texture is borrowed, not owned. An object
 // without a Renderable is never drawn, which is how spawn points, death zones
 // and scroll boundaries stay hidden.
+//
+// `layer` sets the draw order: lower layers are drawn first, so higher ones
+// appear on top (say background 0, platforms 1, players 2). Objects on the
+// same layer are drawn in creation order. It matters most for objects created
+// at unpredictable times, such as networked players and platforms, which
+// would otherwise land on top of whatever already existed.
 class Renderable : public Component {
 public:
     Renderable() = default;
@@ -179,6 +192,7 @@ public:
     Color color{255, 255, 255};
     SDL_Texture* texture = nullptr;
     bool visible = true;
+    int layer = 0;
 
 private:
     Transform* transform_ = nullptr;
@@ -197,4 +211,18 @@ public:
 
 private:
     UpdateFn fn_;
+};
+
+// Ties an object to the network id it stands for: a player id assigned by the
+// server or a peer, or a server platform's id. This is how the network layer
+// finds the object a message is about, on the server and on every client. It
+// holds data only; whoever owns the networking keeps it up to date.
+class NetworkIdentity : public Component {
+public:
+    enum class Kind { Player, Platform };
+
+    NetworkIdentity(Kind kind, std::uint32_t id);
+
+    Kind kind;
+    std::uint32_t id;
 };

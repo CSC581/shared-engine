@@ -1,6 +1,7 @@
 #include "NetworkServer.hpp"
 
 #include "Components.hpp"
+#include "FrameTime.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -23,7 +24,7 @@ NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
     : clock_(clock),
       config_(std::move(config))
 {
-    if (config_.spawnPoints.empty() || config_.maxPlayers == 0 || config_.inactivityTimeoutTics <= 0) {
+    if (config_.spawnPoints.empty() || config_.inactivityTimeoutTics <= 0) {
         throw std::invalid_argument("NetworkServer configuration is invalid");
     }
 
@@ -35,30 +36,45 @@ NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
 
     platforms_.reserve(config_.platforms.size());
     for (const PlatformPath& path : config_.platforms) {
-        if (path.id == 0 || !std::isfinite(path.startX) || !std::isfinite(path.startY) ||
-            !std::isfinite(path.endX) || !std::isfinite(path.endY) || !std::isfinite(path.speed) ||
-            path.speed <= 0.0F || !std::isfinite(path.width) || !std::isfinite(path.height) ||
-            path.width <= 0.0F || path.height <= 0.0F) {
+        const bool circular = path.shape == PlatformPath::Shape::Circular;
+        if (path.id == 0 || !std::isfinite(path.speed) || path.speed <= 0.0F || !std::isfinite(path.width) ||
+            !std::isfinite(path.height) || path.width <= 0.0F || path.height <= 0.0F) {
             throw std::invalid_argument("NetworkServer platform path is invalid");
         }
 
-        const float length = pathLengthOf(path);
-        if (length <= 0.0F) {
-            throw std::invalid_argument("NetworkServer platform path must have non-zero length");
+        if (circular) {
+            if (!std::isfinite(path.centerX) || !std::isfinite(path.centerY) || !std::isfinite(path.radius) ||
+                path.radius <= 0.0F) {
+                throw std::invalid_argument("NetworkServer circular platform needs a finite centre and positive radius");
+            }
+        } else {
+            if (!std::isfinite(path.startX) || !std::isfinite(path.startY) || !std::isfinite(path.endX) ||
+                !std::isfinite(path.endY)) {
+                throw std::invalid_argument("NetworkServer platform path is invalid");
+            }
+            if (pathLengthOf(path) <= 0.0F) {
+                throw std::invalid_argument("NetworkServer platform path must have non-zero length");
+            }
         }
 
-        ActivePlatform platform;
-        platform.path = path;
-        platform.pathLength = length;
-        platform.distance = 0.0F;
-        platform.velocity = path.speed;
-        platform.state.id = path.id;
-        platform.state.x = path.startX;
-        platform.state.y = path.startY;
-        platform.state.width = path.width;
-        platform.state.height = path.height;
-        platforms_.push_back(platform);
+        // The same moving platform a client builds: a PathMover drives it,
+        // starting at the path's first point.
+        GameObject& platform = world_.create("platform");
+        if (circular) {
+            platform.add<PathMover>(PathMover::Circular{path.centerX, path.centerY, path.radius}, path.speed);
+        } else {
+            platform.add<PathMover>(PathMover::Linear{path.startX, path.startY, path.endX, path.endY}, path.speed);
+        }
+        Transform& transform = *platform.get<Transform>();
+        transform.width = path.width;
+        transform.height = path.height;
+        platform.add<NetworkIdentity>(NetworkIdentity::Kind::Platform, path.id);
+        platform.setActive(true);
+        platforms_.push_back(&platform);
     }
+
+    // Platforms run from the moment the server exists.
+    lastPlatformUpdate_ = clock_.now();
 }
 
 void NetworkServer::update()
@@ -74,7 +90,6 @@ Message NetworkServer::handle(const Message& message)
     const std::lock_guard<std::mutex> lock(mutex_);
 
     const std::int64_t now = clock_.now();
-    advancePlatforms(now);
     expireInactivePlayers(now);
 
     Request request;
@@ -98,15 +113,25 @@ Message NetworkServer::handle(const Message& message)
             playerIdsByToken_.erase(existingId);
         }
 
-        if (players_.size() >= config_.maxPlayers) {
+        if (config_.maxPlayers != 0 && players_.size() >= config_.maxPlayers) {
             return encodeError("server is full");
         }
 
         const PlayerId id = nextPlayerId_++;
-        PlayerState spawned = spawnPlayer(id);
+        const SpawnPoint spawn = chooseSpawn(id);
+
+        GameObject& object = world_.create("player");
+        object.add<Transform>(spawn.x, spawn.y, 0.0F, 0.0F);
+        object.add<NetworkIdentity>(NetworkIdentity::Kind::Player, id);
+        object.setActive(true);
+
+        ActivePlayer player;
+        player.object = &object;
         // Stored once at JOIN and relayed in every snapshot afterwards.
-        spawned.name = request.playerName;
-        players_.emplace(id, ActivePlayer{std::move(spawned), request.sessionToken, {}, now});
+        player.name = request.playerName;
+        player.sessionToken = request.sessionToken;
+        player.lastHeard = now;
+        players_.emplace(id, std::move(player));
         playerIdsByToken_.emplace(request.sessionToken, id);
         ++serverTick_;
         return encodeWelcome(id, buildSnapshot());
@@ -122,8 +147,7 @@ Message NetworkServer::handle(const Message& message)
     }
 
     if (request.type == RequestType::Leave) {
-        playerIdsByToken_.erase(player->second.sessionToken);
-        players_.erase(player);
+        removePlayer(player);
         ++serverTick_;
         return encodeGoodbye();
     }
@@ -132,12 +156,13 @@ Message NetworkServer::handle(const Message& message)
         return encodeError("position sequence must increase");
     }
 
-    player->second.state.x = request.position.x;
-    player->second.state.y = request.position.y;
+    Transform& transform = *player->second.object->get<Transform>();
+    transform.x = request.position.x;
+    transform.y = request.position.y;
     // Whatever this game chose to say about its player. Stored and relayed
     // verbatim: the server has no idea what is in it, which is exactly why a
     // game can change what it sends without the server being touched.
-    player->second.state.data = std::move(request.position.data);
+    player->second.data = std::move(request.position.data);
     player->second.lastSequence = request.position.sequence;
     player->second.lastHeard = now;
     ++player->second.acceptedPositions;
@@ -169,7 +194,7 @@ std::vector<PlayerTraffic> NetworkServer::traffic() const
     std::vector<PlayerTraffic> result;
     result.reserve(players_.size());
     for (const auto& entry : players_) {
-        result.push_back({entry.first, entry.second.state.name, entry.second.acceptedPositions});
+        result.push_back({entry.first, entry.second.name, entry.second.acceptedPositions});
     }
     std::sort(result.begin(), result.end(),
               [](const PlayerTraffic& a, const PlayerTraffic& b) { return a.id < b.id; });
@@ -180,8 +205,8 @@ void NetworkServer::expireInactivePlayers(std::int64_t now)
 {
     for (auto player = players_.begin(); player != players_.end();) {
         if (now - player->second.lastHeard >= config_.inactivityTimeoutTics) {
-            playerIdsByToken_.erase(player->second.sessionToken);
-            player = players_.erase(player);
+            auto expired = player++;
+            removePlayer(expired);
             ++serverTick_;
         } else {
             ++player;
@@ -189,50 +214,38 @@ void NetworkServer::expireInactivePlayers(std::int64_t now)
     }
 }
 
+void NetworkServer::removePlayer(std::unordered_map<PlayerId, ActivePlayer>::iterator player)
+{
+    // The player's object leaves the scene with its connection.
+    world_.destroy(player->second.object->id());
+    world_.flushDestroyed();
+    playerIdsByToken_.erase(player->second.sessionToken);
+    players_.erase(player);
+}
+
 void NetworkServer::advancePlatforms(std::int64_t now)
 {
-    if (platforms_.empty()) {
-        return;
-    }
-
-    if (!platformClockStarted_) {
-        lastPlatformUpdate_ = now;
-        platformClockStarted_ = true;
-        return;
-    }
-
     const std::int64_t deltaTics = now - lastPlatformUpdate_;
     if (deltaTics <= 0) {
         return;
     }
     lastPlatformUpdate_ = now;
 
+    if (platforms_.empty()) {
+        return;
+    }
+
     // TimeSource for the demo/server is real nanoseconds; ManualClock tests use
-    // the same unit convention (advance in ns). Speed is units per second.
-    const float dtSeconds = static_cast<float>(deltaTics) / static_cast<float>(kNsPerSec);
-    bool moved = false;
+    // the same unit convention (advance in ns). Speeds are units per second.
+    worldElapsedTics_ += deltaTics;
+    const FrameTime time{
+        static_cast<double>(deltaTics) / static_cast<double>(kNsPerSec),
+        worldElapsedTics_ / (kNsPerSec / 1'000'000),
+    };
+    world_.update(time);
 
-    for (ActivePlatform& platform : platforms_) {
-        float travel = std::fabs(platform.velocity) * dtSeconds;
-        if (travel == 0.0F) {
-            continue;
-        }
-        moved = true;
-
-        // The same bounce rule a PathMover component uses on the clients.
-        float direction = platform.velocity > 0.0F ? 1.0F : -1.0F;
-        platform.distance = PathMover::pingPong(platform.pathLength, travel, platform.distance, direction);
-        platform.velocity = direction * platform.path.speed;
-
-        const float t = platform.distance / platform.pathLength;
-        platform.state.x = platform.path.startX + (platform.path.endX - platform.path.startX) * t;
-        platform.state.y = platform.path.startY + (platform.path.endY - platform.path.startY) * t;
-    }
-
-    if (moved) {
-        ++serverTick_;
-        ++worldRevision_;
-    }
+    ++serverTick_;
+    ++worldRevision_;
 }
 
 WorldSnapshot NetworkServer::buildSnapshot() const
@@ -241,15 +254,13 @@ WorldSnapshot NetworkServer::buildSnapshot() const
     result.serverTick = serverTick_;
     result.players.reserve(players_.size());
     for (const auto& entry : players_) {
-        result.players.push_back(entry.second.state);
+        const Transform& transform = *entry.second.object->get<Transform>();
+        result.players.push_back({entry.first, entry.second.name, transform.x, transform.y, entry.second.data});
     }
     std::sort(result.players.begin(), result.players.end(),
               [](const PlayerState& left, const PlayerState& right) { return left.id < right.id; });
 
-    result.platforms.reserve(platforms_.size());
-    for (const ActivePlatform& platform : platforms_) {
-        result.platforms.push_back(platform.state);
-    }
+    result.platforms = buildWorldState().platforms;
     return result;
 }
 
@@ -258,36 +269,32 @@ WorldStateSnapshot NetworkServer::buildWorldState() const
     WorldStateSnapshot result;
     result.worldRevision = worldRevision_;
     result.platforms.reserve(platforms_.size());
-    for (const ActivePlatform& platform : platforms_) {
-        result.platforms.push_back(platform.state);
+    for (const GameObject* platform : platforms_) {
+        const Transform& transform = *platform->get<Transform>();
+        result.platforms.push_back({platform->get<NetworkIdentity>()->id, transform.x, transform.y,
+                                    transform.width, transform.height});
     }
     return result;
 }
 
-PlayerState NetworkServer::spawnPlayer(PlayerId id) const
+SpawnPoint NetworkServer::chooseSpawn(PlayerId id) const
 {
     const std::size_t count = config_.spawnPoints.size();
     const std::size_t firstIndex = static_cast<std::size_t>(id - 1) % count;
 
     // Start at the usual rotating point, but prefer an empty configured spawn
     // so join/leave churn cannot immediately stack two active players.
-    const SpawnPoint* selected = &config_.spawnPoints[firstIndex];
     for (std::size_t offset = 0; offset < count; ++offset) {
         const SpawnPoint& candidate = config_.spawnPoints[(firstIndex + offset) % count];
-        const bool occupied = std::any_of(players_.begin(), players_.end(), [&](const auto& entry) {
-            return entry.second.state.x == candidate.x && entry.second.state.y == candidate.y;
+        const bool occupied = std::any_of(players_.begin(), players_.end(), [&](const std::pair<const PlayerId, ActivePlayer>& entry) {
+            const Transform& transform = *entry.second.object->get<Transform>();
+            return transform.x == candidate.x && transform.y == candidate.y;
         });
         if (!occupied) {
-            selected = &candidate;
-            break;
+            return candidate;
         }
     }
-
-    PlayerState player;
-    player.id = id;
-    player.x = selected->x;
-    player.y = selected->y;
-    return player;
+    return config_.spawnPoints[firstIndex];
 }
 
 } // namespace Network
