@@ -204,6 +204,47 @@ bool testUpdateOrder()
     return passed;
 }
 
+// World keeps its update order between frames; adding or removing anything
+// must refresh it, with the new pieces in their proper place.
+bool testUpdateOrderFollowsChanges()
+{
+    bool passed = true;
+    World world;
+    std::vector<std::string> log;
+
+    GameObject& body = world.create("body");
+    body.add<Transform>(0.0F, 0.0F, 10.0F, 10.0F);
+    body.add<Motion>();
+    body.setActive(true);
+    world.update(frame(0.1));
+    world.update(frame(0.1));
+
+    // Attached after the order was built, and attached last, yet a Behavior
+    // must still run before Motion: it sets the velocity Motion applies.
+    body.add<Behavior>([&log](GameObject& self, const FrameTime&) {
+        log.push_back("body");
+        self.get<Motion>()->velocityX = 10.0F;
+    });
+    world.update(frame(1.0));
+    passed &= expect(log.size() == 1 && nearlyEqual(body.get<Transform>()->x, 10.0F),
+                     "a component added later should join the update order in its proper place");
+
+    // A new object is picked up; a destroyed one stops being updated.
+    GameObject& late = world.create("late");
+    late.add<Behavior>([&log](GameObject&, const FrameTime&) { log.push_back("late"); });
+    late.setActive(true);
+    world.update(frame(0.1));
+    passed &= expect(log.size() == 3 && log[2] == "late", "an object created later should be updated");
+
+    world.destroy(late.id());
+    world.flushDestroyed();
+    log.clear();
+    world.update(frame(0.1));
+    passed &= expect(log.size() == 1 && log[0] == "body", "a destroyed object should no longer be updated");
+
+    return passed;
+}
+
 bool testDeferredDestroyAndLookup()
 {
     bool passed = true;
@@ -542,6 +583,7 @@ int main()
     passed &= testAttachAndRequire();
     passed &= testInactiveUntilActivated();
     passed &= testUpdateOrder();
+    passed &= testUpdateOrderFollowsChanges();
     passed &= testDeferredDestroyAndLookup();
     passed &= testEnterAndExit();
     passed &= testCrateAndLedge();

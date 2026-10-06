@@ -132,6 +132,13 @@ target_link_libraries(input-tests PRIVATE engine)
 
 add_test(NAME input-tests COMMAND input-tests)
 
+# renderWorld() draw order (Renderable::layer), checked on pixels through SDL's
+# software renderer, so it needs no window.
+add_executable(render-world-tests tests/RenderWorldTests.cpp)
+target_link_libraries(render-world-tests PRIVATE engine)
+
+add_test(NAME render-world-tests COMMAND render-world-tests)
+
 add_executable(frame-workers-tests tests/FrameWorkersTests.cpp)
 target_link_libraries(frame-workers-tests PRIVATE engine-threads)
 

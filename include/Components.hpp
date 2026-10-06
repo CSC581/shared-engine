@@ -174,6 +174,12 @@ private:
 // the Transform when one is set. The texture is borrowed, not owned. An object
 // without a Renderable is never drawn, which is how spawn points, death zones
 // and scroll boundaries stay hidden.
+//
+// `layer` sets the draw order: lower layers are drawn first, so higher ones
+// appear on top (say background 0, platforms 1, players 2). Objects on the
+// same layer are drawn in creation order. It matters most for objects created
+// at unpredictable times, such as networked players and platforms, which
+// would otherwise land on top of whatever already existed.
 class Renderable : public Component {
 public:
     Renderable() = default;
@@ -186,6 +192,7 @@ public:
     Color color{255, 255, 255};
     SDL_Texture* texture = nullptr;
     bool visible = true;
+    int layer = 0;
 
 private:
     Transform* transform_ = nullptr;

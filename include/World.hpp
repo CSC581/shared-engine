@@ -3,6 +3,7 @@
 #include "FrameTime.hpp"
 #include "GameObject.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -81,6 +82,16 @@ public:
 
 private:
     std::vector<std::unique_ptr<GameObject>> objects_;
+    // Every component of every object, sorted into update order. Rebuilt only
+    // when structureVersion_ has moved past orderVersion_, that is when an
+    // object was created or destroyed or a component attached, instead of
+    // being re-sorted every frame. Guarded by orderMutex_ because
+    // updateComponents() may run on several FrameWorkers at once.
+    std::mutex orderMutex_;
+    std::vector<Component*> order_;
+    std::uint64_t structureVersion_ = 1;
+    std::uint64_t orderVersion_ = 0;
+
     // Filled by destroy() from any thread, drained by flushDestroyed().
     std::mutex pendingMutex_;
     std::vector<ObjectId> pendingDestroy_;

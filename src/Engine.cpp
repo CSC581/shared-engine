@@ -7,8 +7,10 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 Engine::Engine(const char* title, int width, int height)
     : width_(width),
@@ -186,16 +188,22 @@ void Engine::setScaleToggleKey(SDL_Scancode key)
 
 void renderWorld(SDL_Renderer* renderer, const World& world, float cameraX, float cameraY)
 {
+    std::vector<const Renderable*> drawn;
     for (const auto& object : world.objects()) {
         if (!object->isActive()) {
             continue;
         }
-
         const auto* renderable = object->get<Renderable>();
-        if (renderable == nullptr || !renderable->visible) {
-            continue;
+        if (renderable != nullptr && renderable->visible) {
+            drawn.push_back(renderable);
         }
+    }
 
+    // Stable, so objects on the same layer keep creation order.
+    std::stable_sort(drawn.begin(), drawn.end(),
+                     [](const Renderable* a, const Renderable* b) { return a->layer < b->layer; });
+
+    for (const Renderable* renderable : drawn) {
         const Transform& transform = renderable->transform();
         const SDL_FRect rect{
             transform.x - cameraX, transform.y - cameraY, transform.width, transform.height};

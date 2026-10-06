@@ -68,7 +68,7 @@ public:
         local_ = &world_.create("local-player");
         local_->add<Transform>(spawnX, spawnY, NetworkDemo::playerSize, NetworkDemo::playerSize);
         local_->add<Motion>();
-        local_->add<Renderable>(colorFor(1));
+        local_->add<Renderable>(colorFor(1)).layer = playerLayer;
         local_->add<Behavior>([this](GameObject& self, const FrameTime& time) { steer(self, time); });
         local_->setActive(true);
     }
@@ -303,6 +303,10 @@ private:
                                   player.name.empty() ? "?" : player.name.c_str(), label.score);
     }
 
+    // Platforms are drawn first and players over them, whichever arrived first.
+    static constexpr int platformLayer = 0;
+    static constexpr int playerLayer = 1;
+
     // Same colour for the same player in every window.
     static Color colorFor(Multiplayer::PlayerId id)
     {
@@ -316,14 +320,14 @@ private:
     {
         GameObject& object = world.create("remote-player");
         object.add<Transform>(player.x, player.y, NetworkDemo::playerSize, NetworkDemo::playerSize);
-        object.add<Renderable>(colorFor(player.id));
+        object.add<Renderable>(colorFor(player.id)).layer = playerLayer;
         return object;
     }
 
     static GameObject& makeRemotePlatform(World& world, const Multiplayer::Platform&)
     {
         GameObject& object = world.create("platform");
-        object.add<Renderable>(Color{90, 140, 110});
+        object.add<Renderable>(Color{90, 140, 110}).layer = platformLayer;
         return object;
     }
 

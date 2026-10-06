@@ -44,6 +44,8 @@ public:
     // Called once per frame by World, in priority() order across all objects.
     virtual void update(const FrameTime& time) { (void)time; }
 
+    // Read when World builds its update order, which it keeps until an object
+    // or component is added or removed, so it must not change after attach.
     virtual int priority() const { return UpdateOrder::Default; }
 
     GameObject& owner() const { return *owner_; }

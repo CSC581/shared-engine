@@ -14,8 +14,9 @@ struct SDL_Window;
 class Game;
 class World;
 
-// Draws every active, visible object in `world` that has a Renderable, in
-// creation order. cameraX/cameraY are subtracted from every position, so a game
+// Draws every active, visible object in `world` that has a Renderable, lowest
+// Renderable::layer first, and in creation order within a layer.
+// cameraX/cameraY are subtracted from every position, so a game
 // scrolls by moving the camera instead of the objects. Call it from
 // Game::render().
 void renderWorld(SDL_Renderer* renderer, const World& world, float cameraX = 0.0F, float cameraY = 0.0F);

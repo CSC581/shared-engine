@@ -103,6 +103,9 @@ public:
             slots_.resize(id + 1, nullptr);
         }
         slots_[id] = &attached;
+        if (structureVersion_ != nullptr) {
+            ++*structureVersion_;
+        }
 
         attached.onAttach();
         return attached;
@@ -141,6 +144,8 @@ public:
     const std::vector<std::unique_ptr<Component>>& components() const;
 
 private:
+    friend class World;
+
     Component* slot(std::size_t id) const
     {
         return id < slots_.size() ? slots_[id] : nullptr;
@@ -156,4 +161,9 @@ private:
     // The same components indexed by componentTypeId(); nullptr where the
     // object has no component of that type.
     std::vector<Component*> slots_;
+
+    // The owning World's structure counter, bumped on every add() so the World
+    // knows its cached update order is out of date. Set by World::create();
+    // null for an object made outside a World.
+    std::uint64_t* structureVersion_ = nullptr;
 };
