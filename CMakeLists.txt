@@ -143,9 +143,9 @@ target_link_libraries(collision-tests PRIVATE engine-geometry)
 add_test(NAME collision-tests COMMAND collision-tests)
 
 # The whole time story in one binary: Timeline and DeltaTimer semantics, the
-# concurrent case, and the seam with the pre-existing Entity/Game API, where
-# the FrameTime overloads sit beside the float ones rather than replacing them.
-# Links engine rather than engine-time because that last group needs Entity and
+# concurrent case, and the seam with the engine: Game's FrameTime overload
+# beside the float one, and game objects moving on game time. Links engine
+# rather than engine-time because that last group needs the object model and
 # Game; engine-time itself still has no SDL on its own link line.
 add_executable(timeline-tests tests/TimelineTests.cpp)
 target_link_libraries(timeline-tests PRIVATE engine)
