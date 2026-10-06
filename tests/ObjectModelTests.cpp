@@ -510,6 +510,29 @@ bool testParallelTags()
     return passed;
 }
 
+// destroy() from update() on two FrameWorkers at once: every request lands and
+// is applied by the next flushDestroyed() on the main thread.
+bool testParallelDestroy()
+{
+    World world;
+    for (const char* tag : { "left", "right" }) {
+        for (int i = 0; i < 200; ++i) {
+            GameObject& doomed = world.create(tag);
+            doomed.add<Behavior>([&world](GameObject& self, const FrameTime&) { world.destroy(self.id()); });
+            doomed.setActive(true);
+        }
+    }
+
+    FrameWorkers workers({
+        [&world](float dt) { world.updateComponents(frame(dt), "left"); },
+        [&world](float dt) { world.updateComponents(frame(dt), "right"); },
+    });
+    workers.runFrame(0.1F);
+    world.flushDestroyed();
+
+    return expect(world.objects().empty(), "every object destroyed from parallel updates should be removed");
+}
+
 } // namespace
 
 int main()
@@ -527,6 +550,7 @@ int main()
     passed &= testPlayerRidesKinematicPlatform();
     passed &= testLevel();
     passed &= testParallelTags();
+    passed &= testParallelDestroy();
 
     if (passed) {
         std::cout << "Object model tests passed.\n";

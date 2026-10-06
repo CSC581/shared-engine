@@ -17,6 +17,7 @@
 #include <iostream>
 #include <limits>
 #include <locale>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -495,6 +496,49 @@ bool serverSceneFollowsSessions()
     return passed;
 }
 
+// A server platform can circle as well as slide, so a networked level has the
+// same movement patterns as a local one.
+bool serverCircularPlatform()
+{
+    ManualClock clock;
+    Network::ServerConfig config;
+    config.spawnPoints = {{0.0F, 0.0F}};
+    Network::PlatformPath circle;
+    circle.id = 9;
+    circle.shape = Network::PlatformPath::Shape::Circular;
+    circle.centerX = 100.0F;
+    circle.centerY = 100.0F;
+    circle.radius = 50.0F;
+    // One lap (2 * pi * 50 units) per second.
+    circle.speed = 314.159265F;
+    config.platforms = {circle};
+    Network::NetworkServer server(clock, config);
+
+    Network::PlatformState start = server.snapshot().platforms.at(0);
+    bool passed = expect(start.id == 9 && std::fabs(start.x - 150.0F) < 0.01F && std::fabs(start.y - 100.0F) < 0.01F,
+                         "a circular platform should start at the rightmost point of its circle");
+
+    // A quarter of a lap: clockwise on screen, so to the bottom of the circle.
+    clock.advance(kNsPerSec / 4);
+    server.update();
+    const Network::PlatformState quarter = server.snapshot().platforms.at(0);
+    passed &= expect(std::fabs(quarter.x - 100.0F) < 0.05F && std::fabs(quarter.y - 150.0F) < 0.05F,
+                     "a quarter of a lap should reach the bottom of the circle");
+    passed &= expect(std::fabs(std::hypot(quarter.x - 100.0F, quarter.y - 100.0F) - 50.0F) < 0.05F,
+                     "a circular platform should stay on its radius");
+
+    bool threw = false;
+    try {
+        Network::ServerConfig bad = config;
+        bad.platforms[0].radius = 0.0F;
+        Network::NetworkServer rejected(clock, bad);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    passed &= expect(threw, "a circular platform with no radius should be refused");
+    return passed;
+}
+
 // maxPlayers 0 accepts any number of players; a positive cap still refuses.
 bool serverPlayerCap()
 {
@@ -718,6 +762,7 @@ int main()
     passed &= serverCountsAcceptedTrafficAndSessions();
     passed &= serverSceneFollowsSessions();
     passed &= serverPlayerCap();
+    passed &= serverCircularPlatform();
     passed &= worldObserverRetriesWithoutKeepingStaleState();
     passed &= playerClientRejectsWorldOnlyReply();
 

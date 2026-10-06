@@ -78,6 +78,7 @@ GameObject& World::create(std::string tag)
 
 void World::destroy(ObjectId id)
 {
+    const std::lock_guard<std::mutex> lock(pendingMutex_);
     pendingDestroy_.push_back(id);
 }
 
@@ -224,12 +225,14 @@ void World::resolveCollisions()
 
 void World::flushDestroyed()
 {
-    if (pendingDestroy_.empty()) {
+    std::vector<ObjectId> doomed;
+    {
+        const std::lock_guard<std::mutex> lock(pendingMutex_);
+        doomed.swap(pendingDestroy_);
+    }
+    if (doomed.empty()) {
         return;
     }
-
-    std::vector<ObjectId> doomed;
-    doomed.swap(pendingDestroy_);
 
     objects_.erase(
         std::remove_if(objects_.begin(), objects_.end(),

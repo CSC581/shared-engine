@@ -36,21 +36,35 @@ NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
 
     platforms_.reserve(config_.platforms.size());
     for (const PlatformPath& path : config_.platforms) {
-        if (path.id == 0 || !std::isfinite(path.startX) || !std::isfinite(path.startY) ||
-            !std::isfinite(path.endX) || !std::isfinite(path.endY) || !std::isfinite(path.speed) ||
-            path.speed <= 0.0F || !std::isfinite(path.width) || !std::isfinite(path.height) ||
-            path.width <= 0.0F || path.height <= 0.0F) {
+        const bool circular = path.shape == PlatformPath::Shape::Circular;
+        if (path.id == 0 || !std::isfinite(path.speed) || path.speed <= 0.0F || !std::isfinite(path.width) ||
+            !std::isfinite(path.height) || path.width <= 0.0F || path.height <= 0.0F) {
             throw std::invalid_argument("NetworkServer platform path is invalid");
         }
 
-        if (pathLengthOf(path) <= 0.0F) {
-            throw std::invalid_argument("NetworkServer platform path must have non-zero length");
+        if (circular) {
+            if (!std::isfinite(path.centerX) || !std::isfinite(path.centerY) || !std::isfinite(path.radius) ||
+                path.radius <= 0.0F) {
+                throw std::invalid_argument("NetworkServer circular platform needs a finite centre and positive radius");
+            }
+        } else {
+            if (!std::isfinite(path.startX) || !std::isfinite(path.startY) || !std::isfinite(path.endX) ||
+                !std::isfinite(path.endY)) {
+                throw std::invalid_argument("NetworkServer platform path is invalid");
+            }
+            if (pathLengthOf(path) <= 0.0F) {
+                throw std::invalid_argument("NetworkServer platform path must have non-zero length");
+            }
         }
 
         // The same moving platform a client builds: a PathMover drives it,
         // starting at the path's first point.
         GameObject& platform = world_.create("platform");
-        platform.add<PathMover>(PathMover::Linear{path.startX, path.startY, path.endX, path.endY}, path.speed);
+        if (circular) {
+            platform.add<PathMover>(PathMover::Circular{path.centerX, path.centerY, path.radius}, path.speed);
+        } else {
+            platform.add<PathMover>(PathMover::Linear{path.startX, path.startY, path.endX, path.endY}, path.speed);
+        }
         Transform& transform = *platform.get<Transform>();
         transform.width = path.width;
         transform.height = path.height;

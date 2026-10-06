@@ -19,10 +19,19 @@ struct SpawnPoint {
     float y = 0.0F;
 };
 
-// Straight-line ping-pong path. Positions are in the same space clients use for
-// players (arena-local for the network demo). Speed is units per second of the
-// server's TimeSource (real nanoseconds when using RealTimeClock).
+// A server-owned moving platform's path, driven by a PathMover component, so a
+// networked platform can move in any pattern a local one can:
+//   Linear    back and forth from start to end (the default)
+//   Circular  around (centerX, centerY) at `radius`, starting at the rightmost
+//             point; start/end are ignored
+// Positions are in the same space clients use for players (arena-local for the
+// network demo). Speed is units per second of the server's TimeSource (real
+// nanoseconds when using RealTimeClock); on a circle it is speed along the
+// rim. The circle fields come last so existing {id, start…, height}
+// initialisers still mean a linear path.
 struct PlatformPath {
+    enum class Shape { Linear, Circular };
+
     std::uint32_t id = 0;
     float startX = 0.0F;
     float startY = 0.0F;
@@ -31,6 +40,10 @@ struct PlatformPath {
     float speed = 80.0F;
     float width = 96.0F;
     float height = 20.0F;
+    Shape shape = Shape::Linear;
+    float centerX = 0.0F;
+    float centerY = 0.0F;
+    float radius = 0.0F;
 };
 
 // The application supplies initial positions and optional moving platforms.
