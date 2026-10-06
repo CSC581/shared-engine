@@ -219,6 +219,50 @@ bool testDeferredDestroyAndLookup()
     return passed;
 }
 
+// onEnter and onExit fire once per overlap, onCollide on every frame of it. A
+// destroyed object gets no onExit.
+bool testEnterAndExit()
+{
+    bool passed = true;
+    World world;
+
+    int enters = 0;
+    int stays = 0;
+    int exits = 0;
+    Collider& zone = *makeZone(world, "zone", { 100.0F, 0.0F, 50.0F, 50.0F }, nullptr).get<Collider>();
+    zone.onEnter = [&enters](GameObject&, GameObject&) { ++enters; };
+    zone.onCollide = [&stays](GameObject&, GameObject&) { ++stays; };
+    zone.onExit = [&exits](GameObject&, GameObject&) { ++exits; };
+
+    GameObject& body = world.create("body");
+    body.add<Transform>(0.0F, 10.0F, 10.0F, 10.0F);
+    body.add<Collider>(Collider::Kind::Trigger);
+    body.setActive(true);
+    float& bodyX = body.get<Transform>()->x;
+
+    run(world, 1);
+    passed &= expect(enters == 0 && stays == 0 && exits == 0, "no callback before the overlap");
+
+    bodyX = 110.0F;
+    run(world, 3);
+    passed &= expect(enters == 1 && stays == 3 && exits == 0,
+                     "onEnter should fire once and onCollide every frame of the overlap");
+
+    bodyX = 0.0F;
+    run(world, 2);
+    passed &= expect(exits == 1 && stays == 3, "leaving should fire onExit once");
+
+    bodyX = 110.0F;
+    run(world, 1);
+    passed &= expect(enters == 2, "coming back should fire onEnter again");
+
+    world.destroy(body.id());
+    run(world, 2);
+    passed &= expect(exits == 1, "a destroyed object should not fire onExit");
+
+    return passed;
+}
+
 // --- Combining components into the Part 2 objects ------------------------------
 
 // A static platform is Transform + Collider + Renderable: no Motion, so nothing
@@ -469,6 +513,7 @@ int main()
     passed &= testInactiveUntilActivated();
     passed &= testUpdateOrder();
     passed &= testDeferredDestroyAndLookup();
+    passed &= testEnterAndExit();
     passed &= testCrateAndLedge();
     passed &= testStaticPlatforms();
     passed &= testMovingPlatforms();

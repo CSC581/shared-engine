@@ -139,8 +139,12 @@ private:
 // Solid colliders block each other: an overlapping object with Motion is pushed
 // out and loses its velocity along that axis. Objects without Motion, or whose
 // Motion is kinematic, are never pushed. Trigger colliders never push or get
-// pushed; they only report the overlap. Either kind calls onCollide, every
-// frame the overlap lasts, with (this object, the other object).
+// pushed; they only report the overlap. Either kind calls back with (this
+// object, the other object):
+//   onEnter    once, on the first frame the two overlap
+//   onCollide  every frame the overlap lasts, including the first
+//   onExit     once, on the first frame they no longer overlap (or one of
+//              them was deactivated); skipped if either was destroyed
 //
 // Two colliders interact only when their layer masks share a bit.
 class Collider : public Component {
@@ -157,7 +161,9 @@ public:
 
     Kind kind;
     std::uint32_t layers;
+    Callback onEnter;
     Callback onCollide;
+    Callback onExit;
 
 private:
     Transform* transform_ = nullptr;

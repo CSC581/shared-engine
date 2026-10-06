@@ -4,14 +4,16 @@
 #include "GameObject.hpp"
 
 #include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Owns every GameObject in a scene and runs one frame of them.
 //
 // A frame is three passes, in this order:
 //   1. updateComponents()  every component's update(), in priority order
-//   2. resolveCollisions() Solid colliders pushed apart, onCollide called
+//   2. resolveCollisions() Solid colliders pushed apart, collision callbacks called
 //   3. flushDestroyed()    objects passed to destroy() are removed
 // update() runs all three. A game that splits work across FrameWorkers calls
 // updateComponents() once per worker with a different tag, then runs the other
@@ -72,4 +74,10 @@ private:
     std::vector<std::unique_ptr<GameObject>> objects_;
     std::vector<ObjectId> pendingDestroy_;
     ObjectId nextId_ = 1;
+
+    // Pairs that overlapped in the last collision pass, smaller id first.
+    // Compared with this pass's pairs to tell onEnter and onExit apart from
+    // onCollide. Ids, not pointers, so a destroyed object leaves nothing
+    // dangling.
+    std::set<std::pair<ObjectId, ObjectId>> contacts_;
 };
