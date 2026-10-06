@@ -1,61 +1,82 @@
-# Shared Engine, Milestone 2: Time and Networking Foundations
+# Shared Engine, Milestone 3: Game Object Model and Networked Scene
 
-**Team:** Harsha Vardhan Puvvadi, Seojin Kim, Vanaja Agarwal · **CSC 581** · All five sections (1–5) are implemented.
+**Team:** Harsha Vardhan Puvvadi, Seojin Kim, Vanaja Agarwal · **CSC 581**
 
-This is our C++17 game engine. It uses SDL3 for the window, input and drawing, and ZeroMQ for networking. Each game keeps its own rules, and any networking goes through the engine. There are relevant tests that checks for each module. This README only covers Milestone 2. Entities, gravity, collision, input and scaling were done in Milestone 1 and are left out here.
+This is our C++17 game engine. It uses SDL3 for the window, input and drawing, and ZeroMQ for networking. Each game keeps its own rules, and any networking goes through the engine. This README covers Milestone 3; the API reference at the end also covers the time and networking modules from Milestone 2.
 
 ```bash
 git submodule update --init --recursive
-cmake -S . -B build && cmake --build build -j 4 && ctest --test-dir build --output-on-failure
+cmake -S . -B build && cmake --build build -j 4 -- -k   # -k: keep going past the unported games
+ctest --test-dir build --output-on-failure -E starfall
 ```
 
-## What each section asked for and how we did it
+> The individual games and two sandbox tools (`timeline-sandbox`, `thread-loop-sandbox`) still use Milestone 2's `Entity` class and are being ported, so a full build currently reports errors for those targets only. Every engine library, the demo programs and all 13 engine test suites build and pass.
 
-| §   | Assignment asks for                                                                     | What we built                                                                                                                                                                                                                                                                  |
-| --- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | A time system that can pause, speed up (2×) and slow down (0.5×)                        | A `Timeline` clock that counts time on top of another clock. The engine keeps three: **real time** (never stops), **game time** (pausable, scalable) and **loop count**. Objects move by "time since last frame" from game time, so pausing or scaling needs no change to them |
-| 2   | A server with no window that keeps ≥3 separate client windows in sync                   | Each client moves its own player and sends the position to the server, and the server replies with everyone's latest positions. Clients can join at any time                                                                                                                   |
-| 3   | Game loop split across ≥2 threads, safely                                               | `FrameWorkers` gives a game long-lived worker threads and waits for all of them each frame. Apex runs its platforms on one and its player on the other. The main thread keeps input, collisions and drawing. Shared objects are locked while being read or written             |
-| 4   | A server where one slow client does not slow the others, without ZeroMQ's Router/Dealer | The server gives every client its own thread and connection. A slow or paused client only delays its own thread. Moving platforms are run by the server so all clients see them in the same place                                                                              |
-| 5   | Peer-to-peer networking                                                                 | **Hybrid.** Players send their positions straight to each other, and a server (separate, or hosted inside one player's game) only supplies the moving platforms. Games switch between client-server and peer-to-peer with one setting                                          |
+## Milestone 3 progress
 
-<!-- ### How to see each section
+| Part | Assignment asks for | Status | What we built |
+| ---- | ------------------- | ------ | ------------- |
+| 1A | A component-, property- or custom-based object model (no monolithic hierarchy) that new object types can be built from | Done | A `GameObject` is an id, a tag and the components it owns. A new kind of object is a new mix of components, not a new class. `World` owns all objects and runs each frame |
+| 1B | The object model on every network endpoint; up to 4 clients; movement and platforms synced; disconnects handled | Done | The server keeps players and platforms as `GameObject`s. `NetworkWorldSync` mirrors each client's session into its `World`, removing a player's object when they leave or time out. Every endpoint is multithreaded and there is no player cap. Measured keyboard-to-other-screen latency: ~20 ms with 4 clients |
+| 1C | A second network data format and performance experiments | Not started | |
+| 2 | Individual games built on the engine | In progress | Games are being ported to the object model |
 
-Each of us built a game on the engine, and each section can be checked by running one of them. The commands assume the build step above has been run.
+### Components
 
-| §   | Harsha: Apex Ascent                                                                                                                                                   | Seojin: Pokemon Hunter           | Vanaja: _game name_                  |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------ |
-| 1   | `./build/apex-ascent`, then `P` to pause and `1`/`2`/`3` for 0.5×/1×/2×                                                                                                  | _TODO (Seojin): command, what to do_ | _TODO (Vanaja): command, what to do_ |
-| 2   | `./build/apex-network-server`, then `./build/apex-ascent --join` in three terminals                                                                                    | _TODO (Seojin)_                      | _TODO (Vanaja)_                      |
-| 3   | `./build/apex-ascent`. Platforms and player physics run on two `FrameWorkers` threads (`ps -T -p $(pgrep apex-ascent)` lists them)                                    | _TODO (Seojin)_                      | _TODO (Vanaja)_                      |
-| 4   | `./build/apex-network-server --rates`, join three clients, pause one with `P`. The others keep their rate                                                             | _TODO (Seojin)_                      | _TODO (Vanaja)_                      |
-| 5   | `./build/apex-ascent --mode peer-to-peer --id 1 --port 7200 --host`, then `--mode peer-to-peer --id 2 --port 7202 --peer tcp://127.0.0.1:7200` (and `--id 3` likewise) | _TODO (Seojin)_                      | _TODO (Vanaja)_                      | -->
+| Component | Gives an object | Notes |
+| --------- | --------------- | ----- |
+| `Transform` | position and size | every other component requires it |
+| `Motion` | velocity, applied each frame on game time | `kinematic` objects are never pushed by collisions |
+| `Gravity` | constant downward acceleration | per object, default 980 |
+| `PathMover` | movement along a `Linear` (back and forth) or `Circular` path | drives `Motion`, so riders can read its velocity |
+| `Collider` | collisions: `Solid` (blocks) or `Trigger` (reports only) | `onEnter` / `onCollide` (every frame) / `onExit` callbacks; layer masks |
+| `Renderable` | drawn by `renderWorld()` as a colour or texture | `layer` sets draw order; no `Renderable` = hidden |
+| `Behavior` | game logic each frame (e.g. reading the keyboard) | runs before movement |
+| `NetworkIdentity` | which network player or platform the object stands for | used by the server and `NetworkWorldSync` |
 
-## Files for this milestone
+| Part 2 object | Built from |
+| ------------- | ---------- |
+| Player | `Transform` + `Gravity` + `Collider` + `Renderable` + `Behavior` |
+| Static platform | `Transform` + `Collider` + `Renderable` |
+| Moving platform | the same + `PathMover` (`Linear` or `Circular`) |
+| Spawn point (hidden) | `Transform` only |
+| Death zone (hidden) | `Transform` + `Trigger` collider whose callback teleports to a spawn point |
+| Side scrolling | a hidden trigger that moves the camera passed to `renderWorld()` |
+
+### Try 1B
+
+```bash
+./build/network-server                              # headless server, no player limit
+./build/multiplayer-demo --mode client-server       # in up to 4 terminals
+```
+
+Move with WASD. Each window shows the measured latency. Close one window and its player disappears from the others. `--mode peer-to-peer` runs the same game over the peer mesh (see `--help`).
+
+### Files for Milestone 3
 
 ```text
-§1 Time
-├── include/TimeSource.hpp, TimeUnits.hpp   src/RealTimeClock.cpp    "what time is it" interface, real clock, units
-├── include/Timeline.hpp                    src/Timeline.cpp         the pausable, scalable clock
-├── include/DeltaTimer.hpp, FrameTime.hpp   src/DeltaTimer.cpp       "time since last frame"
-└── include/Engine.hpp                      src/Engine.cpp           owns the three clocks, builds FrameTime each frame
-§2 Client-server
-├── include/NetworkProtocol.hpp             src/NetworkProtocol.cpp  the messages clients and server exchange
-├── include/WireFormat.hpp, Endpoint.hpp, ZmqMessage.hpp             message encoding, addresses, ZeroMQ send/receive
-├── include/NetworkClient.hpp               src/NetworkClient.cpp    client: join, send position, receive world
-└── include/NetworkServer.hpp               src/NetworkServer.cpp    server: who is connected, where everyone is
-§3 Threads
-├── include/Entity.hpp                      src/Entity.cpp           game objects, safe to update from several threads
-└── include/FrameWorkers.hpp                src/FrameWorkers.cpp     splits a game's update across threads, one per task
-§4 Asynchronous server
-├── include/NetworkServerHost.hpp           src/NetworkServerHost.cpp  one thread per client, platform timer
-└── include/SendPacer.hpp                   src/SendPacer.cpp        send rate follows game speed (0.5x halves, 2x doubles)
-§5 Peer-to-peer
-├── include/PeerProtocol.hpp                src/PeerProtocol.cpp     messages peers exchange
-├── include/PeerSession.hpp                 src/PeerSession.cpp      players finding and talking to each other
-├── include/WorldStateClient.hpp            src/WorldStateClient.cpp fetches only the moving platforms
-└── include/Multiplayer.hpp                 src/Multiplayer.cpp      one simple API over both networking styles
+1A Object model
+├── include/Component.hpp, GameObject.hpp       src/GameObject.cpp     component base, object (add/get/require)
+├── include/Components.hpp, Color.hpp           src/Components.cpp     the built-in components
+├── include/World.hpp                           src/World.cpp          owns objects; update → collisions → destroy
+└── include/Engine.hpp                          src/Engine.cpp         renderWorld(): draws Renderables by layer
+1B Networked scene
+├── include/NetworkServer.hpp                   src/NetworkServer.cpp  server scene kept in a World
+├── include/NetworkWorldSync.hpp                src/NetworkWorldSync.cpp  mirrors a session into a client's World
+└── include/Multiplayer.hpp                     src/Multiplayer.cpp    client-server session on its own network thread
 ```
+
+### Design decisions
+
+- **Composition, not inheritance.** Components declare what they need with `require<T>()` (e.g. `Gravity` pulls in `Motion` and `Transform`). Lookups are one array read per type.
+- **Fixed update order.** Components run by priority (`Behavior` → `PathMover` → `Gravity` → `Motion`), so input, then velocity, then position, every frame. The sorted order is cached and rebuilt only when objects or components change.
+- **The network protocol did not change.** Both ends now keep the scene in a `World`. Network threads never touch a `World`: the server works on it under its lock, and clients hand data over through `Session::update()` on the main thread.
+- **Platforms move on the server's tick** (60 Hz), not once per client request, so the server's work does not grow with the number of clients.
+- **Threads:** `World::destroy()` is safe from any thread. Creating objects is main-thread only.
+
+**Known limitations:** only players and platforms are synced; remote objects are not smoothed between updates; a player standing on a sideways-moving platform is not carried; collisions check every pair of objects.
+
+<div style="page-break-before: always"></div>
 
 ## API reference
 
@@ -114,10 +135,10 @@ Create `NetworkServerHost(serverConfig, hostConfig)`, then call `start()` and la
 | `Config` Setting                     | Default        | Meaning                                                                                                                                                                    |
 | ------------------------------------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ServerConfig.spawnPoints`           | none           | Where new players appear (`x`, `y`)                                                                                                                                        |
-| `ServerConfig.platforms`             | none           | Moving platforms: start and end point, `speed` (80 units/s), `width` (96), `height` (20)                                                                                   |
-| `ServerConfig.maxPlayers`            | `8`            | Most players allowed at once                                                                                                                                               |
+| `ServerConfig.platforms`             | none           | Moving platforms: start and end point (or `shape = Circular` with a centre and `radius`), `speed` (80 units/s), `width` (96), `height` (20)                               |
+| `ServerConfig.maxPlayers`            | `0`            | Most players allowed at once; `0` means no limit                                                                                                                           |
 | `ServerConfig.inactivityTimeoutTics` | 3 seconds      | A player silent this long is removed                                                                                                                                       |
-| `HostConfig.mode`                    | `Dedicated`    | `Dedicated` uses one thread per client (§4). `Listen` answers everyone on one connection, so a slow client delays the others. Apex uses it to host platforms inside a game |
+| `HostConfig.mode`                    | `Dedicated`    | `Dedicated` uses one thread per client. `Listen` answers everyone on one connection, so a slow client delays the others. Apex uses it to host platforms inside a game |
 | `HostConfig.bindEndpoint`            | `tcp://*:5555` | Address and port the server listens on                                                                                                                                     |
 | `HostConfig.advertiseHost`           | `127.0.0.1`    | This machine's address as clients should reach it                                                                                                                          |
 | `HostConfig.tickInterval`            | 16 ms          | How often platforms move                                                                                                                                                   |
@@ -139,29 +160,21 @@ side, `NetworkClient(clock, endpoint)` offers `start()`, `poll()`, `submitPositi
 | `GET_WORLD`         | nothing (peer-to-peer)               | `WORLD_STATE`  | platform positions only                            |
 | any invalid request |                                      | `ERROR`        | reason                                             |
 
-## Design decisions
-
-- **Two kinds of time.** Movement uses game time. Networking, input and drawing use real time,
-  so a paused client still hears the "unpause" key and stays connected.
-- **One thread per client.** A basic ZeroMQ request/reply connection handles one request at a
-  time, so the public address only admits new players and gives each a private connection.
-- **Games own their rules.** The server only stores and shares positions, so every team game reuses it.
-
 <div style="page-break-before: always"></div>
 
 ## Appendix: how the pieces fit
 
-**A. One frame and the clocks behind it (§1).** Each frame runs steps 1–5. Movement uses game
+**A. One frame and the clocks behind it.** Each frame runs steps 1–5. Movement uses game
 time, which the game can pause or scale. Networking keeps running on real time.
 
 ![Frame and time flow](docs/frame-time-flow.svg)
 
-**B. Client-server (§2, §4).** A new client joins through the public socket and is handed its own
+**B. Client-server.** A new client joins through the public socket and is handed its own
 worker thread. After that it only talks to that worker. The server moves platforms on its own.
 
 ![Client-server flow](docs/client-server-flow.svg)
 
-**C. Peer-to-peer, hybrid (§5).** A new peer asks any running peer for the list of players, then
+**C. Peer-to-peer, hybrid.** A new peer asks any running peer for the list of players, then
 sends its position straight to them. Platforms optionally come from a server.
 
 ![Peer-to-peer flow](docs/peer-hybrid-flow.svg)
