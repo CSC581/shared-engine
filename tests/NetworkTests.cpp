@@ -451,6 +451,80 @@ bool serverCountsAcceptedTrafficAndSessions()
     return passed;
 }
 
+// The server keeps its scene as GameObjects: players appear on JOIN, follow
+// POSITION, and leave the scene on LEAVE; platforms move by PathMover on
+// update() only.
+bool serverSceneFollowsSessions()
+{
+    ManualClock clock;
+    Network::ServerConfig config;
+    config.spawnPoints = {{10.0F, 20.0F}, {30.0F, 40.0F}};
+    config.platforms = {{5, 0.0F, 0.0F, 100.0F, 0.0F, 50.0F, 30.0F, 10.0F}};
+    Network::NetworkServer server(clock, config);
+
+    Network::Reply reply;
+    std::string error;
+    const Network::SessionToken tokenA(32, 'a');
+    const Network::SessionToken tokenB(32, 'b');
+    Network::decodeReply(server.handle(Network::encodeJoin(tokenA, "A")), reply, error);
+    const Network::PlayerId a = reply.playerId;
+    Network::decodeReply(server.handle(Network::encodeJoin(tokenB, "B")), reply, error);
+    const Network::PlayerId b = reply.playerId;
+
+    float bx = 0.0F;
+    bool passed = expect(containsPlayer(server.snapshot(), a) && containsPlayer(server.snapshot(), b, &bx) &&
+                             bx == 30.0F,
+                         "joined players should be in the scene at distinct spawn points");
+
+    server.handle(Network::encodePosition(b, tokenB, {7.0F, 8.0F, 1, {}}));
+    passed &= expect(containsPlayer(server.snapshot(), b, &bx) && bx == 7.0F,
+                     "POSITION should move the player's object");
+
+    server.handle(Network::encodeLeave(a, tokenA));
+    const Network::WorldSnapshot afterLeave = server.snapshot();
+    passed &= expect(!containsPlayer(afterLeave, a) && containsPlayer(afterLeave, b) && server.playerCount() == 1,
+                     "LEAVE should remove only that player from the scene");
+
+    clock.advance(kNsPerSec / 2);
+    passed &= expect(server.snapshot().platforms.at(0).x == 0.0F,
+                     "platforms should not move until update()");
+    server.update();
+    const Network::PlatformState platform = server.snapshot().platforms.at(0);
+    passed &= expect(platform.id == 5 && platform.x == 25.0F && platform.width == 30.0F,
+                     "update() should move the platform along its path");
+    return passed;
+}
+
+// maxPlayers 0 accepts any number of players; a positive cap still refuses.
+bool serverPlayerCap()
+{
+    ManualClock clock;
+    bool passed = true;
+
+    for (const std::size_t cap : {std::size_t{0}, std::size_t{2}}) {
+        Network::ServerConfig config;
+        config.spawnPoints = {{0.0F, 0.0F}};
+        config.maxPlayers = cap;
+        Network::NetworkServer server(clock, config);
+
+        int welcomed = 0;
+        // Tokens must be hex, so ten distinct ones: "000…0" to "999…9".
+        for (char token = '0'; token <= '9'; ++token) {
+            Network::Reply reply;
+            std::string error;
+            if (Network::decodeReply(server.handle(Network::encodeJoin(Network::SessionToken(32, token))), reply,
+                                     error) &&
+                reply.type == Network::ReplyType::Welcome) {
+                ++welcomed;
+            }
+        }
+        passed &= expect(cap == 0 ? welcomed == 10 : welcomed == 2,
+                         cap == 0 ? "an uncapped server should accept every JOIN"
+                                  : "a capped server should refuse JOINs past its cap");
+    }
+    return passed;
+}
+
 bool worldRequestDoesNotUsePlayerSlots()
 {
     ManualClock clock;
@@ -469,6 +543,8 @@ bool worldRequestDoesNotUsePlayerSlots()
     const Network::PlayerId playerId = reply.playerId;
     passed &= expect(server.playerCount() == 1, "ordinary JOIN should register one player");
     clock.advance(kNsPerSec);
+    // Platforms advance on update() (the host's tick thread), not per request.
+    server.update();
     Network::Message worldMessage = server.handle(Network::encodeGetWorld());
     passed &= expect(worldMessage.size() == 9 &&
                          Network::decodeReply(worldMessage, reply, error) &&
@@ -640,6 +716,8 @@ int main()
     passed &= worldStateClientReadsOnlyWorld();
     passed &= worldRequestDoesNotUsePlayerSlots();
     passed &= serverCountsAcceptedTrafficAndSessions();
+    passed &= serverSceneFollowsSessions();
+    passed &= serverPlayerCap();
     passed &= worldObserverRetriesWithoutKeepingStaleState();
     passed &= playerClientRejectsWorldOnlyReply();
 

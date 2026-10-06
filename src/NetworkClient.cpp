@@ -265,6 +265,11 @@ ConnectionState NetworkClient::state() const
     return impl_->state;
 }
 
+bool NetworkClient::awaitingReply() const
+{
+    return impl_->waitingForReply;
+}
+
 PlayerId NetworkClient::playerId() const
 {
     return impl_->playerId;

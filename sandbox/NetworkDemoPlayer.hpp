@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Entity.hpp"
+#include "Collision.hpp"
 #include "NetworkDemoConfig.hpp"
 
 #include <algorithm>
@@ -20,8 +20,8 @@ public:
         }
         for (const auto& player : snapshot.players) {
             if (id != 0 && player.id == id) {
-                entity_.setPosition(player.x, player.y);
-                entity_.setVelocity(0.0F, 0.0F);
+                x_ = player.x;
+                y_ = player.y;
                 id_ = id;
                 return true;
             }
@@ -41,17 +41,16 @@ public:
             x /= length;
             y /= length;
         }
-        entity_.setVelocity(x * playerSpeed, y * playerSpeed);
-        entity_.update(deltaTime);
-        entity_.setPosition(std::clamp(entity_.getX(), 0.0F, arenaWidth - playerSize),
-                            std::clamp(entity_.getY(), 0.0F, arenaHeight - playerSize));
+        x_ = std::clamp(x_ + x * playerSpeed * deltaTime, 0.0F, arenaWidth - playerSize);
+        y_ = std::clamp(y_ + y * playerSpeed * deltaTime, 0.0F, arenaHeight - playerSize);
     }
 
-    Rect bounds() const { return entity_.getBounds(); }
+    Rect bounds() const { return { x_, y_, playerSize, playerSize }; }
 
 private:
     Network::PlayerId id_ = 0;
-    Entity entity_{0.0F, 0.0F, playerSize, playerSize};
+    float x_ = 0.0F;
+    float y_ = 0.0F;
 };
 
 } // namespace NetworkDemo

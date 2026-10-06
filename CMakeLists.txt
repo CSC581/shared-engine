@@ -83,11 +83,13 @@ target_link_libraries(peer-core PUBLIC cppzmq-static Threads::Threads)
 # interface twice, once on each; a game links this instead of either.
 add_library(multiplayer STATIC
     src/Multiplayer.cpp
+    src/NetworkWorldSync.cpp
     src/SendPacer.cpp
 )
 
 target_include_directories(multiplayer PUBLIC include)
-target_link_libraries(multiplayer PUBLIC network-core peer-core)
+# engine-geometry for NetworkWorldSync, which mirrors a session into a World.
+target_link_libraries(multiplayer PUBLIC network-core peer-core engine-geometry)
 
 # SDL-free game object model (GameObject, Component, the built-in components,
 # World) and the box geometry it collides with. No SDL on this link line, so a
@@ -191,6 +193,13 @@ add_executable(multiplayer-tests tests/MultiplayerTests.cpp)
 target_link_libraries(multiplayer-tests PRIVATE multiplayer)
 
 add_test(NAME multiplayer-tests COMMAND multiplayer-tests)
+
+# Part 1B, client side: a session mirrored into a World. Players and platforms
+# appear, follow the session and leave the scene when it stops reporting them.
+add_executable(network-world-sync-tests tests/NetworkWorldSyncTests.cpp)
+target_link_libraries(network-world-sync-tests PRIVATE multiplayer)
+
+add_test(NAME network-world-sync-tests COMMAND network-world-sync-tests)
 
 # Dear ImGui, for the timeline sandbox and nothing else. Fetched rather than
 # vendored as a submodule: it is a development tool for one target, not a

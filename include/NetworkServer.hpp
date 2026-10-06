@@ -3,6 +3,7 @@
 #include "NetworkProtocol.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
+#include "World.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -38,7 +39,9 @@ struct PlatformPath {
 struct ServerConfig {
     std::vector<SpawnPoint> spawnPoints;
     std::vector<PlatformPath> platforms;
-    std::size_t maxPlayers = 8;
+    // 0 accepts any number of players. Spawn points are reused in turn once
+    // there are more players than points.
+    std::size_t maxPlayers = 0;
     // In the supplied clock's units; the default assumes real nanoseconds.
     std::int64_t inactivityTimeoutTics = 3 * kNsPerSec;
 };
@@ -55,10 +58,17 @@ struct PlayerTraffic {
 // Thread-safe session/state store, independent of SDL and ZeroMQ.
 // Positions are trusted client reports, not validated game physics.
 //
+// The scene is kept in the engine's object model, as on every client: each
+// player and each platform is a GameObject in a World, tagged with a
+// NetworkIdentity. Platforms move by a PathMover component; a player's
+// position is its Transform. Session bookkeeping (tokens, sequence numbers,
+// liveness) stays beside the World, because it describes a connection rather
+// than anything in the scene.
+//
 // Every public method may be called from any thread (Section 4 per-client
 // workers share one instance). std::mutex is not recursive, so public methods
 // must not call each other while holding the lock — private helpers assume the
-// lock is already held.
+// lock is already held. The World is touched only under that lock.
 class NetworkServer {
 public:
     NetworkServer(const TimeSource& clock, ServerConfig config);
@@ -66,10 +76,14 @@ public:
     NetworkServer(const NetworkServer&) = delete;
     NetworkServer& operator=(const NetworkServer&) = delete;
 
-    // Advances server-owned platforms on real time and expires idle clients.
+    // Advances the World (server-owned platforms) by the real time elapsed
+    // since the last call, and expires idle clients. NetworkServerHost calls
+    // this from its tick thread; it is the only thing that moves platforms, so
+    // the World advances at the tick rate however many clients are sending.
     void update();
 
     // Processes one decoded transport message and returns its reply message.
+    // Does not advance platforms: replies carry the poses of the last update().
     Message handle(const Message& message);
 
     WorldSnapshot snapshot() const;
@@ -84,29 +98,27 @@ public:
     std::vector<PlayerTraffic> traffic() const;
 
 private:
+    // A connected player: its connection bookkeeping, and the GameObject that
+    // stands for it in the World. Only this class creates or destroys that
+    // object, and it erases the entry in the same step, so the pointer is
+    // valid for as long as the entry exists.
     struct ActivePlayer {
-        PlayerState state;
+        GameObject* object = nullptr;
+        std::string name;
+        std::string data;
         SessionToken sessionToken;
         std::uint64_t lastSequence = 0;
         std::int64_t lastHeard = 0;
         std::uint64_t acceptedPositions = 0;
     };
 
-    struct ActivePlatform {
-        PlatformPath path;
-        PlatformState state;
-        // Distance along the A↔B segment; ping-pong via velocity sign.
-        float distance = 0.0F;
-        float velocity = 0.0F;
-        float pathLength = 0.0F;
-    };
-
     // Callers must hold mutex_.
     void expireInactivePlayers(std::int64_t now);
     void advancePlatforms(std::int64_t now);
+    void removePlayer(std::unordered_map<PlayerId, ActivePlayer>::iterator player);
     WorldSnapshot buildSnapshot() const;
     WorldStateSnapshot buildWorldState() const;
-    PlayerState spawnPlayer(PlayerId id) const;
+    SpawnPoint chooseSpawn(PlayerId id) const;
 
     const TimeSource& clock_;
     ServerConfig config_;
@@ -115,10 +127,15 @@ private:
     std::uint64_t serverTick_ = 0;
     std::uint64_t worldRevision_ = 0;
     std::int64_t lastPlatformUpdate_ = 0;
-    bool platformClockStarted_ = false;
+    // Clock tics the World has been advanced through, for FrameTime::gameTimeUs.
+    std::int64_t worldElapsedTics_ = 0;
+
+    World world_;
     std::unordered_map<PlayerId, ActivePlayer> players_;
     std::unordered_map<SessionToken, PlayerId> playerIdsByToken_;
-    std::vector<ActivePlatform> platforms_;
+    // Platform objects in config order, which is snapshot order. Never
+    // destroyed, so the pointers live as long as the server.
+    std::vector<GameObject*> platforms_;
 };
 
 } // namespace Network

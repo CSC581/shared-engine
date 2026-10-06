@@ -21,6 +21,7 @@ struct SDL_Texture;
 //   Collider    takes part in World's collision pass
 //   Renderable  drawn by renderWorld()
 //   Behavior    game-specific per-frame logic
+//   NetworkIdentity  which networked player or platform this object stands for
 
 // Position and size. Every other built-in component depends on it.
 class Transform : public Component {
@@ -203,4 +204,18 @@ public:
 
 private:
     UpdateFn fn_;
+};
+
+// Ties an object to the network id it stands for: a player id assigned by the
+// server or a peer, or a server platform's id. This is how the network layer
+// finds the object a message is about, on the server and on every client. It
+// holds data only; whoever owns the networking keeps it up to date.
+class NetworkIdentity : public Component {
+public:
+    enum class Kind { Player, Platform };
+
+    NetworkIdentity(Kind kind, std::uint32_t id);
+
+    Kind kind;
+    std::uint32_t id;
 };

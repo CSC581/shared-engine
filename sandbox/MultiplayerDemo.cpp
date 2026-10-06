@@ -12,7 +12,15 @@
 //
 // Everything architecture-specific lives in the option parsing, which is to
 // say in the deployment decision rather than in the game.
+//
+// The scene is the engine's object model, as on the server: this player, every
+// other player and every shared platform is a GameObject in one World, drawn by
+// renderWorld(). NetworkWorldSync keeps the remote ones matching the session,
+// including removing a player whose owner disconnects. World positions are
+// arena-local, the same space the network uses; the camera offsets the arena
+// onto the screen.
 
+#include "Components.hpp"
 #include "Endpoint.hpp"
 #include "Engine.hpp"
 #include "Game.hpp"
@@ -20,8 +28,10 @@
 #include "Multiplayer.hpp"
 #include "NetworkDemoConfig.hpp"
 #include "NetworkServerHost.hpp"
+#include "NetworkWorldSync.hpp"
 #include "WireFormat.hpp"
 #include "TimeSource.hpp"
+#include "World.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -34,6 +44,7 @@
 #include <locale>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace {
@@ -45,9 +56,21 @@ class MultiplayerDemo final : public Game {
 public:
     MultiplayerDemo(std::unique_ptr<Multiplayer::Session> session, float spawnX, float spawnY,
                     const TimeSource& realTime, double secondsUntilQuit)
-        : session_(std::move(session)), x_(spawnX), y_(spawnY), realTime_(realTime),
-          startedAt_(realTime.now()), secondsUntilQuit_(secondsUntilQuit)
+        : session_(std::move(session)),
+          sync_(world_, makeRemotePlayer, makeRemotePlatform),
+          realTime_(realTime),
+          startedAt_(realTime.now()),
+          secondsUntilQuit_(secondsUntilQuit)
     {
+        // This player: keyboard intent (Behavior) turned into movement
+        // (Motion) on game time, so it freezes when paused and halves at 0.5x
+        // exactly as in a single-player game.
+        local_ = &world_.create("local-player");
+        local_->add<Transform>(spawnX, spawnY, NetworkDemo::playerSize, NetworkDemo::playerSize);
+        local_->add<Motion>();
+        local_->add<Renderable>(colorFor(1));
+        local_->add<Behavior>([this](GameObject& self, const FrameTime& time) { steer(self, time); });
+        local_->setActive(true);
     }
 
     void handleInput(Engine& engine) override
@@ -82,27 +105,19 @@ public:
         // Pump the network every frame, including while paused — a session
         // that stopped being pumped would time out while the game sat still.
         session_->update();
+        measureLatency();
 
-        // Move on game time, so this player freezes when the game is paused
-        // and halves when it is slowed, exactly as in a single-player game.
-        float dx = static_cast<float>(std::clamp(horizontal_, -1, 1));
-        float dy = static_cast<float>(std::clamp(vertical_, -1, 1));
-        const float length = std::sqrt(dx * dx + dy * dy);
-        if (length > 1.0F) {
-            dx /= length;
-            dy /= length;
-        }
-        if (dx != 0.0F || dy != 0.0F) {
-            facing_ = std::atan2(dy, dx);
-        }
-        const float step = static_cast<float>(time.dtSeconds) * NetworkDemo::playerSpeed;
-        x_ = std::clamp(x_ + dx * step, 0.0F, NetworkDemo::arenaWidth - NetworkDemo::playerSize);
-        y_ = std::clamp(y_ + dy * step, 0.0F, NetworkDemo::arenaHeight - NetworkDemo::playerSize);
+        // Remote players and platforms into the World, then one frame of it.
+        sync_.apply(*session_);
+        world_.update(time);
 
-        distance_ += std::abs(dx * step) + std::abs(dy * step);
+        Transform& body = *local_->get<Transform>();
+        body.x = std::clamp(body.x, 0.0F, NetworkDemo::arenaWidth - NetworkDemo::playerSize);
+        body.y = std::clamp(body.y, 0.0F, NetworkDemo::arenaHeight - NetworkDemo::playerSize);
+        local_->get<Renderable>()->color = colorFor(session_->localPlayerId());
 
         // Every frame, stationary or not: this is also what says "still here".
-        session_->publishLocalPlayer(x_, y_, encodeOurPlayer());
+        session_->publishLocalPlayer(body.x, body.y, encodeOurPlayer());
 
         peakPlayers_ = std::max(peakPlayers_, session_->remotePlayers().size());
         peakPlatforms_ = std::max(peakPlatforms_, session_->platforms().size());
@@ -122,29 +137,34 @@ public:
                               NetworkDemo::arenaHeight};
         SDL_RenderRect(renderer, &arena);
 
-        for (const Multiplayer::Platform& platform : session_->platforms()) {
-            const SDL_FRect rect{NetworkDemo::arenaX + platform.x, NetworkDemo::arenaY + platform.y,
-                                 platform.width, platform.height};
-            SDL_SetRenderDrawColor(renderer, 90, 140, 110, 255);
-            SDL_RenderFillRect(renderer, &rect);
-            SDL_SetRenderDrawColor(renderer, 200, 230, 210, 255);
-            SDL_RenderRect(renderer, &rect);
-        }
+        // Every player and platform is a GameObject; the camera puts the
+        // arena's origin where the arena is drawn.
+        renderWorld(renderer, world_, -NetworkDemo::arenaX, -NetworkDemo::arenaY);
+
+        // This player is the one with the white outline.
+        const Transform& body = *local_->get<Transform>();
+        const SDL_FRect outline{NetworkDemo::arenaX + body.x, NetworkDemo::arenaY + body.y, body.width,
+                                body.height};
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL_RenderRect(renderer, &outline);
 
         // remotePlayers() never contains this player, so there is no filtering
-        // to do and no risk of drawing our own character twice.
+        // to do and no risk of labelling our own character.
         for (const Multiplayer::Player& player : session_->remotePlayers()) {
-            drawPlayer(renderer, player.x, player.y, player.id, false);
             drawLabel(renderer, player);
         }
-        drawPlayer(renderer, x_, y_, session_->localPlayerId(), true);
 
         SDL_SetRenderDrawColor(renderer, 190, 210, 235, 255);
         SDL_RenderDebugTextFormat(renderer, 32.0F, 12.0F, "%s  |  player %u  |  %zu other player(s)",
                                   Multiplayer::modeName(session_->mode()),
                                   session_->localPlayerId(), session_->remotePlayers().size());
-        SDL_RenderDebugText(renderer, 32.0F, 28.0F,
-                            "score and facing are this game's own format, carried verbatim");
+        if (latency_.samples > 0) {
+            SDL_RenderDebugTextFormat(renderer, 32.0F, 28.0F,
+                                      "keyboard-to-screen latency: now %.1f ms | avg %.1f ms | max %.1f ms",
+                                      latency_.recentMs, latency_.averageMs(), latency_.maxMs);
+        } else {
+            SDL_RenderDebugText(renderer, 32.0F, 28.0F, "latency: waiting for another player");
+        }
 
         SDL_SetRenderDrawColor(renderer, 150, 170, 195, 255);
         SDL_RenderDebugText(renderer, 32.0F, 516.0F,
@@ -168,7 +188,14 @@ public:
         std::cout << "multiplayer-demo summary: mode=" << Multiplayer::modeName(session_->mode())
                   << " player=" << session_->localPlayerId() << " other-players=" << peakPlayers_
                   << " platforms=" << peakPlatforms_ << " status=\"" << session_->status() << "\""
+                  << " remote-player-objects-at-exit="
+                  << std::count_if(world_.objects().begin(), world_.objects().end(),
+                                   [](const auto& object) { return object->tag() == "remote-player"; })
                   << std::endl;
+        if (latency_.samples > 0) {
+            std::cout << "multiplayer-demo latency: samples=" << latency_.samples
+                      << " avg-ms=" << latency_.averageMs() << " max-ms=" << latency_.maxMs << std::endl;
+        }
     }
 
 private:
@@ -189,13 +216,19 @@ private:
     {
         std::ostringstream out;
         out.imbue(std::locale::classic());
-        out << static_cast<long long>(distance_) / 10 << ' ' << Net::formatFloat(facing_);
+        // The third field is when this was sent, on this machine's monotonic
+        // clock, so another player on the same machine can tell how long it
+        // took to reach them (see measureLatency()).
+        out << static_cast<long long>(distance_) / 10 << ' ' << Net::formatFloat(facing_) << ' '
+            << static_cast<long long>(realTime_.now());
         return out.str();
     }
 
     struct RemoteLabel {
         long long score = 0;
         float facing = 0.0F;
+        // 0 when the sender did not include one.
+        long long sentAtNs = 0;
     };
 
     static bool decodePlayer(const std::string& data, RemoteLabel& label)
@@ -203,9 +236,55 @@ private:
         std::istringstream in(data);
         in.imbue(std::locale::classic());
         std::string facingField;
-        return static_cast<bool>(in >> label.score >> facingField) &&
-               Net::parseFloat(facingField, label.facing);
+        if (!(in >> label.score >> facingField) || !Net::parseFloat(facingField, label.facing)) {
+            return false;
+        }
+        if (!(in >> label.sentAtNs)) {
+            label.sentAtNs = 0;
+        }
+        return true;
     }
+
+    // Propagation latency: from another player's process writing its pose to
+    // this process first seeing it, through the server or the peer mesh. Both
+    // ends read the same machine-wide monotonic clock, so this is only
+    // meaningful with every player on one machine, which is how the demo is
+    // run for measurement. Each pose is sampled once, the frame it first
+    // arrives, so includes up to one frame of this loop.
+    void measureLatency()
+    {
+        const std::int64_t now = realTime_.now();
+        for (const Multiplayer::Player& player : session_->remotePlayers()) {
+            RemoteLabel label;
+            if (!decodePlayer(player.data, label) || label.sentAtNs <= 0) {
+                continue;
+            }
+            long long& lastSeen = lastSentAtByPlayer_[player.id];
+            if (label.sentAtNs == lastSeen) {
+                continue;
+            }
+            lastSeen = label.sentAtNs;
+            latency_.add(static_cast<double>(now - label.sentAtNs) / 1'000'000.0);
+        }
+    }
+
+    struct LatencyStats {
+        long long samples = 0;
+        double totalMs = 0.0;
+        double maxMs = 0.0;
+        // Smoothed, for a readable on-screen number.
+        double recentMs = 0.0;
+
+        void add(double ms)
+        {
+            recentMs = samples == 0 ? ms : recentMs * 0.9 + ms * 0.1;
+            ++samples;
+            totalMs += ms;
+            maxMs = std::max(maxMs, ms);
+        }
+
+        double averageMs() const { return samples == 0 ? 0.0 : totalMs / static_cast<double>(samples); }
+    };
 
     // Reads back what this game sent, and draws it. Nothing between here and
     // the other player's process understood any of it.
@@ -224,18 +303,47 @@ private:
                                   player.name.empty() ? "?" : player.name.c_str(), label.score);
     }
 
-    static void drawPlayer(SDL_Renderer* renderer, float x, float y, Multiplayer::PlayerId id,
-                           bool isLocal)
+    // Same colour for the same player in every window.
+    static Color colorFor(Multiplayer::PlayerId id)
     {
-        const SDL_FRect rect{NetworkDemo::arenaX + x, NetworkDemo::arenaY + y,
-                             NetworkDemo::playerSize, NetworkDemo::playerSize};
         const NetworkDemo::Color color = NetworkDemo::colorForPlayer(id == 0 ? 1 : id);
-        SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, 255);
-        SDL_RenderFillRect(renderer, &rect);
-        if (isLocal) {
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-            SDL_RenderRect(renderer, &rect);
+        return {color.red, color.green, color.blue};
+    }
+
+    // What another player is in this game: a coloured square, positioned by
+    // NetworkWorldSync. No Motion: where it is belongs to the network.
+    static GameObject& makeRemotePlayer(World& world, const Multiplayer::Player& player)
+    {
+        GameObject& object = world.create("remote-player");
+        object.add<Transform>(player.x, player.y, NetworkDemo::playerSize, NetworkDemo::playerSize);
+        object.add<Renderable>(colorFor(player.id));
+        return object;
+    }
+
+    static GameObject& makeRemotePlatform(World& world, const Multiplayer::Platform&)
+    {
+        GameObject& object = world.create("platform");
+        object.add<Renderable>(Color{90, 140, 110});
+        return object;
+    }
+
+    // The local player's Behavior: keyboard intent into velocity.
+    void steer(GameObject& self, const FrameTime& time)
+    {
+        float dx = static_cast<float>(std::clamp(horizontal_, -1, 1));
+        float dy = static_cast<float>(std::clamp(vertical_, -1, 1));
+        const float length = std::sqrt(dx * dx + dy * dy);
+        if (length > 1.0F) {
+            dx /= length;
+            dy /= length;
         }
+        if (dx != 0.0F || dy != 0.0F) {
+            facing_ = std::atan2(dy, dx);
+        }
+        Motion& motion = *self.get<Motion>();
+        motion.velocityX = dx * NetworkDemo::playerSpeed;
+        motion.velocityY = dy * NetworkDemo::playerSpeed;
+        distance_ += (std::abs(motion.velocityX) + std::abs(motion.velocityY)) * static_cast<float>(time.dtSeconds);
     }
 
     void updateTitle(Engine& engine) const
@@ -253,8 +361,11 @@ private:
     }
 
     std::unique_ptr<Multiplayer::Session> session_;
-    float x_ = 0.0F;
-    float y_ = 0.0F;
+    World world_;
+    NetworkWorldSync sync_;
+    // Owned by world_ and never destroyed, so the pointer lives as long as
+    // the game.
+    GameObject* local_ = nullptr;
     const TimeSource& realTime_;
     std::int64_t startedAt_ = 0;
     double secondsUntilQuit_ = 0.0;
@@ -264,6 +375,8 @@ private:
     std::size_t peakPlatforms_ = 0;
     int horizontal_ = 0;
     int vertical_ = 0;
+    LatencyStats latency_;
+    std::unordered_map<Multiplayer::PlayerId, long long> lastSentAtByPlayer_;
 };
 
 // ---------------------------------------------------------------------------
