@@ -141,6 +141,13 @@ bool testAttachAndRequire()
     passed &= expect(threw, "a second component of the same type should be refused");
 
     passed &= expect(crate.get<Collider>() == nullptr, "get should return null for a missing component");
+    passed &= expect(crate.get<Component>() == nullptr, "get should match only the exact type a component was added as");
+
+    // Lookups are per object: another object's components are not visible.
+    GameObject& other = world.create("other");
+    other.add<Collider>();
+    passed &= expect(other.has<Collider>() && !crate.has<Collider>() && other.get<Gravity>() == nullptr,
+                     "each object should find only its own components");
 
     return passed;
 }

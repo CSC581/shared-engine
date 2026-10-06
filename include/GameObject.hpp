@@ -2,6 +2,8 @@
 
 #include "Component.hpp"
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -11,6 +13,26 @@
 #include <vector>
 
 using ObjectId = std::uint32_t;
+
+namespace detail {
+
+inline std::size_t nextComponentTypeId()
+{
+    static std::atomic<std::size_t> next{0};
+    return next++;
+}
+
+} // namespace detail
+
+// A small number unique to each component type, handed out on first use
+// (Transform might be 0, Motion 1, ...). GameObject keeps its components in a
+// slot per number, so get<T>() is one array read instead of a search.
+template <class T>
+std::size_t componentTypeId()
+{
+    static const std::size_t id = detail::nextComponentTypeId();
+    return id;
+}
 
 // A game object is an id, a tag and the components it owns, and nothing else.
 // Position, velocity, collision and drawing are all components, so a new kind
@@ -34,8 +56,10 @@ using ObjectId = std::uint32_t;
 //         return crate;
 //     }
 //
-// At most one component of each type is attached. Attaching happens on the
-// thread that owns the World.
+// At most one component of each type is attached. Lookups match the exact type
+// a component was added as: get<Collider>() does not find a subclass of
+// Collider added as itself, so write a new component rather than subclassing a
+// built-in one. Attaching happens on the thread that owns the World.
 class GameObject {
 public:
     GameObject(ObjectId id, std::string tag);
@@ -71,6 +95,15 @@ public:
         T& attached = *component;
         attached.owner_ = this;
         components_.push_back(std::move(component));
+
+        // Filled before onAttach(), which may add more components and grow
+        // the slots.
+        const std::size_t id = componentTypeId<T>();
+        if (id >= slots_.size()) {
+            slots_.resize(id + 1, nullptr);
+        }
+        slots_[id] = &attached;
+
         attached.onAttach();
         return attached;
     }
@@ -79,23 +112,13 @@ public:
     template <class T>
     T* get()
     {
-        for (const auto& component : components_) {
-            if (auto* match = dynamic_cast<T*>(component.get())) {
-                return match;
-            }
-        }
-        return nullptr;
+        return static_cast<T*>(slot(componentTypeId<T>()));
     }
 
     template <class T>
     const T* get() const
     {
-        for (const auto& component : components_) {
-            if (const auto* match = dynamic_cast<const T*>(component.get())) {
-                return match;
-            }
-        }
-        return nullptr;
+        return static_cast<const T*>(slot(componentTypeId<T>()));
     }
 
     template <class T>
@@ -118,8 +141,19 @@ public:
     const std::vector<std::unique_ptr<Component>>& components() const;
 
 private:
+    Component* slot(std::size_t id) const
+    {
+        return id < slots_.size() ? slots_[id] : nullptr;
+    }
+
     ObjectId id_;
     std::string tag_;
     bool active_ = false;
+
+    // Owns the components, in attach order.
     std::vector<std::unique_ptr<Component>> components_;
+
+    // The same components indexed by componentTypeId(); nullptr where the
+    // object has no component of that type.
+    std::vector<Component*> slots_;
 };
