@@ -61,7 +61,9 @@ add_library(network-core STATIC
 )
 
 target_include_directories(network-core PUBLIC include)
-target_link_libraries(network-core PUBLIC engine-time cppzmq-static)
+# engine-geometry for PathMover::pingPong, the bounce rule the server's moving
+# platforms share with the PathMover component.
+target_link_libraries(network-core PUBLIC engine-time engine-geometry cppzmq-static)
 
 # SDL-free peer-to-peer module (Section 5): peer protocol and mesh transport.
 # A separate library from network-core rather than an addition to it — the two
@@ -87,18 +89,19 @@ add_library(multiplayer STATIC
 target_include_directories(multiplayer PUBLIC include)
 target_link_libraries(multiplayer PUBLIC network-core peer-core)
 
-# SDL-free geometry code (Entity, Physics, Collision), so tests built on it
-# stay independently testable with no SDL dependency.
+# SDL-free game object model (GameObject, Component, the built-in components,
+# World) and the box geometry it collides with. No SDL on this link line, so a
+# headless server and the tests can use the same objects as the clients.
 add_library(engine-geometry STATIC
-    src/Entity.cpp
-    src/Physics.cpp
     src/Collision.cpp
+    src/GameObject.cpp
+    src/Components.cpp
+    src/World.cpp
 )
 
 target_include_directories(engine-geometry PUBLIC include)
 
-# Entity::update takes a FrameTime, so the clocks come with the geometry. Still
-# no SDL on this link line.
+# Components update on a FrameTime, so the clocks come with the object model.
 target_link_libraries(engine-geometry PUBLIC engine-time)
 
 # SDL-dependent engine core (window, renderer, main loop, input). Publicly
@@ -114,10 +117,13 @@ target_link_libraries(engine PUBLIC SDL3::SDL3 engine-geometry engine-threads)
 
 enable_testing()
 
-add_executable(entity-physics-tests tests/EntityPhysicsTests.cpp)
-target_link_libraries(entity-physics-tests PRIVATE engine-geometry)
+# The object model: attaching and requiring components, update order, deferred
+# destruction, and every Part 2 object built from components in a small level.
+# Links engine-threads to check that disjoint tags update on FrameWorkers.
+add_executable(object-model-tests tests/ObjectModelTests.cpp)
+target_link_libraries(object-model-tests PRIVATE engine-geometry engine-threads)
 
-add_test(NAME entity-physics-tests COMMAND entity-physics-tests)
+add_test(NAME object-model-tests COMMAND object-model-tests)
 
 add_executable(input-tests tests/InputTests.cpp)
 target_link_libraries(input-tests PRIVATE engine)

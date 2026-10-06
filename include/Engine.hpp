@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Color.hpp"
 #include "DeltaTimer.hpp"
 #include "TimeUnits.hpp"
 #include "Timeline.hpp"
@@ -11,18 +12,21 @@
 struct SDL_Renderer;
 struct SDL_Window;
 class Game;
+class World;
+
+// Draws every active, visible object in `world` that has a Renderable, in
+// creation order. cameraX/cameraY are subtracted from every position, so a game
+// scrolls by moving the camera instead of the objects. Call it from
+// Game::render().
+void renderWorld(SDL_Renderer* renderer, const World& world, float cameraX = 0.0F, float cameraY = 0.0F);
 
 // Core of the engine: window creation, the renderer, the main loop and the
 // rendering scale mode. It holds no game state of its own -- the game it drives
 // is supplied to run() as a Game.
 class Engine {
 public:
-    // An RGB colour, used for the screen clear.
-    struct Color {
-        std::uint8_t red;
-        std::uint8_t green;
-        std::uint8_t blue;
-    };
+    // The colour type shared with Renderable, kept under its old name.
+    using Color = ::Color;
 
     // Task 1 asks the loop to clear to blue; a game may pick its own.
     static constexpr Color defaultClearColor{30, 60, 140};
