@@ -141,6 +141,13 @@ bool testAttachAndRequire()
     passed &= expect(threw, "a second component of the same type should be refused");
 
     passed &= expect(crate.get<Collider>() == nullptr, "get should return null for a missing component");
+    passed &= expect(crate.get<Component>() == nullptr, "get should match only the exact type a component was added as");
+
+    // Lookups are per object: another object's components are not visible.
+    GameObject& other = world.create("other");
+    other.add<Collider>();
+    passed &= expect(other.has<Collider>() && !crate.has<Collider>() && other.get<Gravity>() == nullptr,
+                     "each object should find only its own components");
 
     return passed;
 }
@@ -197,6 +204,47 @@ bool testUpdateOrder()
     return passed;
 }
 
+// World keeps its update order between frames; adding or removing anything
+// must refresh it, with the new pieces in their proper place.
+bool testUpdateOrderFollowsChanges()
+{
+    bool passed = true;
+    World world;
+    std::vector<std::string> log;
+
+    GameObject& body = world.create("body");
+    body.add<Transform>(0.0F, 0.0F, 10.0F, 10.0F);
+    body.add<Motion>();
+    body.setActive(true);
+    world.update(frame(0.1));
+    world.update(frame(0.1));
+
+    // Attached after the order was built, and attached last, yet a Behavior
+    // must still run before Motion: it sets the velocity Motion applies.
+    body.add<Behavior>([&log](GameObject& self, const FrameTime&) {
+        log.push_back("body");
+        self.get<Motion>()->velocityX = 10.0F;
+    });
+    world.update(frame(1.0));
+    passed &= expect(log.size() == 1 && nearlyEqual(body.get<Transform>()->x, 10.0F),
+                     "a component added later should join the update order in its proper place");
+
+    // A new object is picked up; a destroyed one stops being updated.
+    GameObject& late = world.create("late");
+    late.add<Behavior>([&log](GameObject&, const FrameTime&) { log.push_back("late"); });
+    late.setActive(true);
+    world.update(frame(0.1));
+    passed &= expect(log.size() == 3 && log[2] == "late", "an object created later should be updated");
+
+    world.destroy(late.id());
+    world.flushDestroyed();
+    log.clear();
+    world.update(frame(0.1));
+    passed &= expect(log.size() == 1 && log[0] == "body", "a destroyed object should no longer be updated");
+
+    return passed;
+}
+
 bool testDeferredDestroyAndLookup()
 {
     bool passed = true;
@@ -215,6 +263,50 @@ bool testDeferredDestroyAndLookup()
     world.flushDestroyed();
     passed &= expect(world.find(id) == nullptr, "flushDestroyed should remove the object");
     passed &= expect(world.objects().size() == 2, "only the destroyed object should go");
+
+    return passed;
+}
+
+// onEnter and onExit fire once per overlap, onCollide on every frame of it. A
+// destroyed object gets no onExit.
+bool testEnterAndExit()
+{
+    bool passed = true;
+    World world;
+
+    int enters = 0;
+    int stays = 0;
+    int exits = 0;
+    Collider& zone = *makeZone(world, "zone", { 100.0F, 0.0F, 50.0F, 50.0F }, nullptr).get<Collider>();
+    zone.onEnter = [&enters](GameObject&, GameObject&) { ++enters; };
+    zone.onCollide = [&stays](GameObject&, GameObject&) { ++stays; };
+    zone.onExit = [&exits](GameObject&, GameObject&) { ++exits; };
+
+    GameObject& body = world.create("body");
+    body.add<Transform>(0.0F, 10.0F, 10.0F, 10.0F);
+    body.add<Collider>(Collider::Kind::Trigger);
+    body.setActive(true);
+    float& bodyX = body.get<Transform>()->x;
+
+    run(world, 1);
+    passed &= expect(enters == 0 && stays == 0 && exits == 0, "no callback before the overlap");
+
+    bodyX = 110.0F;
+    run(world, 3);
+    passed &= expect(enters == 1 && stays == 3 && exits == 0,
+                     "onEnter should fire once and onCollide every frame of the overlap");
+
+    bodyX = 0.0F;
+    run(world, 2);
+    passed &= expect(exits == 1 && stays == 3, "leaving should fire onExit once");
+
+    bodyX = 110.0F;
+    run(world, 1);
+    passed &= expect(enters == 2, "coming back should fire onEnter again");
+
+    world.destroy(body.id());
+    run(world, 2);
+    passed &= expect(exits == 1, "a destroyed object should not fire onExit");
 
     return passed;
 }
@@ -459,6 +551,29 @@ bool testParallelTags()
     return passed;
 }
 
+// destroy() from update() on two FrameWorkers at once: every request lands and
+// is applied by the next flushDestroyed() on the main thread.
+bool testParallelDestroy()
+{
+    World world;
+    for (const char* tag : { "left", "right" }) {
+        for (int i = 0; i < 200; ++i) {
+            GameObject& doomed = world.create(tag);
+            doomed.add<Behavior>([&world](GameObject& self, const FrameTime&) { world.destroy(self.id()); });
+            doomed.setActive(true);
+        }
+    }
+
+    FrameWorkers workers({
+        [&world](float dt) { world.updateComponents(frame(dt), "left"); },
+        [&world](float dt) { world.updateComponents(frame(dt), "right"); },
+    });
+    workers.runFrame(0.1F);
+    world.flushDestroyed();
+
+    return expect(world.objects().empty(), "every object destroyed from parallel updates should be removed");
+}
+
 } // namespace
 
 int main()
@@ -468,13 +583,16 @@ int main()
     passed &= testAttachAndRequire();
     passed &= testInactiveUntilActivated();
     passed &= testUpdateOrder();
+    passed &= testUpdateOrderFollowsChanges();
     passed &= testDeferredDestroyAndLookup();
+    passed &= testEnterAndExit();
     passed &= testCrateAndLedge();
     passed &= testStaticPlatforms();
     passed &= testMovingPlatforms();
     passed &= testPlayerRidesKinematicPlatform();
     passed &= testLevel();
     passed &= testParallelTags();
+    passed &= testParallelDestroy();
 
     if (passed) {
         std::cout << "Object model tests passed.\n";

@@ -7,24 +7,26 @@
 //         runs -- the same sequence gives the same answers everywhere.
 //   15    The one case that does use a real clock and real threads: several
 //         readers hammering a timeline while another pauses and rescales it.
-//   16-19 The engine integration. Entity and Game each gained a FrameTime
-//         overload beside the float one they already had, rather than having
-//         the float one replaced, so that every game written against the old
-//         signature keeps working untouched. That forwarding can rot silently
-//         -- a name-hiding mistake would compile and simply stop delivering
-//         time -- so it is pinned here, along with the three engine
-//         requirements stated the way the main loop states them.
+//   16-20 The engine integration. Game gained a FrameTime overload beside the
+//         float one it already had, rather than having the float one
+//         replaced, so that every game written against the old signature
+//         keeps working untouched. That forwarding can rot silently -- a
+//         name-hiding mistake would compile and simply stop delivering time --
+//         so it is pinned here. Game objects move through components that
+//         update on a FrameTime; the last cases check that, and the three
+//         engine requirements stated the way the main loop states them.
 //
 // Nothing here opens a window or calls SDL_Init: the last group drives the
 // objects the way the loop does, without the loop.
 #include "DeltaTimer.hpp"
+#include "Components.hpp"
 #include "Engine.hpp"
-#include "Entity.hpp"
 #include "FrameTime.hpp"
 #include "Game.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
 #include "Timeline.hpp"
+#include "World.hpp"
 
 #include <atomic>
 #include <cmath>
@@ -532,7 +534,7 @@ namespace
         CHECK(readersThatSawTimeGoBackwards.load() == 0);
     }
 
-    // ---- The engine built on top: FrameTime, Entity and Game. ----
+    // ---- The engine built on top: FrameTime, game objects and Game. ----
 
     // Game::update takes an Engine& that none of the games below ever touch:
     // what is under test is the loop's dispatch, not anything Engine does.
@@ -616,89 +618,90 @@ namespace
         CHECK(game.lastGameTimeUs == 12'345'678);
     }
 
-    // 19. Both Entity overloads describe the same move, so handing an entity
-    //     the frame instead of a float changes nothing about where it ends up.
-    void entityOverloadsAgree()
+    // 19. A game object moves by the frame's delta: Motion integrates its
+    //     velocity over FrameTime::dtSeconds, whatever absolute time it says.
+    void motionMovesByFrameDelta()
     {
-        Entity viaSeconds(0.0F, 0.0F, 10.0F, 10.0F);
-        Entity viaFrame(0.0F, 0.0F, 10.0F, 10.0F);
+        World world;
+        GameObject &body = world.create();
+        body.add<Transform>(0.0F, 0.0F, 10.0F, 10.0F);
+        body.add<Motion>(100.0F, -50.0F);
+        body.setActive(true);
 
-        viaSeconds.setVelocity(100.0F, -50.0F);
-        viaFrame.setVelocity(100.0F, -50.0F);
+        world.update(FrameTime{0.5, 500'000});
 
-        const FrameTime frame{0.5, 500'000};
-        viaSeconds.update(0.5F);
-        viaFrame.update(frame);
-
-        CHECK(nearlyEqual(viaFrame.getX(), viaSeconds.getX()));
-        CHECK(nearlyEqual(viaFrame.getY(), viaSeconds.getY()));
-        CHECK(nearlyEqual(viaFrame.getX(), 50.0F));
+        CHECK(nearlyEqual(body.get<Transform>()->x, 50.0F));
+        CHECK(nearlyEqual(body.get<Transform>()->y, -25.0F));
     }
 
     // 20. The three engine requirements, stated the way the loop states them:
     //     build a FrameTime out of a game timeline exactly as Engine::run does,
-    //     and drive a real Entity through it on a clock the test controls.
+    //     and drive a real game object through it on a clock the test controls.
     //
-    //     Testing the timeline and the entity separately does not actually show
+    //     Testing the timeline and the object separately does not actually show
     //     any of this: what is being checked here is the composition.
-    void gameTimelineDrivesPausesAndScalesAnEntity()
+    void gameTimelineDrivesPausesAndScalesAnObject()
     {
         ManualClock clock;
         Timeline gameTime(clock, kNsPerUs);  // 1 tic = 1 game microsecond
         DeltaTimer frameTimer(gameTime, 50'000);
 
-        Entity mover(0.0F, 0.0F, 10.0F, 10.0F);
-        mover.setVelocity(100.0F, 0.0F);  // 100 px per game second
+        World world;
+        GameObject &object = world.create("mover");
+        object.add<Transform>(0.0F, 0.0F, 10.0F, 10.0F);
+        const Motion &motion = object.add<Motion>(100.0F, 0.0F);  // 100 px per game second
+        object.setActive(true);
+        const Transform &mover = *object.get<Transform>();
 
         // One pass of the main loop: real time passes, the loop asks the game
-        // timeline how much of that counted, and the entity moves by it.
+        // timeline how much of that counted, and the world moves by it.
         const auto frame = [&](std::int64_t realNs) {
             clock.advance(realNs);
             const std::int64_t tics = frameTimer.tick();
-            mover.update(FrameTime{static_cast<double>(tics) / 1'000'000.0, gameTime.now()});
+            world.update(FrameTime{static_cast<double>(tics) / 1'000'000.0, gameTime.now()});
         };
 
         // Requirement 1: position comes from elapsed time on the timeline.
         // 100 px/s for 10 ms is 1 px.
         frame(10 * kNsPerMs);
-        CHECK(nearlyEqual(mover.getX(), 1.0F));
+        CHECK(nearlyEqual(mover.x, 1.0F));
 
-        // Requirement 2: paused, the entity is stationary however much real
+        // Requirement 2: paused, the object is stationary however much real
         // time passes.
         gameTime.pause();
-        const float frozenX = mover.getX();
+        const float frozenX = mover.x;
 
         frame(500 * kNsPerMs);
-        CHECK(nearlyEqual(mover.getX(), frozenX));
+        CHECK(nearlyEqual(mover.x, frozenX));
         frame(500 * kNsPerMs);
-        CHECK(nearlyEqual(mover.getX(), frozenX));
+        CHECK(nearlyEqual(mover.x, frozenX));
 
         // ...and on unpause it carries on from exactly where it stopped: the
         // second of real time that went by is not paid back as a lurch.
         gameTime.unpause();
         frame(10 * kNsPerMs);
-        CHECK(nearlyEqual(mover.getX(), frozenX + 1.0F));
+        CHECK(nearlyEqual(mover.x, frozenX + 1.0F));
 
         // Requirement 3: scale changes the distance covered per real
-        // millisecond, and the entity is never touched to make it happen.
+        // millisecond, and the object is never touched to make it happen.
         gameTime.setScale(2.0);
-        const float beforeDouble = mover.getX();
+        const float beforeDouble = mover.x;
         frame(10 * kNsPerMs);
-        CHECK(nearlyEqual(mover.getX(), beforeDouble + 2.0F));
+        CHECK(nearlyEqual(mover.x, beforeDouble + 2.0F));
 
         gameTime.setScale(0.5);
-        const float beforeHalf = mover.getX();
+        const float beforeHalf = mover.x;
         frame(10 * kNsPerMs);
-        CHECK(nearlyEqual(mover.getX(), beforeHalf + 0.5F));
+        CHECK(nearlyEqual(mover.x, beforeHalf + 0.5F));
 
         gameTime.setScale(1.0);
-        const float beforeNormal = mover.getX();
+        const float beforeNormal = mover.x;
         frame(10 * kNsPerMs);
-        CHECK(nearlyEqual(mover.getX(), beforeNormal + 1.0F));
+        CHECK(nearlyEqual(mover.x, beforeNormal + 1.0F));
 
         // The whole point of requirement 3: nothing about the object changed.
         // Its velocity is the one it was given before any of this happened.
-        CHECK(nearlyEqual(mover.getVelocityX(), 100.0F));
+        CHECK(nearlyEqual(motion.velocityX, 100.0F));
     }
 
 } // namespace
@@ -723,8 +726,8 @@ int main()
 
     legacyGameStillReceivesDelta();
     timeAwareGameReceivesAbsoluteTime();
-    entityOverloadsAgree();
-    gameTimelineDrivesPausesAndScalesAnEntity();
+    motionMovesByFrameDelta();
+    gameTimelineDrivesPausesAndScalesAnObject();
 
     // Last: the only case that takes measurable time to run.
     staysMonotonicUnderConcurrentWriters();

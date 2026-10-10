@@ -1,27 +1,23 @@
 // Section 3 Milestone 4: persistent worker threads + condition_variable barrier.
 //
-// Same gameplay as M3, but threads live for the whole run (ThreadExample-style
-// wait/notify) instead of spawn+join every frame.
-//
-// Main thread: SDL events, Input, handleInput, publish frame, wait, carry,
-//              collide, render.
-// Worker A:    advance the ping-pong platform.
-// Worker B:    gravity + player Entity::update.
+// Main thread: SDL events, Input, publish frame, wait, carry, collide, render.
+// Worker A:    update the PathMover-driven platform tag.
+// Worker B:    update the Gravity/Motion-driven player tag.
 //
 // Build: cmake --build build --target thread-loop-sandbox
 // Run:   ./build/thread-loop-sandbox
-#include "Collision.hpp"
+#include "Components.hpp"
 #include "Engine.hpp"
-#include "Entity.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
-#include "Physics.hpp"
+#include "World.hpp"
 
 #include <SDL3/SDL.h>
 
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <exception>
 #include <iostream>
 #include <mutex>
@@ -50,23 +46,48 @@ constexpr float platformRight = 640.0F;
 
 constexpr int workerCount = 2;
 
-void fillRect(SDL_Renderer* renderer, const Rect& bounds, Uint8 r, Uint8 g, Uint8 b)
-{
-    SDL_SetRenderDrawColor(renderer, r, g, b, 255);
-    const SDL_FRect rect{bounds.x, bounds.y, bounds.width, bounds.height};
-    SDL_RenderFillRect(renderer, &rect);
-}
-
 class ThreadLoopSandbox final : public Game {
 public:
     ThreadLoopSandbox()
-        : player_((windowWidth - playerWidth) * 0.5F, floorY - playerHeight, playerWidth, playerHeight),
-          floor_(0.0F, floorY, static_cast<float>(windowWidth), floorHeight),
-          platform_(platformLeft, platformY, platformWidth, platformHeight)
     {
-        Physics::setGravity(gravity);
+        floor_ = &world_.create("floor");
+        floor_->add<Transform>(0.0F, floorY, static_cast<float>(windowWidth), floorHeight);
+        floor_->add<Collider>();
+        floor_->add<Renderable>(Color{70, 90, 70}).layer = 0;
+        floor_->setActive(true);
 
-        // Persistent workers — created once, like ThreadExample's two threads.
+        platform_ = &world_.create("platform");
+        platform_->add<PathMover>(
+            PathMover::Linear{platformLeft, platformY, platformRight, platformY}, platformSpeed);
+        Transform& platformTransform = *platform_->get<Transform>();
+        platformTransform.width = platformWidth;
+        platformTransform.height = platformHeight;
+        platform_->add<Collider>();
+        platform_->add<Renderable>(Color{200, 150, 60}).layer = 1;
+        platform_->setActive(true);
+
+        player_ = &world_.create("player");
+        player_->add<Transform>((windowWidth - playerWidth) * 0.5F,
+                                floorY - playerHeight, playerWidth, playerHeight);
+        player_->add<Gravity>(gravity);
+        Collider& playerCollider = player_->add<Collider>();
+        playerCollider.onCollide = [this](GameObject& self, GameObject& other) {
+            const Transform& playerTransform = *self.get<Transform>();
+            const Transform& support = *other.get<Transform>();
+            const float playerBottom = playerTransform.y + playerTransform.height;
+            if (std::fabs(playerBottom - support.y) > 0.01F) {
+                return;
+            }
+            onGround_ = true;
+            if (other.id() == platform_->id()) {
+                groundedOnMoving_ = true;
+            }
+        };
+        player_->add<Renderable>(Color{90, 170, 230}).layer = 2;
+        player_->setActive(true);
+
+        // Persistent workers are created only after the World is fully built;
+        // no object or component structure changes while they update it.
         platformThread_ = std::thread([this] { platformLoop(); });
         characterThread_ = std::thread([this] { characterLoop(); });
     }
@@ -77,7 +98,6 @@ public:
             const std::lock_guard<std::mutex> lock(mutex_);
             quit_ = true;
         }
-        // Wake anyone blocked in wait (workers or a late update).
         cv_.notify_all();
 
         if (platformThread_.joinable()) {
@@ -90,7 +110,6 @@ public:
 
     void handleInput(Engine& engine) override
     {
-        // Input polling stays on the main thread (static Input + SDL).
         moveAxis_ = 0.0F;
         if (Input::isKeyPressed(SDL_SCANCODE_A) || Input::isKeyPressed(SDL_SCANCODE_LEFT)) {
             moveAxis_ -= 1.0F;
@@ -100,7 +119,7 @@ public:
         }
 
         if (onGround_ && Input::isKeyJustPressed(SDL_SCANCODE_SPACE)) {
-            player_.setVelocityY(-jumpSpeed);
+            jumpRequested_ = true;
             onGround_ = false;
             groundedOnMoving_ = false;
         }
@@ -110,7 +129,11 @@ public:
         }
     }
 
-    void update(float deltaTime, Engine&) override
+    // The engine dispatches the FrameTime overload below. This remains only
+    // because the older seconds-only function is still pure virtual in Game.
+    void update(float, Engine&) override {}
+
+    void update(const FrameTime& time, Engine&) override
     {
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -118,31 +141,37 @@ public:
                 return;
             }
 
-            // Publish this frame's work (ThreadExample: flip state + notify).
-            frameDt_ = deltaTime;
+            frameTime_ = time;
+            publishedMoveAxis_ = moveAxis_;
+            publishedOnGround_ = onGround_;
+            publishedJump_ = jumpRequested_;
+            jumpRequested_ = false;
             workersDone_ = 0;
             ++frameId_;
             cv_.notify_all();
 
-            // Wait until both workers finished this frameId (busy ≈ not done).
             cv_.wait(lock, [this] {
                 return quit_ || workersDone_ == workerCount;
             });
         }
 
-        // Carry after the barrier so only main writes the player for ride motion.
+        // The platform's PathMover and Motion ran on its worker. Carrying is a
+        // main-thread game rule, deliberately separate from generic collision.
         if (groundedOnMoving_) {
-            player_.setPosition(player_.getX() + platformDx_, player_.getY() + platformDy_);
+            Transform& playerTransform = *player_->get<Transform>();
+            playerTransform.x += platformDx_;
+            playerTransform.y += platformDy_;
         }
 
-        resolveCollisions();
+        onGround_ = false;
+        groundedOnMoving_ = false;
+        world_.resolveCollisions();
+        world_.flushDestroyed();
     }
 
     void render(SDL_Renderer* renderer) const override
     {
-        fillRect(renderer, floor_.getBounds(), 70, 90, 70);
-        fillRect(renderer, platform_.getBounds(), 200, 150, 60);
-        fillRect(renderer, player_.getBounds(), 90, 170, 230);
+        renderWorld(renderer, world_);
 
         SDL_SetRenderDrawColor(renderer, 230, 230, 230, 255);
         SDL_RenderDebugTextFormat(
@@ -165,10 +194,9 @@ private:
     {
         std::uint64_t lastFrame = 0;
         while (true) {
-            float dt = 0.0F;
+            FrameTime time{0.0, 0};
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                // ThreadExample thread 1: wait until there is work (or quit).
                 cv_.wait(lock, [this, lastFrame] {
                     return quit_ || frameId_ != lastFrame;
                 });
@@ -176,10 +204,17 @@ private:
                     return;
                 }
                 lastFrame = frameId_;
-                dt = frameDt_;
+                time = frameTime_;
             }
 
-            advancePlatform(dt, platformDx_, platformDy_);
+            const Transform& before = *platform_->get<Transform>();
+            const float previousX = before.x;
+            const float previousY = before.y;
+            world_.updateComponents(time, "platform");
+            const Transform& after = *platform_->get<Transform>();
+            platformDx_ = after.x - previousX;
+            platformDy_ = after.y - previousY;
+
             platformWorkerFrames_.fetch_add(1, std::memory_order_relaxed);
             markWorkerDone();
         }
@@ -189,9 +224,10 @@ private:
     {
         std::uint64_t lastFrame = 0;
         while (true) {
-            float dt = 0.0F;
+            FrameTime time{0.0, 0};
             float moveAxis = 0.0F;
             bool onGround = false;
+            bool jump = false;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cv_.wait(lock, [this, lastFrame] {
@@ -201,17 +237,25 @@ private:
                     return;
                 }
                 lastFrame = frameId_;
-                dt = frameDt_;
-                // Snapshot main-thread input/state under the barrier lock.
-                moveAxis = moveAxis_;
-                onGround = onGround_;
+                time = frameTime_;
+                moveAxis = publishedMoveAxis_;
+                onGround = publishedOnGround_;
+                jump = publishedJump_;
             }
 
-            player_.setVelocityX(moveAxis * moveSpeed);
-            if (!onGround) {
-                Physics::applyGravity(player_, dt);
+            Motion& motion = *player_->get<Motion>();
+            motion.velocityX = moveAxis * moveSpeed;
+            if (jump) {
+                motion.velocityY = -jumpSpeed;
+            } else if (onGround && motion.velocityY > 0.0F) {
+                motion.velocityY = 0.0F;
             }
-            player_.update(dt);
+            // Gravity remains active while grounded so the player overlaps its
+            // support by a tiny amount each frame. World then resolves that
+            // overlap and the collision callback refreshes grounded state.
+            player_->get<Gravity>()->acceleration = gravity;
+            world_.updateComponents(time, "player");
+
             characterWorkerFrames_.fetch_add(1, std::memory_order_relaxed);
             markWorkerDone();
         }
@@ -222,93 +266,31 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         ++workersDone_;
         if (workersDone_ == workerCount) {
-            // ThreadExample: notify the waiter (main) that work is finished.
             cv_.notify_all();
         }
     }
 
-    void advancePlatform(float deltaTime, float& outDx, float& outDy)
-    {
-        const float prevX = platform_.getX();
-        const float prevY = platform_.getY();
-        const float targetX = movingToRight_ ? platformRight : platformLeft;
-        const float dx = targetX - prevX;
-        const float distance = std::fabs(dx);
-        const float step = platformSpeed * deltaTime;
-
-        if (distance <= step) {
-            platform_.setPosition(targetX, platformY);
-            movingToRight_ = !movingToRight_;
-        } else {
-            const float dir = dx > 0.0F ? 1.0F : -1.0F;
-            platform_.setPosition(prevX + dir * step, platformY);
-        }
-
-        outDx = platform_.getX() - prevX;
-        outDy = platform_.getY() - prevY;
-    }
-
-    void resolveCollisions()
-    {
-        onGround_ = false;
-        groundedOnMoving_ = false;
-
-        if (landOn(floor_)) {
-            onGround_ = true;
-        }
-
-        if (landOn(platform_)) {
-            onGround_ = true;
-            groundedOnMoving_ = true;
-        }
-
-        float pushX = 0.0F;
-        float pushY = 0.0F;
-        if (Collision::getSeparation(player_, platform_, pushX, pushY)) {
-            if (std::fabs(pushX) >= std::fabs(pushY)) {
-                player_.setPosition(player_.getX() + pushX, player_.getY());
-                player_.setVelocityX(0.0F);
-            }
-        }
-    }
-
-    bool landOn(const Entity& support)
-    {
-        const Rect player = player_.getBounds();
-        const Rect box = support.getBounds();
-        const bool overlapsX =
-            player.x < box.x + box.width && player.x + player.width > box.x;
-        const float foot = player.y + player.height;
-        const bool crossingTop =
-            player_.getVelocityY() >= 0.0F && overlapsX &&
-            foot >= box.y && foot <= box.y + box.height + 8.0F;
-
-        if (!crossingTop) {
-            return false;
-        }
-
-        player_.setPosition(player_.getX(), box.y - playerHeight);
-        player_.setVelocityY(0.0F);
-        return true;
-    }
-
-    Entity player_;
-    Entity floor_;
-    Entity platform_;
+    World world_;
+    GameObject* player_ = nullptr;
+    GameObject* floor_ = nullptr;
+    GameObject* platform_ = nullptr;
 
     float moveAxis_ = 0.0F;
+    bool jumpRequested_ = false;
     bool onGround_ = true;
     bool groundedOnMoving_ = false;
-    bool movingToRight_ = true;
+
+    float publishedMoveAxis_ = 0.0F;
+    bool publishedOnGround_ = true;
+    bool publishedJump_ = false;
 
     float platformDx_ = 0.0F;
     float platformDy_ = 0.0F;
 
-    // Frame barrier (shared mutex + CV, same tools as ThreadExample).
     std::mutex mutex_;
     std::condition_variable cv_;
     bool quit_ = false;
-    float frameDt_ = 0.0F;
+    FrameTime frameTime_{0.0, 0};
     int workersDone_ = 0;
     std::atomic<std::uint64_t> frameId_{0};
 
@@ -328,8 +310,8 @@ int main()
         engine.setClearColor(28, 32, 40);
         ThreadLoopSandbox game;
         engine.run(game);
-    } catch (const std::exception& ex) {
-        std::cerr << "ThreadLoopSandbox failed: " << ex.what() << '\n';
+    } catch (const std::exception& exception) {
+        std::cerr << "ThreadLoopSandbox failed: " << exception.what() << '\n';
         return 1;
     }
     return 0;

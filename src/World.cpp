@@ -61,16 +61,27 @@ void separate(Body& a, Body& b)
     }
 }
 
+void fire(const Collider::Callback& callback, GameObject& self, GameObject& other)
+{
+    if (callback) {
+        callback(self, other);
+    }
+}
+
 } // namespace
 
 GameObject& World::create(std::string tag)
 {
     objects_.push_back(std::make_unique<GameObject>(nextId_++, std::move(tag)));
-    return *objects_.back();
+    GameObject& object = *objects_.back();
+    object.structureVersion_ = &structureVersion_;
+    ++structureVersion_;
+    return object;
 }
 
 void World::destroy(ObjectId id)
 {
+    const std::lock_guard<std::mutex> lock(pendingMutex_);
     pendingDestroy_.push_back(id);
 }
 
@@ -130,21 +141,35 @@ void World::update(const FrameTime& time)
 void World::updateComponents(const FrameTime& time, const std::string& tag)
 {
     // Collected first, so an object created by a component this frame waits
-    // until the next one instead of invalidating the walk.
+    // until the next one instead of invalidating the walk, and an object
+    // activated or deactivated mid-frame changes nothing until the next one.
     std::vector<Component*> queue;
-    for (const auto& object : objects_) {
-        if (!object->isActive() || (!tag.empty() && object->tag() != tag)) {
-            continue;
+    {
+        const std::lock_guard<std::mutex> lock(orderMutex_);
+        if (orderVersion_ != structureVersion_) {
+            order_.clear();
+            for (const auto& object : objects_) {
+                for (const auto& component : object->components()) {
+                    order_.push_back(component.get());
+                }
+            }
+            // Stable, so equal priorities keep creation and attach order.
+            std::stable_sort(order_.begin(), order_.end(), [](const Component* a, const Component* b) {
+                return a->priority() < b->priority();
+            });
+            orderVersion_ = structureVersion_;
         }
-        for (const auto& component : object->components()) {
-            queue.push_back(component.get());
+
+        // Filtering a stably sorted list keeps its order, so this is the same
+        // queue that sorting just these objects' components would give.
+        queue.reserve(order_.size());
+        for (Component* component : order_) {
+            const GameObject& object = component->owner();
+            if (object.isActive() && (tag.empty() || object.tag() == tag)) {
+                queue.push_back(component);
+            }
         }
     }
-
-    // Stable, so equal priorities keep creation and attach order.
-    std::stable_sort(queue.begin(), queue.end(), [](const Component* a, const Component* b) {
-        return a->priority() < b->priority();
-    });
 
     for (Component* component : queue) {
         component->update(time);
@@ -184,24 +209,47 @@ void World::resolveCollisions()
         }
     }
 
+    std::set<std::pair<ObjectId, ObjectId>> current;
     for (auto& [a, b] : hits) {
-        if (a->collider->onCollide) {
-            a->collider->onCollide(*a->object, *b->object);
+        const ObjectId idA = a->object->id();
+        const ObjectId idB = b->object->id();
+        const std::pair<ObjectId, ObjectId> pair = std::minmax(idA, idB);
+        current.insert(pair);
+
+        if (contacts_.count(pair) == 0) {
+            fire(a->collider->onEnter, *a->object, *b->object);
+            fire(b->collider->onEnter, *b->object, *a->object);
         }
-        if (b->collider->onCollide) {
-            b->collider->onCollide(*b->object, *a->object);
-        }
+        fire(a->collider->onCollide, *a->object, *b->object);
+        fire(b->collider->onCollide, *b->object, *a->object);
     }
+
+    for (const auto& [firstId, secondId] : contacts_) {
+        if (current.count({ firstId, secondId }) != 0) {
+            continue;
+        }
+        GameObject* first = find(firstId);
+        GameObject* second = find(secondId);
+        if (first == nullptr || second == nullptr) {
+            continue;
+        }
+        fire(first->get<Collider>()->onExit, *first, *second);
+        fire(second->get<Collider>()->onExit, *second, *first);
+    }
+
+    contacts_.swap(current);
 }
 
 void World::flushDestroyed()
 {
-    if (pendingDestroy_.empty()) {
+    std::vector<ObjectId> doomed;
+    {
+        const std::lock_guard<std::mutex> lock(pendingMutex_);
+        doomed.swap(pendingDestroy_);
+    }
+    if (doomed.empty()) {
         return;
     }
-
-    std::vector<ObjectId> doomed;
-    doomed.swap(pendingDestroy_);
 
     objects_.erase(
         std::remove_if(objects_.begin(), objects_.end(),
@@ -209,4 +257,6 @@ void World::flushDestroyed()
                 return std::find(doomed.begin(), doomed.end(), object->id()) != doomed.end();
             }),
         objects_.end());
+    // Their components are gone, so the cached update order is stale.
+    ++structureVersion_;
 }

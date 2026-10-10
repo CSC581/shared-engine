@@ -174,40 +174,88 @@ bool joinsGetPrivateWorkers()
     return passed;
 }
 
-// Section 2 end to end: three real NetworkClients see each other through the
-// real host, having moved from the handshake to their own workers.
-bool threeNetworkClientsSeeEachOther()
+// Milestone 3 Part 1B end to end: four real NetworkClients move through the
+// real host, see the shared scene, and keep running after one leaves.
+bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
 {
     Network::NetworkServerHost host(testServerConfig(), testHostConfig(Network::HostMode::Dedicated));
     host.start();
     RealTimeClock clock;
 
+    constexpr std::size_t clientCount = 4;
+    const float targetX[clientCount] = {101.0F, 202.0F, 303.0F, 404.0F};
     std::vector<std::unique_ptr<Network::NetworkClient>> clients;
-    for (int i = 0; i < 3; ++i) {
+    for (std::size_t i = 0; i < clientCount; ++i) {
         clients.push_back(std::make_unique<Network::NetworkClient>(clock, host.boundEndpoint()));
         clients.back()->start();
     }
 
-    const auto pump = [&](float step) {
+    const auto pump = [&] {
         for (std::size_t i = 0; i < clients.size(); ++i) {
             clients[i]->poll();
-            clients[i]->submitPosition(100.0F * static_cast<float>(i + 1) + step, 0.0F);
+            clients[i]->submitPosition(targetX[i], 0.0F);
         }
     };
 
-    float step = 0.0F;
     const bool everyoneSeesEveryone = waitFor(
         [&] {
-            pump(step += 1.0F);
-            return std::all_of(clients.begin(), clients.end(), [](const auto& client) {
-                return client->state() == Network::ConnectionState::Connected &&
-                       client->snapshot().players.size() == 3;
+            pump();
+            return std::all_of(clients.begin(), clients.end(), [&](const auto& receiver) {
+                if (receiver->state() != Network::ConnectionState::Connected ||
+                    receiver->snapshot().players.size() != clientCount ||
+                    receiver->snapshot().platforms.empty()) {
+                    return false;
+                }
+                for (std::size_t sender = 0; sender < clientCount; ++sender) {
+                    if (clients[sender]->playerId() == 0 ||
+                        !hasPlayerAt(receiver->snapshot(), clients[sender]->playerId(), targetX[sender])) {
+                        return false;
+                    }
+                }
+                return true;
             });
         },
         std::chrono::milliseconds(3000));
 
-    bool passed = expect(everyoneSeesEveryone, "three clients should each see all three players");
-    passed &= expect(host.activeWorkers() == 3, "each client should be on its own worker");
+    bool passed = expect(everyoneSeesEveryone,
+                         "four clients should each see all four moved players and shared platforms");
+    std::set<Network::PlayerId> playerIds;
+    for (const auto& client : clients) {
+        playerIds.insert(client->playerId());
+    }
+    passed &= expect(playerIds.size() == clientCount, "all four clients should have distinct player IDs");
+    passed &= expect(host.playerCount() == clientCount && host.activeWorkers() == clientCount,
+                     "four clients should have four server players and four private workers");
+
+    const Network::PlayerId departedId = clients.back()->playerId();
+    const bool departingClientIsIdle = waitFor(
+        [&] {
+            clients.back()->poll();
+            return !clients.back()->awaitingReply();
+        },
+        std::chrono::milliseconds(1000));
+    passed &= expect(departingClientIsIdle,
+                     "departing client should finish its in-flight position request");
+    clients.back()->leave();
+    clients.pop_back();
+
+    const bool survivorsContinue = waitFor(
+        [&] {
+            pump();
+            return host.playerCount() == clients.size() && host.activeWorkers() == clients.size() &&
+                   std::all_of(clients.begin(), clients.end(), [&](const auto& client) {
+                       const auto& players = client->snapshot().players;
+                       return client->state() == Network::ConnectionState::Connected &&
+                              players.size() == clients.size() &&
+                              std::none_of(players.begin(), players.end(), [&](const Network::PlayerState& player) {
+                                  return player.id == departedId;
+                              });
+                   });
+        },
+        std::chrono::milliseconds(3000));
+    passed &= expect(survivorsContinue,
+                     "three remaining clients should continue after the fourth player and worker leave");
+
     for (auto& client : clients) {
         client->leave();
     }
@@ -583,7 +631,7 @@ int main()
     try {
         passed &= rejectsBadConfig();
         passed &= joinsGetPrivateWorkers();
-        passed &= threeNetworkClientsSeeEachOther();
+        passed &= fourNetworkClientsShareTheSceneAndSurviveDisconnect();
         passed &= concurrentClientsAreServedOnTheirOwnWorkers();
         passed &= getWorldOnHandshakeDoesNotJoin();
         passed &= rejoinReusesWorker();

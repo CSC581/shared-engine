@@ -83,11 +83,13 @@ target_link_libraries(peer-core PUBLIC cppzmq-static Threads::Threads)
 # interface twice, once on each; a game links this instead of either.
 add_library(multiplayer STATIC
     src/Multiplayer.cpp
+    src/NetworkWorldSync.cpp
     src/SendPacer.cpp
 )
 
 target_include_directories(multiplayer PUBLIC include)
-target_link_libraries(multiplayer PUBLIC network-core peer-core)
+# engine-geometry for NetworkWorldSync, which mirrors a session into a World.
+target_link_libraries(multiplayer PUBLIC network-core peer-core engine-geometry)
 
 # SDL-free game object model (GameObject, Component, the built-in components,
 # World) and the box geometry it collides with. No SDL on this link line, so a
@@ -130,6 +132,13 @@ target_link_libraries(input-tests PRIVATE engine)
 
 add_test(NAME input-tests COMMAND input-tests)
 
+# renderWorld() draw order (Renderable::layer), checked on pixels through SDL's
+# software renderer, so it needs no window.
+add_executable(render-world-tests tests/RenderWorldTests.cpp)
+target_link_libraries(render-world-tests PRIVATE engine)
+
+add_test(NAME render-world-tests COMMAND render-world-tests)
+
 add_executable(frame-workers-tests tests/FrameWorkersTests.cpp)
 target_link_libraries(frame-workers-tests PRIVATE engine-threads)
 
@@ -141,9 +150,9 @@ target_link_libraries(collision-tests PRIVATE engine-geometry)
 add_test(NAME collision-tests COMMAND collision-tests)
 
 # The whole time story in one binary: Timeline and DeltaTimer semantics, the
-# concurrent case, and the seam with the pre-existing Entity/Game API, where
-# the FrameTime overloads sit beside the float ones rather than replacing them.
-# Links engine rather than engine-time because that last group needs Entity and
+# concurrent case, and the seam with the engine: Game's FrameTime overload
+# beside the float one, and game objects moving on game time. Links engine
+# rather than engine-time because that last group needs the object model and
 # Game; engine-time itself still has no SDL on its own link line.
 add_executable(timeline-tests tests/TimelineTests.cpp)
 target_link_libraries(timeline-tests PRIVATE engine)
@@ -191,6 +200,13 @@ add_executable(multiplayer-tests tests/MultiplayerTests.cpp)
 target_link_libraries(multiplayer-tests PRIVATE multiplayer)
 
 add_test(NAME multiplayer-tests COMMAND multiplayer-tests)
+
+# Part 1B, client side: a session mirrored into a World. Players and platforms
+# appear, follow the session and leave the scene when it stops reporting them.
+add_executable(network-world-sync-tests tests/NetworkWorldSyncTests.cpp)
+target_link_libraries(network-world-sync-tests PRIVATE multiplayer)
+
+add_test(NAME network-world-sync-tests COMMAND network-world-sync-tests)
 
 # Dear ImGui, for the timeline sandbox and nothing else. Fetched rather than
 # vendored as a submodule: it is a development tool for one target, not a
