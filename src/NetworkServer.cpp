@@ -98,8 +98,32 @@ Message NetworkServer::handle(const Message& message)
         return encodeError(error);
     }
 
+    return encodeReply(handleLocked(std::move(request), now));
+}
+
+Reply NetworkServer::handle(Request request)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+
+    const std::int64_t now = clock_.now();
+    expireInactivePlayers(now);
+    return handleLocked(std::move(request), now);
+}
+
+Reply NetworkServer::handleLocked(Request request, std::int64_t now)
+{
+    const auto errorReply = [](std::string message) {
+        Reply reply;
+        reply.type = ReplyType::Error;
+        reply.error = std::move(message);
+        return reply;
+    };
+
     if (request.type == RequestType::GetWorld) {
-        return encodeWorldState(buildWorldState());
+        Reply reply;
+        reply.type = ReplyType::WorldState;
+        reply.worldState = buildWorldState();
+        return reply;
     }
 
     if (request.type == RequestType::Join) {
@@ -108,13 +132,17 @@ Message NetworkServer::handle(const Message& message)
             const auto existingPlayer = players_.find(existingId->second);
             if (existingPlayer != players_.end()) {
                 existingPlayer->second.lastHeard = now;
-                return encodeWelcome(existingPlayer->first, buildSnapshot());
+                Reply reply;
+                reply.type = ReplyType::Welcome;
+                reply.playerId = existingPlayer->first;
+                reply.snapshot = buildSnapshot();
+                return reply;
             }
             playerIdsByToken_.erase(existingId);
         }
 
         if (config_.maxPlayers != 0 && players_.size() >= config_.maxPlayers) {
-            return encodeError("server is full");
+            return errorReply("server is full");
         }
 
         const PlayerId id = nextPlayerId_++;
@@ -134,26 +162,32 @@ Message NetworkServer::handle(const Message& message)
         players_.emplace(id, std::move(player));
         playerIdsByToken_.emplace(request.sessionToken, id);
         ++serverTick_;
-        return encodeWelcome(id, buildSnapshot());
+        Reply reply;
+        reply.type = ReplyType::Welcome;
+        reply.playerId = id;
+        reply.snapshot = buildSnapshot();
+        return reply;
     }
 
     const auto player = players_.find(request.playerId);
     if (player == players_.end()) {
-        return encodeError("unknown player ID");
+        return errorReply("unknown player ID");
     }
 
     if (player->second.sessionToken != request.sessionToken) {
-        return encodeError("session token does not own this player");
+        return errorReply("session token does not own this player");
     }
 
     if (request.type == RequestType::Leave) {
         removePlayer(player);
         ++serverTick_;
-        return encodeGoodbye();
+        Reply reply;
+        reply.type = ReplyType::Goodbye;
+        return reply;
     }
 
     if (request.position.sequence <= player->second.lastSequence) {
-        return encodeError("position sequence must increase");
+        return errorReply("position sequence must increase");
     }
 
     Transform& transform = *player->second.object->get<Transform>();
@@ -167,7 +201,10 @@ Message NetworkServer::handle(const Message& message)
     player->second.lastHeard = now;
     ++player->second.acceptedPositions;
     ++serverTick_;
-    return encodeSnapshot(buildSnapshot());
+    Reply reply;
+    reply.type = ReplyType::Snapshot;
+    reply.snapshot = buildSnapshot();
+    return reply;
 }
 
 WorldSnapshot NetworkServer::snapshot() const

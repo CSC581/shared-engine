@@ -296,6 +296,23 @@ Message encodeGoodbye()
     return {std::to_string(protocolVersion), "GOODBYE"};
 }
 
+Message encodeReply(const Reply& reply)
+{
+    switch (reply.type) {
+    case ReplyType::Welcome:
+        return encodeWelcome(reply.playerId, reply.snapshot, reply.sessionEndpoint);
+    case ReplyType::Snapshot:
+        return encodeSnapshot(reply.snapshot);
+    case ReplyType::WorldState:
+        return encodeWorldState(reply.worldState);
+    case ReplyType::Error:
+        return encodeError(reply.error);
+    case ReplyType::Goodbye:
+        return encodeGoodbye();
+    }
+    return encodeError("unknown reply type");
+}
+
 bool decodeReply(const Message& message, Reply& reply, std::string& error)
 {
     if (!parseVersion(message, error)) {

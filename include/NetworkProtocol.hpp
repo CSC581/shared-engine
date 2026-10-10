@@ -121,6 +121,10 @@ Message encodeSnapshot(const WorldSnapshot& snapshot);
 Message encodeWorldState(const WorldStateSnapshot& snapshot);
 Message encodeError(const std::string& error);
 Message encodeGoodbye();
+// Encodes a typed reply with the existing multipart text representation.
+// This is the inverse of decodeReply() and keeps transport-format decisions
+// outside the server's session and world-state logic.
+Message encodeReply(const Reply& reply);
 bool decodeReply(const Message& message, Reply& reply, std::string& error);
 
 } // namespace Network
