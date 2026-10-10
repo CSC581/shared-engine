@@ -2,7 +2,8 @@
 //
 // Everything here is driven through the ordinary Game interface, exactly as a
 // real game would be: the sandbox gets no privileged access to the engine and
-// adds no fields to Entity. What it does have is a control panel wired to the
+// adds no fields to the engine object model. What it does have is a control
+// panel wired to the
 // same public methods a game would call, so the behaviour that is otherwise
 // only visible by feel -- that rescaling a timeline never jolts anything, that
 // a pause freezes every object at once, that a child timeline multiplies its
@@ -11,13 +12,15 @@
 // Dear ImGui lives in this target and nowhere else. The engine library must
 // never link it; the panel is a development tool, not part of the engine.
 #include "DeltaTimer.hpp"
+#include "Components.hpp"
 #include "Engine.hpp"
-#include "Entity.hpp"
 #include "FrameTime.hpp"
+#include "GameObject.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
 #include "TimeUnits.hpp"
 #include "Timeline.hpp"
+#include "World.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -90,11 +93,9 @@ namespace
         return ImVec4(color.r / 255.0F, color.g / 255.0F, color.b / 255.0F, 1.0F);
     }
 
-    void fillRect(SDL_Renderer *renderer, const Rect &bounds, Rgb color)
+    Color toColor(Rgb color)
     {
-        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
-        const SDL_FRect rect{bounds.x, bounds.y, bounds.width, bounds.height};
-        SDL_RenderFillRect(renderer, &rect);
+        return {color.r, color.g, color.b};
     }
 
     void drawText(SDL_Renderer *renderer, float x, float y, float scale, Rgb color, const char *text)
@@ -151,10 +152,10 @@ namespace
         // Keeps a box inside the scene by reflecting its velocity. Position is
         // pushed back to the edge it crossed so a long frame cannot leave it
         // stuck outside, flipping every frame.
-        void bounceInScene(Entity &box) const;
-        void clampIntoScene(Entity &box) const;
+        void bounceInScene(GameObject &box) const;
+        void clampIntoScene(GameObject &box) const;
 
-        void drawLabelledBox(SDL_Renderer *renderer, const Entity &box, Rgb color,
+        void drawLabelledBox(SDL_Renderer *renderer, const GameObject &box, Rgb color,
                              const char *label) const;
 
         // Timelines the sandbox owns itself, to show that a game can build its
@@ -177,10 +178,12 @@ namespace
         float sceneBottom_ = 0.0F;
         float panelHeight_ = 0.0F;
 
-        Entity player_{0.0F, 0.0F, 34.0F, 34.0F};
-        Entity platform_{0.0F, 0.0F, 130.0F, 22.0F};
-        Entity bouncer_{0.0F, 0.0F, 30.0F, 30.0F};
-        Entity childBox_{0.0F, 0.0F, 30.0F, 30.0F};
+        World world_;
+        GameObject *player_ = nullptr;
+        GameObject *platform_ = nullptr;
+        GameObject *bouncer_ = nullptr;
+        GameObject *childBox_ = nullptr;
+        GameObject *orbiter_ = nullptr;
 
         // Where the orbiting real-time indicator goes round. Placed in the
         // bottom-right of the scene, in its own corner, so nothing on game time
@@ -188,8 +191,6 @@ namespace
         float orbitCenterX_ = 0.0F;
         float orbitCenterY_ = 0.0F;
         float orbitRadius_ = 62.0F;
-        float orbitX_ = 0.0F;
-        float orbitY_ = 0.0F;
 
         // The lane the child box runs along, kept clear of the orbiter.
         float childLaneY_ = 0.0F;
@@ -230,6 +231,25 @@ namespace
           realFrameTimer_(engine.realTime(), kNsPerSec),
           framesUntilQuit_(framesUntilQuit)
     {
+        const auto makeBox = [this](const char *tag, float width, float height, Rgb color,
+                                  bool moving) -> GameObject & {
+            GameObject &object = world_.create(tag);
+            object.add<Transform>(0.0F, 0.0F, width, height);
+            if (moving)
+            {
+                object.add<Motion>();
+            }
+            object.add<Renderable>(toColor(color));
+            object.setActive(true);
+            return object;
+        };
+
+        player_ = &makeBox("game-time", 34.0F, 34.0F, playerColor, true);
+        platform_ = &makeBox("absolute-game-time", 130.0F, 22.0F, platformColor, false);
+        bouncer_ = &makeBox("game-time", 30.0F, 30.0F, bouncerColor, true);
+        childBox_ = &makeBox("child-time", 30.0F, 30.0F, childColor, true);
+        orbiter_ = &makeBox("real-time", 18.0F, 18.0F, realTimeColor, false);
+
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
 
@@ -289,12 +309,14 @@ namespace
         childLaneY_ = sceneBottom_ - 60.0F;
         childLaneRight_ = orbitCenterX_ - orbitRadius_ - 40.0F;
 
-        platformOriginX_ = (sceneLeft_ + sceneRight_) * 0.5F - platform_.getBounds().width * 0.5F;
+        platformOriginX_ = (sceneLeft_ + sceneRight_) * 0.5F -
+                           platform_->get<Transform>()->width * 0.5F;
         platformY_ = sceneTop_ + 100.0F;
 
         // Amplitude can never swing the platform out of the scene.
         const float maxAmplitude =
-            std::max(10.0F, (sceneRight_ - sceneLeft_) * 0.5F - platform_.getBounds().width - 20.0F);
+            std::max(10.0F, (sceneRight_ - sceneLeft_) * 0.5F -
+                                platform_->get<Transform>()->width - 20.0F);
         platformAmplitude_ = std::min(platformAmplitude_, maxAmplitude);
 
         if (!placed_)
@@ -306,9 +328,9 @@ namespace
 
         // A window that just got smaller must not leave anything stranded
         // outside the scene.
-        clampIntoScene(player_);
-        clampIntoScene(bouncer_);
-        clampIntoScene(childBox_);
+        clampIntoScene(*player_);
+        clampIntoScene(*bouncer_);
+        clampIntoScene(*childBox_);
     }
 
     void TimelineSandbox::handleInput(Engine &engine)
@@ -320,7 +342,9 @@ namespace
         // runs before it.
         if (ImGui::GetIO().WantCaptureKeyboard)
         {
-            player_.setVelocity(0.0F, 0.0F);
+            Motion &motion = *player_->get<Motion>();
+            motion.velocityX = 0.0F;
+            motion.velocityY = 0.0F;
             return;
         }
 
@@ -355,9 +379,9 @@ namespace
 
         // Velocity only: the move itself happens in update, out of the frame's
         // game time, so the player freezes with everything else on a pause.
-        player_.setVelocity(
-            Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D) * playerSpeed_,
-            Input::getAxis(SDL_SCANCODE_W, SDL_SCANCODE_S) * playerSpeed_);
+        Motion &motion = *player_->get<Motion>();
+        motion.velocityX = Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D) * playerSpeed_;
+        motion.velocityY = Input::getAxis(SDL_SCANCODE_W, SDL_SCANCODE_S) * playerSpeed_;
     }
 
     void TimelineSandbox::update(const FrameTime &time, Engine &engine)
@@ -406,28 +430,30 @@ namespace
 
     void TimelineSandbox::updateScene(const FrameTime &time)
     {
-        player_.update(time);
-        clampIntoScene(player_);
+        world_.updateComponents(time, "game-time");
+        clampIntoScene(*player_);
 
         // Position from absolute game time rather than a sum of deltas, so the
         // platform is in exactly the same place after a pause, a rescale or a
         // run of stalled frames as it would have been without them.
         const double seconds = static_cast<double>(time.gameTimeUs) / 1'000'000.0;
         const double phase = 2.0 * pi * seconds / static_cast<double>(platformPeriod_);
-        platform_.setPosition(
-            platformOriginX_ + platformAmplitude_ * static_cast<float>(std::sin(phase)),
-            platformY_);
+        Transform &platformTransform = *platform_->get<Transform>();
+        platformTransform.x = platformOriginX_ + platformAmplitude_ * static_cast<float>(std::sin(phase));
+        platformTransform.y = platformY_;
 
-        bouncer_.update(time);
-        bounceInScene(bouncer_);
+        bounceInScene(*bouncer_);
 
         // The indicator runs on a timeline anchored to real time, so it keeps
         // turning while everything above is frozen. That is the visual proof
         // that the loop itself never waits on the game timeline.
         const double uiSeconds = static_cast<double>(uiTime_.now()) / 1'000'000.0;
         const double orbitPhase = 2.0 * pi * uiSeconds / static_cast<double>(orbitPeriod_);
-        orbitX_ = orbitCenterX_ + orbitRadius_ * static_cast<float>(std::cos(orbitPhase));
-        orbitY_ = orbitCenterY_ + orbitRadius_ * static_cast<float>(std::sin(orbitPhase));
+        Transform &orbitTransform = *orbiter_->get<Transform>();
+        orbitTransform.x = orbitCenterX_ + orbitRadius_ * static_cast<float>(std::cos(orbitPhase)) -
+                           orbitTransform.width * 0.5F;
+        orbitTransform.y = orbitCenterY_ + orbitRadius_ * static_cast<float>(std::sin(orbitPhase)) -
+                           orbitTransform.height * 0.5F;
     }
 
     void TimelineSandbox::updateChildBox()
@@ -442,56 +468,63 @@ namespace
             childSeconds,
             childTime_.now() * (kGameTicsPerSecond / childTicsPerSecond)};
 
-        childBox_.update(childFrame);
+        world_.updateComponents(childFrame, "child-time");
 
         // Its own lane, turned around before it reaches the orbiter's corner.
-        const Rect bounds = childBox_.getBounds();
-        if (bounds.x < sceneLeft_ && childBox_.getVelocityX() < 0.0F)
+        Transform &transform = *childBox_->get<Transform>();
+        Motion &motion = *childBox_->get<Motion>();
+        const Rect bounds = transform.bounds();
+        if (bounds.x < sceneLeft_ && motion.velocityX < 0.0F)
         {
-            childBox_.setPosition(sceneLeft_, childLaneY_);
-            childBox_.setVelocityX(-childBox_.getVelocityX());
+            transform.x = sceneLeft_;
+            transform.y = childLaneY_;
+            motion.velocityX = -motion.velocityX;
         }
-        else if (bounds.x + bounds.width > childLaneRight_ && childBox_.getVelocityX() > 0.0F)
+        else if (bounds.x + bounds.width > childLaneRight_ && motion.velocityX > 0.0F)
         {
-            childBox_.setPosition(childLaneRight_ - bounds.width, childLaneY_);
-            childBox_.setVelocityX(-childBox_.getVelocityX());
-        }
-    }
-
-    void TimelineSandbox::bounceInScene(Entity &box) const
-    {
-        const Rect bounds = box.getBounds();
-
-        if (bounds.x < sceneLeft_ && box.getVelocityX() < 0.0F)
-        {
-            box.setPosition(sceneLeft_, bounds.y);
-            box.setVelocityX(-box.getVelocityX());
-        }
-        else if (bounds.x + bounds.width > sceneRight_ && box.getVelocityX() > 0.0F)
-        {
-            box.setPosition(sceneRight_ - bounds.width, bounds.y);
-            box.setVelocityX(-box.getVelocityX());
-        }
-
-        const Rect afterX = box.getBounds();
-
-        if (afterX.y < sceneTop_ && box.getVelocityY() < 0.0F)
-        {
-            box.setPosition(afterX.x, sceneTop_);
-            box.setVelocityY(-box.getVelocityY());
-        }
-        else if (afterX.y + afterX.height > sceneBottom_ && box.getVelocityY() > 0.0F)
-        {
-            box.setPosition(afterX.x, sceneBottom_ - afterX.height);
-            box.setVelocityY(-box.getVelocityY());
+            transform.x = childLaneRight_ - bounds.width;
+            transform.y = childLaneY_;
+            motion.velocityX = -motion.velocityX;
         }
     }
 
-    void TimelineSandbox::clampIntoScene(Entity &box) const
+    void TimelineSandbox::bounceInScene(GameObject &box) const
     {
-        const Rect bounds = box.getBounds();
-        box.setPosition(clampFloat(bounds.x, sceneLeft_, sceneRight_ - bounds.width),
-                        clampFloat(bounds.y, sceneTop_, sceneBottom_ - bounds.height));
+        Transform &transform = *box.get<Transform>();
+        Motion &motion = *box.get<Motion>();
+        const Rect bounds = transform.bounds();
+
+        if (bounds.x < sceneLeft_ && motion.velocityX < 0.0F)
+        {
+            transform.x = sceneLeft_;
+            motion.velocityX = -motion.velocityX;
+        }
+        else if (bounds.x + bounds.width > sceneRight_ && motion.velocityX > 0.0F)
+        {
+            transform.x = sceneRight_ - bounds.width;
+            motion.velocityX = -motion.velocityX;
+        }
+
+        const Rect afterX = transform.bounds();
+
+        if (afterX.y < sceneTop_ && motion.velocityY < 0.0F)
+        {
+            transform.y = sceneTop_;
+            motion.velocityY = -motion.velocityY;
+        }
+        else if (afterX.y + afterX.height > sceneBottom_ && motion.velocityY > 0.0F)
+        {
+            transform.y = sceneBottom_ - afterX.height;
+            motion.velocityY = -motion.velocityY;
+        }
+    }
+
+    void TimelineSandbox::clampIntoScene(GameObject &box) const
+    {
+        Transform &transform = *box.get<Transform>();
+        const Rect bounds = transform.bounds();
+        transform.x = clampFloat(bounds.x, sceneLeft_, sceneRight_ - bounds.width);
+        transform.y = clampFloat(bounds.y, sceneTop_, sceneBottom_ - bounds.height);
     }
 
     void TimelineSandbox::resetScene()
@@ -500,14 +533,26 @@ namespace
         // not meant to be a way of hiding a drift bug.
         const float midX = (sceneLeft_ + sceneRight_) * 0.5F;
 
-        player_.setPosition(midX - 120.0F, sceneBottom_ - 220.0F);
-        player_.setVelocity(0.0F, 0.0F);
+        Transform &playerTransform = *player_->get<Transform>();
+        Motion &playerMotion = *player_->get<Motion>();
+        playerTransform.x = midX - 120.0F;
+        playerTransform.y = sceneBottom_ - 220.0F;
+        playerMotion.velocityX = 0.0F;
+        playerMotion.velocityY = 0.0F;
 
-        bouncer_.setPosition(midX, sceneTop_ + 220.0F);
-        bouncer_.setVelocity(bouncerSpeed_, bouncerSpeed_ * 0.7F);
+        Transform &bouncerTransform = *bouncer_->get<Transform>();
+        Motion &bouncerMotion = *bouncer_->get<Motion>();
+        bouncerTransform.x = midX;
+        bouncerTransform.y = sceneTop_ + 220.0F;
+        bouncerMotion.velocityX = bouncerSpeed_;
+        bouncerMotion.velocityY = bouncerSpeed_ * 0.7F;
 
-        childBox_.setPosition(sceneLeft_ + 20.0F, childLaneY_);
-        childBox_.setVelocity(bouncerSpeed_ * 0.8F, 0.0F);
+        Transform &childTransform = *childBox_->get<Transform>();
+        Motion &childMotion = *childBox_->get<Motion>();
+        childTransform.x = sceneLeft_ + 20.0F;
+        childTransform.y = childLaneY_;
+        childMotion.velocityX = bouncerSpeed_ * 0.8F;
+        childMotion.velocityY = 0.0F;
     }
 
     void TimelineSandbox::drawPanel(Engine &engine)
@@ -632,7 +677,8 @@ namespace
         ImGui::SliderFloat("Player speed (px/s)", &playerSpeed_, 50.0F, 1000.0F, "%.0f");
 
         const float maxAmplitude =
-            std::max(10.0F, (sceneRight_ - sceneLeft_) * 0.5F - platform_.getBounds().width - 20.0F);
+            std::max(10.0F, (sceneRight_ - sceneLeft_) * 0.5F -
+                                platform_->get<Transform>()->width - 20.0F);
         ImGui::SliderFloat("Platform amplitude", &platformAmplitude_, 10.0F, maxAmplitude, "%.0f");
         ImGui::SliderFloat("Platform period (s)", &platformPeriod_, 0.5F, 20.0F, "%.2f");
 
@@ -641,14 +687,14 @@ namespace
             // Keep the direction each box is already travelling, change only
             // how fast: a speed slider that also teleported them would make the
             // no-jump-on-rescale check impossible to read.
-            const float bounceX = bouncer_.getVelocityX() < 0.0F ? -bouncerSpeed_ : bouncerSpeed_;
-            const float bounceY = bouncer_.getVelocityY() < 0.0F ? -bouncerSpeed_ * 0.7F
-                                                                 : bouncerSpeed_ * 0.7F;
-            bouncer_.setVelocity(bounceX, bounceY);
+            Motion &bouncerMotion = *bouncer_->get<Motion>();
+            bouncerMotion.velocityX = bouncerMotion.velocityX < 0.0F ? -bouncerSpeed_ : bouncerSpeed_;
+            bouncerMotion.velocityY = bouncerMotion.velocityY < 0.0F ? -bouncerSpeed_ * 0.7F
+                                                                     : bouncerSpeed_ * 0.7F;
 
-            const float childX = childBox_.getVelocityX() < 0.0F ? -bouncerSpeed_ * 0.8F
-                                                                 : bouncerSpeed_ * 0.8F;
-            childBox_.setVelocityX(childX);
+            Motion &childMotion = *childBox_->get<Motion>();
+            childMotion.velocityX = childMotion.velocityX < 0.0F ? -bouncerSpeed_ * 0.8F
+                                                                  : bouncerSpeed_ * 0.8F;
         }
 
         ImGui::SliderFloat("Orbit period (s)", &orbitPeriod_, 0.5F, 10.0F, "%.2f");
@@ -725,11 +771,10 @@ namespace
         ImGui::TextColored(toImGui(realTimeColor), "Orbiter     real time, never pauses");
     }
 
-    void TimelineSandbox::drawLabelledBox(SDL_Renderer *renderer, const Entity &box, Rgb color,
+    void TimelineSandbox::drawLabelledBox(SDL_Renderer *renderer, const GameObject &box, Rgb color,
                                           const char *label) const
     {
-        const Rect bounds = box.getBounds();
-        fillRect(renderer, bounds, color);
+        const Rect bounds = box.get<Transform>()->bounds();
 
         // Above the box unless that would run off the top of the scene.
         const float labelY = bounds.y - 14.0F < sceneTop_ ? bounds.y + bounds.height + 4.0F
@@ -743,18 +788,17 @@ namespace
         const SDL_FRect frame{sceneLeft_, sceneTop_, sceneRight_ - sceneLeft_, sceneBottom_ - sceneTop_};
         SDL_RenderRect(renderer, &frame);
 
-        drawLabelledBox(renderer, platform_, platformColor, "platform (game time)");
-        drawLabelledBox(renderer, bouncer_, bouncerColor, "bouncer (game time)");
-        drawLabelledBox(renderer, childBox_, childColor, "child timeline");
-        drawLabelledBox(renderer, player_, playerColor, "player (WASD)");
-
-        // The orbit it travels, then the indicator itself.
-        SDL_SetRenderDrawColor(renderer, sceneFrameColor.r, sceneFrameColor.g, sceneFrameColor.b, 255);
+        // Draw the orbit behind the Renderable indicator that travels on it.
         const SDL_FRect orbit{orbitCenterX_ - orbitRadius_, orbitCenterY_ - orbitRadius_,
                               orbitRadius_ * 2.0F, orbitRadius_ * 2.0F};
         SDL_RenderRect(renderer, &orbit);
 
-        fillRect(renderer, Rect{orbitX_ - 9.0F, orbitY_ - 9.0F, 18.0F, 18.0F}, realTimeColor);
+        renderWorld(renderer, world_);
+        drawLabelledBox(renderer, *platform_, platformColor, "platform (game time)");
+        drawLabelledBox(renderer, *bouncer_, bouncerColor, "bouncer (game time)");
+        drawLabelledBox(renderer, *childBox_, childColor, "child timeline");
+        drawLabelledBox(renderer, *player_, playerColor, "player (WASD)");
+
         drawText(renderer, orbitCenterX_ - orbitRadius_, orbitCenterY_ - orbitRadius_ - 14.0F,
                  1.0F, realTimeColor, "orbiter (real time)");
 
