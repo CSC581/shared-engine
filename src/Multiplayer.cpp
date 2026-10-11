@@ -69,7 +69,7 @@ class ClientServerSession final : public Session {
 public:
     ClientServerSession(Config config, const TimeSource& realTime, const TimeSource* gameTime)
         : config_(std::move(config)),
-          client_(realTime, config_.serverEndpoint),
+          client_(realTime, config_.serverEndpoint, config_.clientServerDataFormat),
           pacer_(gameTime, config_.sendIntervalGameTics, realTime, config_.heartbeatIntervalRealTics)
     {
         // Sent with JOIN, so it must be set before starting.
@@ -451,6 +451,9 @@ std::unique_ptr<Session> Session::open(Config config, const TimeSource& realTime
                                        const TimeSource* gameTime)
 {
     if (config.mode == Mode::PeerToPeer) {
+        if (config.clientServerDataFormat != Net::DataFormat::TextMultipart) {
+            throw std::invalid_argument("binary data format is available only in client-server mode");
+        }
         return std::make_unique<PeerToPeerSession>(std::move(config), realTime, gameTime);
     }
     return std::make_unique<ClientServerSession>(std::move(config), realTime, gameTime);

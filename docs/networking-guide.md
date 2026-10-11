@@ -268,6 +268,16 @@ config.serverEndpoint = "tcp://127.0.0.1:5555";
 auto session = Multiplayer::Session::open(config, engine.realTime());
 ```
 
+For a binary client-server session, select it explicitly before `open()`:
+
+```cpp
+config.mode = Multiplayer::Mode::ClientServer;
+config.clientServerDataFormat = Net::DataFormat::Binary;
+```
+
+Multipart text remains the default. Binary is rejected in peer-to-peer mode
+because it is a client-server wire format, not a peer-mesh format.
+
 Pass `engine.realTime()`, never `engine.gameTime()`. A session running on a
 pausable clock could never reconnect, and could never report the unpause.
 

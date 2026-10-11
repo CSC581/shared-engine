@@ -1,5 +1,6 @@
 #include "NetworkServerHost.hpp"
 
+#include "BinaryNetworkProtocol.hpp"
 #include "Endpoint.hpp"
 #include "NetworkProtocol.hpp"
 #include "TimeSource.hpp"
@@ -62,14 +63,46 @@ void validate(const HostConfig& config)
     }
 }
 
-bool isAcceptedLeave(const Request& request, bool decoded, const Message& reply)
+Net::DataFormat detectFormat(const Message& message)
 {
-    if (!decoded || request.type != RequestType::Leave) {
-        return false;
+    if (!message.empty() && hasBinaryMagic(message.front())) {
+        return Net::DataFormat::Binary;
     }
-    Reply decodedReply;
-    std::string error;
-    return decodeReply(reply, decodedReply, error) && decodedReply.type == ReplyType::Goodbye;
+    return Net::DataFormat::TextMultipart;
+}
+
+bool decodeTransportRequest(const Message& message, Net::DataFormat format,
+                            Request& request, std::string& error)
+{
+    if (format == Net::DataFormat::Binary) {
+        if (message.size() != 1) {
+            error = "binary request must contain exactly one frame";
+            return false;
+        }
+        return decodeBinaryRequest(message.front(), request, error);
+    }
+    return decodeRequest(message, request, error);
+}
+
+Message encodeTransportReply(const Reply& reply, Net::DataFormat format)
+{
+    if (format == Net::DataFormat::Binary) {
+        return {encodeBinaryReply(reply)};
+    }
+    return encodeReply(reply);
+}
+
+Reply errorReply(std::string error)
+{
+    Reply reply;
+    reply.type = ReplyType::Error;
+    reply.error = std::move(error);
+    return reply;
+}
+
+bool isAcceptedLeave(const Request& request, bool decoded, const Reply& reply)
+{
+    return decoded && request.type == RequestType::Leave && reply.type == ReplyType::Goodbye;
 }
 
 } // namespace
@@ -145,7 +178,12 @@ struct NetworkServerHost::Impl {
                 continue;
             }
             if (received) {
-                Net::send(socket, server.handle(request));
+                const Net::DataFormat format = detectFormat(request);
+                Request decoded;
+                std::string error;
+                const bool valid = decodeTransportRequest(request, format, decoded, error);
+                const Reply reply = valid ? server.handle(std::move(decoded)) : errorReply(std::move(error));
+                Net::send(socket, encodeTransportReply(reply, format));
             }
         }
     }
@@ -184,11 +222,12 @@ struct NetworkServerHost::Impl {
                     continue;
                 }
 
+                const Net::DataFormat format = detectFormat(requestMessage);
                 Request request;
                 std::string error;
-                const bool decoded = decodeRequest(requestMessage, request, error);
-                const Message reply = server.handle(requestMessage);
-                Net::send(socket, reply);
+                const bool decoded = decodeTransportRequest(requestMessage, format, request, error);
+                const Reply reply = decoded ? server.handle(request) : errorReply(std::move(error));
+                Net::send(socket, encodeTransportReply(reply, format));
 
                 // A malformed or unauthorized LEAVE produces ERROR. Keep this
                 // worker alive unless the server actually accepted the departure.
@@ -261,7 +300,7 @@ struct NetworkServerHost::Impl {
 
     // Answers a JOIN whose session token already has a live worker by
     // pointing it back at that worker. Returns false if there is none.
-    bool rejoin(zmq::socket_t& handshake, const Request& request, const Message& requestMessage)
+    bool rejoin(zmq::socket_t& handshake, const Request& request, Net::DataFormat format)
     {
         const std::lock_guard<std::mutex> lock(endpointsMutex);
         const auto existing = endpointsByToken.find(request.sessionToken);
@@ -269,20 +308,19 @@ struct NetworkServerHost::Impl {
             return false;
         }
 
-        const Message handled = server.handle(requestMessage);
-        Reply welcome;
-        std::string error;
-        if (!decodeReply(handled, welcome, error) || welcome.type != ReplyType::Welcome) {
-            Net::send(handshake, handled);
+        Reply welcome = server.handle(request);
+        if (welcome.type != ReplyType::Welcome) {
+            Net::send(handshake, encodeTransportReply(welcome, format));
             return true;
         }
-        Net::send(handshake, encodeWelcome(welcome.playerId, welcome.snapshot, existing->second.endpoint));
+        welcome.sessionEndpoint = existing->second.endpoint;
+        Net::send(handshake, encodeTransportReply(welcome, format));
         return true;
     }
 
-    void join(zmq::socket_t& handshake, const Request& request, const Message& requestMessage)
+    void join(zmq::socket_t& handshake, const Request& request, Net::DataFormat format)
     {
-        if (rejoin(handshake, request, requestMessage)) {
+        if (rejoin(handshake, request, format)) {
             return;
         }
 
@@ -304,17 +342,15 @@ struct NetworkServerHost::Impl {
         const std::string sessionEndpoint = Net::rewriteTcpEndpointHost(boundWorker, config.advertiseHost);
         if (sessionEndpoint.empty()) {
             state->alive.store(false);
-            Net::send(handshake, encodeError("could not start client worker"));
+            Net::send(handshake, encodeTransportReply(errorReply("could not start client worker"), format));
             return;
         }
 
-        const Message handled = server.handle(requestMessage);
-        Reply welcome;
-        std::string error;
-        if (!decodeReply(handled, welcome, error) || welcome.type != ReplyType::Welcome) {
+        Reply welcome = server.handle(request);
+        if (welcome.type != ReplyType::Welcome) {
             // Server full, for example. The worker was never announced.
             state->alive.store(false);
-            Net::send(handshake, handled);
+            Net::send(handshake, encodeTransportReply(welcome, format));
             return;
         }
 
@@ -323,7 +359,8 @@ struct NetworkServerHost::Impl {
             endpointsByToken[request.sessionToken] = {sessionEndpoint, state};
         }
         log("player " + std::to_string(welcome.playerId) + " -> " + sessionEndpoint);
-        Net::send(handshake, encodeWelcome(welcome.playerId, welcome.snapshot, sessionEndpoint));
+        welcome.sessionEndpoint = sessionEndpoint;
+        Net::send(handshake, encodeTransportReply(welcome, format));
     }
 
     // HostMode::Dedicated: the public socket accepts JOIN (which hands the
@@ -347,14 +384,15 @@ struct NetworkServerHost::Impl {
 
             Request request;
             std::string error;
-            if (!decodeRequest(requestMessage, request, error)) {
-                Net::send(handshake, encodeError(error));
+            const Net::DataFormat format = detectFormat(requestMessage);
+            if (!decodeTransportRequest(requestMessage, format, request, error)) {
+                Net::send(handshake, encodeTransportReply(errorReply(std::move(error)), format));
             } else if (request.type == RequestType::GetWorld) {
-                Net::send(handshake, server.handle(requestMessage));
+                Net::send(handshake, encodeTransportReply(server.handle(request), format));
             } else if (request.type != RequestType::Join) {
-                Net::send(handshake, encodeError("handshake accepts JOIN only"));
+                Net::send(handshake, encodeTransportReply(errorReply("handshake accepts JOIN only"), format));
             } else {
-                join(handshake, request, requestMessage);
+                join(handshake, request, format);
             }
         }
     }

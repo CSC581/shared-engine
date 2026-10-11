@@ -392,6 +392,7 @@ void printUsage()
         R"(multiplayer-demo — the same game over either network architecture
 
   --mode MODE       client-server (default) or peer-to-peer.
+  --format FORMAT   client-server encoding: text (default) or binary.
   --name TEXT       Display name.
   --server ENDPOINT client-server: the server to join.
                     peer-to-peer: the authority owning the moving platforms.
@@ -458,6 +459,20 @@ bool parseOptions(int argc, char* argv[], Multiplayer::Config& config, double& s
         }
         if (arg == "--name") {
             if (!value(index, "--name", config.playerName)) {
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--format") {
+            if (!value(index, "--format", text)) {
+                return false;
+            }
+            if (text == "text") {
+                config.clientServerDataFormat = Net::DataFormat::TextMultipart;
+            } else if (text == "binary") {
+                config.clientServerDataFormat = Net::DataFormat::Binary;
+            } else {
+                std::cerr << "multiplayer-demo: --format must be text or binary\n";
                 return false;
             }
             continue;
@@ -531,6 +546,11 @@ bool parseOptions(int argc, char* argv[], Multiplayer::Config& config, double& s
 
     if (config.playerName.empty()) {
         config.playerName = "player-" + std::to_string(config.peerId);
+    }
+    if (config.mode == Multiplayer::Mode::PeerToPeer &&
+        config.clientServerDataFormat == Net::DataFormat::Binary) {
+        std::cerr << "multiplayer-demo: --format binary requires --mode client-server\n";
+        return false;
     }
     return true;
 }

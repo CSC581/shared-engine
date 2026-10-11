@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NetworkDataFormat.hpp"
 #include "TimeSource.hpp"
 
 #include <cstdint>
@@ -106,6 +107,11 @@ struct Platform {
 
 struct Config {
     Mode mode = Mode::ClientServer;
+
+    // Encoding used by the client-server architecture. Text preserves the
+    // Milestone 2 wire representation and remains the default. Binary is not
+    // a peer-mesh format and is rejected with Mode::PeerToPeer.
+    Net::DataFormat clientServerDataFormat = Net::DataFormat::TextMultipart;
 
     // ClientServer: the server to join; it assigns this player's id.
     // PeerToPeer: the shared-world authority that owns the platforms. Leave it

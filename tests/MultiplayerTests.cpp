@@ -226,6 +226,23 @@ bool testClientServer()
     return passed;
 }
 
+bool testBinaryClientServer()
+{
+    const auto server = startServer(Network::HostMode::Dedicated);
+    RealTimeClock clock;
+
+    Multiplayer::Config config;
+    config.mode = Multiplayer::Mode::ClientServer;
+    config.clientServerDataFormat = Net::DataFormat::Binary;
+    config.serverEndpoint = server->boundEndpoint();
+    config.playerName = "binary-one";
+
+    std::unique_ptr<Multiplayer::Session> one = Multiplayer::Session::open(config, clock);
+    config.playerName = "binary-two";
+    std::unique_ptr<Multiplayer::Session> two = Multiplayer::Session::open(config, clock);
+    return exerciseAsAGameWould(*one, *two, "binary client-server", true);
+}
+
 bool testPeerToPeer()
 {
     const auto server = startServer(Network::HostMode::Listen);
@@ -547,6 +564,21 @@ bool testPacingWithoutAGameClockIsRejected()
     return expect(false, "pacing with no game clock should be rejected as a config error");
 }
 
+bool testBinaryPeerToPeerConfigIsRejected()
+{
+    Multiplayer::Config config;
+    config.mode = Multiplayer::Mode::PeerToPeer;
+    config.clientServerDataFormat = Net::DataFormat::Binary;
+    config.serverEndpoint.clear();
+    RealTimeClock real;
+    try {
+        static_cast<void>(Multiplayer::Session::open(config, real));
+    } catch (const std::invalid_argument&) {
+        return true;
+    }
+    return expect(false, "peer-to-peer mode should reject the client-server binary format");
+}
+
 } // namespace
 
 int main()
@@ -554,6 +586,7 @@ int main()
     bool passed = true;
 
     passed &= testClientServer();
+    passed &= testBinaryClientServer();
     passed &= testPeerToPeer();
     passed &= testPeerToPeerWithNoServerAtAll();
     passed &= testBothModesBehaveBeforeConnecting();
@@ -562,6 +595,7 @@ int main()
     passed &= testSendRateFollowsGameSpeed();
     passed &= testSendPacingDoesNotBurstAfterAStall();
     passed &= testPacingWithoutAGameClockIsRejected();
+    passed &= testBinaryPeerToPeerConfigIsRejected();
 
     if (passed) {
         std::cout << "multiplayer-tests: all checks passed\n";

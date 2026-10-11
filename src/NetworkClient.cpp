@@ -1,5 +1,6 @@
 #include "NetworkClient.hpp"
 
+#include "BinaryNetworkProtocol.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
 #include "ZmqMessage.hpp"
@@ -9,12 +10,52 @@
 #include <locale>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace Network {
 namespace {
 
 constexpr std::int64_t retryDelayNs = kNsPerSec;
+
+Message encodeTransportRequest(const Request& request, Net::DataFormat format)
+{
+    if (format == Net::DataFormat::Binary) {
+        return {encodeBinaryRequest(request)};
+    }
+    switch (request.type) {
+    case RequestType::Join:
+        return encodeJoin(request.sessionToken, request.playerName);
+    case RequestType::Position:
+        return encodePosition(request.playerId, request.sessionToken, request.position);
+    case RequestType::Leave:
+        return encodeLeave(request.playerId, request.sessionToken);
+    case RequestType::GetWorld:
+        return encodeGetWorld();
+    }
+    return {};
+}
+
+bool decodeTransportReply(const Message& message, Net::DataFormat format, Reply& reply, std::string& error)
+{
+    if (format == Net::DataFormat::Binary) {
+        if (message.size() != 1) {
+            error = "binary reply must contain exactly one frame";
+            return false;
+        }
+        return decodeBinaryReply(message.front(), reply, error);
+    }
+    return decodeReply(message, reply, error);
+}
+
+std::uint64_t payloadBytes(const Message& message)
+{
+    std::uint64_t bytes = 0;
+    for (const std::string& frame : message) {
+        bytes += frame.size();
+    }
+    return bytes;
+}
 
 SessionToken makeSessionToken()
 {
@@ -31,9 +72,11 @@ SessionToken makeSessionToken()
 } // namespace
 
 struct NetworkClient::Impl {
-    explicit Impl(std::string endpointValue, const TimeSource* timeSource = nullptr)
+    explicit Impl(std::string endpointValue, Net::DataFormat formatValue,
+                  const TimeSource* timeSource = nullptr)
         : clock(timeSource ? *timeSource : realClock),
-          handshakeEndpoint(std::move(endpointValue))
+          handshakeEndpoint(std::move(endpointValue)),
+          format(formatValue)
     {
     }
 
@@ -86,10 +129,23 @@ struct NetworkClient::Impl {
 
     void sendJoin()
     {
-        if (!socket || !Net::send(*socket, encodeJoin(sessionToken, playerName), zmq::send_flags::dontwait)) {
+        Request request;
+        request.type = RequestType::Join;
+        request.sessionToken = sessionToken;
+        request.playerName = playerName;
+        Message message;
+        try {
+            message = encodeTransportRequest(request, format);
+        } catch (const std::invalid_argument& exception) {
+            fail(exception.what());
+            return;
+        }
+        if (!socket || !Net::send(*socket, message, zmq::send_flags::dontwait)) {
             scheduleRetry("could not send JOIN request");
             return;
         }
+
+        recordSent(message);
 
         waitingForReply = true;
         requestSentAt = clock.now();
@@ -109,12 +165,27 @@ struct NetworkClient::Impl {
         nextRetryAt = clock.now() + retryDelayNs;
     }
 
+    void recordSent(const Message& message)
+    {
+        ++transport.messagesSent;
+        transport.framesSent += message.size();
+        transport.payloadBytesSent += payloadBytes(message);
+    }
+
+    void recordReceived(const Message& message)
+    {
+        ++transport.messagesReceived;
+        transport.framesReceived += message.size();
+        transport.payloadBytesReceived += payloadBytes(message);
+    }
+
     zmq::context_t context{1};
     std::unique_ptr<zmq::socket_t> socket;
     RealTimeClock realClock;
     const TimeSource& clock;
     // Well-known handshake address from the constructor.
     std::string handshakeEndpoint;
+    Net::DataFormat format = Net::DataFormat::TextMultipart;
     // Private worker address after WELCOME; empty until assigned.
     std::string sessionEndpoint;
     SessionToken sessionToken = makeSessionToken();
@@ -127,15 +198,16 @@ struct NetworkClient::Impl {
     std::int64_t requestSentAt = 0;
     std::int64_t nextRetryAt = 0;
     bool waitingForReply = false;
+    TransportTelemetry transport;
 };
 
-NetworkClient::NetworkClient(std::string endpoint)
-    : impl_(std::make_unique<Impl>(std::move(endpoint)))
+NetworkClient::NetworkClient(std::string endpoint, Net::DataFormat format)
+    : impl_(std::make_unique<Impl>(std::move(endpoint), format))
 {
 }
 
-NetworkClient::NetworkClient(const TimeSource& clock, std::string endpoint)
-    : impl_(std::make_unique<Impl>(std::move(endpoint), &clock))
+NetworkClient::NetworkClient(const TimeSource& clock, std::string endpoint, Net::DataFormat format)
+    : impl_(std::make_unique<Impl>(std::move(endpoint), format, &clock))
 {
 }
 
@@ -179,10 +251,11 @@ void NetworkClient::poll()
         return;
     }
 
+    impl_->recordReceived(message);
     impl_->waitingForReply = false;
     Reply reply;
     std::string error;
-    if (!decodeReply(message, reply, error)) {
+    if (!decodeTransportReply(message, impl_->format, reply, error)) {
         impl_->fail(error == "unsupported protocol version"
                         ? "Protocol version mismatch. Rebuild and restart both server and clients."
                         : "Invalid server reply: " + error);
@@ -239,12 +312,24 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
     }
 
     const PositionUpdate position{x, y, impl_->nextSequence++, data};
-    if (!Net::send(*impl_->socket, encodePosition(impl_->playerId, impl_->sessionToken, position),
-                   zmq::send_flags::dontwait)) {
+    Request request;
+    request.type = RequestType::Position;
+    request.playerId = impl_->playerId;
+    request.sessionToken = impl_->sessionToken;
+    request.position = position;
+    Message message;
+    try {
+        message = encodeTransportRequest(request, impl_->format);
+    } catch (const std::invalid_argument& exception) {
+        impl_->error = exception.what();
+        return;
+    }
+    if (!Net::send(*impl_->socket, message, zmq::send_flags::dontwait)) {
         impl_->scheduleRetry("could not send position update");
         return;
     }
 
+    impl_->recordSent(message);
     impl_->error.clear();
     impl_->waitingForReply = true;
     impl_->requestSentAt = impl_->clock.now();
@@ -253,8 +338,19 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
 void NetworkClient::leave()
 {
     if (impl_->state == ConnectionState::Connected && !impl_->waitingForReply) {
-        Net::send(*impl_->socket, encodeLeave(impl_->playerId, impl_->sessionToken),
-                  zmq::send_flags::dontwait);
+        Request request;
+        request.type = RequestType::Leave;
+        request.playerId = impl_->playerId;
+        request.sessionToken = impl_->sessionToken;
+        try {
+            const Message message = encodeTransportRequest(request, impl_->format);
+            if (Net::send(*impl_->socket, message, zmq::send_flags::dontwait)) {
+                impl_->recordSent(message);
+            }
+        } catch (const std::invalid_argument&) {
+            // The fields were already accepted for JOIN, so this can only be
+            // an internal invariant failure. Teardown must still complete.
+        }
     }
     impl_->socket.reset();
     impl_->state = ConnectionState::Disconnected;
@@ -283,6 +379,11 @@ const WorldSnapshot& NetworkClient::snapshot() const
 const std::string& NetworkClient::error() const
 {
     return impl_->error;
+}
+
+TransportTelemetry NetworkClient::telemetry() const
+{
+    return impl_->transport;
 }
 
 } // namespace Network

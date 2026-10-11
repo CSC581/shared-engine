@@ -102,6 +102,7 @@ Network failures show up in `status()` instead of crashing.
 | `Config` setting            | Default                | Meaning                                                                                                                           |
 | --------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `mode`                      | `ClientServer`         | `ClientServer` (everyone talks to a server) or `PeerToPeer` (players talk directly)                                               |
+| `clientServerDataFormat`    | `TextMultipart`        | Client-server encoding: existing multipart text or one-frame binary. Binary is rejected in peer-to-peer mode                     |
 | `serverEndpoint`            | `tcp://127.0.0.1:5555` | Server address. In peer-to-peer, where platforms come from (empty = no platforms)                                                 |
 | `playerName`                | empty                  | Name other players see                                                                                                            |
 | `sendIntervalGameTics`      | `0`                    | Game time between position sends (µs). `0` = send every call. Set it (Apex uses 1/30 s) and 0.5× halves, 2× doubles the send rate |
@@ -147,10 +148,16 @@ Create `NetworkServerHost(serverConfig, hostConfig)`, then call `start()` and la
 A game that needs to change replies can skip the host and drive `NetworkServer(clock, serverConfig)`
 itself. It calls `handle(message)` for each request and `update()` on a timer, and uses the
 `encode…`/`decode…` functions in `NetworkProtocol.hpp` to read or rewrite messages. On the client
-side, `NetworkClient(clock, endpoint)` offers `start()`, `poll()`, `submitPosition(x, y, data)`,
-`state()` and `snapshot()` for a direct connection outside a `Session`.
+side, `NetworkClient(clock, endpoint, format)` offers `start()`, `poll()`,
+`submitPosition(x, y, data)`, `state()` and `snapshot()` for a direct connection outside a
+`Session`. The format defaults to `Net::DataFormat::TextMultipart`; `telemetry()` returns
+cumulative message, frame and encoded-payload-byte counts for performance measurements.
 
 ### Client-server messages (`NetworkProtocol.hpp`), one reply per request
+
+Both formats carry the same messages and full snapshots. Text uses the existing multipart
+representation. Binary uses one frame with the `SENG` marker, format and semantic versions,
+fixed-width network-byte-order values, and length-prefixed strings.
 
 | Client sends        | With                                 | Server replies | With                                               |
 | ------------------- | ------------------------------------ | -------------- | -------------------------------------------------- |

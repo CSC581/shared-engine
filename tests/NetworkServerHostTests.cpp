@@ -174,8 +174,38 @@ bool joinsGetPrivateWorkers()
     return passed;
 }
 
+bool binaryNetworkClientUsesRealHost()
+{
+    Network::NetworkServerHost host(testServerConfig(), testHostConfig(Network::HostMode::Dedicated));
+    host.start();
+    RealTimeClock clock;
+    Network::NetworkClient client(clock, host.boundEndpoint(), Net::DataFormat::Binary);
+    client.start();
+
+    const bool ready = waitFor(
+        [&] {
+            client.poll();
+            client.submitPosition(77.0F, 88.0F, std::string("binary\0data", 11));
+            return client.state() == Network::ConnectionState::Connected &&
+                   !client.snapshot().platforms.empty() &&
+                   hasPlayerAt(client.snapshot(), client.playerId(), 77.0F);
+        },
+        std::chrono::milliseconds(3000));
+
+    bool passed = expect(ready, "a binary-only NetworkClient should exchange snapshots with the real host");
+    const Network::TransportTelemetry traffic = client.telemetry();
+    passed &= expect(traffic.messagesSent > 1 && traffic.messagesReceived > 1 &&
+                         traffic.framesSent == traffic.messagesSent &&
+                         traffic.framesReceived == traffic.messagesReceived &&
+                         traffic.payloadBytesSent > 0 && traffic.payloadBytesReceived > 0,
+                     "binary client telemetry should count one frame per message and nonzero payload bytes");
+    client.leave();
+    return passed;
+}
+
 // Milestone 3 Part 1B end to end: four real NetworkClients move through the
-// real host, see the shared scene, and keep running after one leaves.
+// real host in both formats, see the shared scene, and keep running after one
+// leaves. Alternating formats proves one host can serve both simultaneously.
 bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
 {
     Network::NetworkServerHost host(testServerConfig(), testHostConfig(Network::HostMode::Dedicated));
@@ -184,9 +214,15 @@ bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
 
     constexpr std::size_t clientCount = 4;
     const float targetX[clientCount] = {101.0F, 202.0F, 303.0F, 404.0F};
+    const Net::DataFormat formats[clientCount] = {
+        Net::DataFormat::TextMultipart,
+        Net::DataFormat::Binary,
+        Net::DataFormat::TextMultipart,
+        Net::DataFormat::Binary,
+    };
     std::vector<std::unique_ptr<Network::NetworkClient>> clients;
     for (std::size_t i = 0; i < clientCount; ++i) {
-        clients.push_back(std::make_unique<Network::NetworkClient>(clock, host.boundEndpoint()));
+        clients.push_back(std::make_unique<Network::NetworkClient>(clock, host.boundEndpoint(), formats[i]));
         clients.back()->start();
     }
 
@@ -226,6 +262,21 @@ bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
     passed &= expect(playerIds.size() == clientCount, "all four clients should have distinct player IDs");
     passed &= expect(host.playerCount() == clientCount && host.activeWorkers() == clientCount,
                      "four clients should have four server players and four private workers");
+    for (std::size_t index = 0; index < clients.size(); ++index) {
+        const Network::TransportTelemetry traffic = clients[index]->telemetry();
+        passed &= expect(traffic.messagesSent > 1 && traffic.messagesReceived > 1 &&
+                             traffic.payloadBytesSent > 0 && traffic.payloadBytesReceived > 0,
+                         "mixed-format clients should expose nonzero transport telemetry");
+        if (formats[index] == Net::DataFormat::Binary) {
+            passed &= expect(traffic.framesSent == traffic.messagesSent &&
+                                 traffic.framesReceived == traffic.messagesReceived,
+                             "each binary transport message should use one frame");
+        } else {
+            passed &= expect(traffic.framesSent > traffic.messagesSent &&
+                                 traffic.framesReceived > traffic.messagesReceived,
+                             "multipart text transport should report multiple frames per message");
+        }
+    }
 
     const Network::PlayerId departedId = clients.back()->playerId();
     const bool departingClientIsIdle = waitFor(
@@ -631,6 +682,7 @@ int main()
     try {
         passed &= rejectsBadConfig();
         passed &= joinsGetPrivateWorkers();
+        passed &= binaryNetworkClientUsesRealHost();
         passed &= fourNetworkClientsShareTheSceneAndSurviveDisconnect();
         passed &= concurrentClientsAreServedOnTheirOwnWorkers();
         passed &= getWorldOnHandshakeDoesNotJoin();
