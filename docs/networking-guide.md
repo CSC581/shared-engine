@@ -450,3 +450,59 @@ Then start two peer-to-peer players in separate terminals:
 Both windows should show the other player and the same moving platforms. To
 test a listen-server instead, stop `network-server`, add `--host` to the first
 peer command, and run the second peer command unchanged.
+
+---
+
+## Performance benchmark methodology
+
+`network-performance-benchmark` compares multipart text with one-frame binary
+through the production stack: `NetworkClient`, `NetworkServerHost`, ZeroMQ,
+the normal codecs, one host worker per client, and server-owned `PathMover`
+platforms. It is headless and does not link SDL.
+
+The default command runs 90 experiments: both formats, 1/2/4 concurrent
+clients, 10/100/500 moving platforms, five repetitions, 100 warm-up round
+trips and 1,000 measured round trips per client. Text and binary trials for a
+cell run next to each other within each repetition so format is not
+systematically confounded with machine drift or thermal state.
+
+```bash
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target network-performance-benchmark -j 4
+./build-release/network-performance-benchmark \
+  --runs build-release/runs.csv \
+  --latency build-release/latency_samples.csv
+```
+
+Each client has its own thread. Before timing, every client connects, waits for
+the complete player/platform scene and finishes its warm-up. The main thread
+then captures server traffic counters and releases every client through one
+measurement gate. The interval ends when the last measured reply arrives;
+JOIN, startup, scene stabilization, warm-up, LEAVE and shutdown are excluded.
+Throughput is aggregate completed round trips divided by that wall time. RTT
+is sampled around every individual position request and snapshot reply.
+
+A run fails on a timeout or disconnect, a missing reply, a wrong player or
+platform count, a client message-count mismatch, binary traffic with other
+than one frame per message, or a per-player server traffic delta other than
+the measured iteration count. Payload-byte counters sum ZeroMQ frame contents
+and do not estimate transport framing or TCP/IP overhead.
+
+Quick mode keeps the complete 18-cell matrix but uses one repetition, five
+warm-up iterations and twenty measured iterations:
+
+```bash
+./build/network-performance-benchmark --quick \
+  --runs /tmp/network-performance-quick-runs.csv \
+  --latency /tmp/network-performance-quick-latency.csv
+```
+
+CTest registers this as `network-performance-benchmark-quick`. It validates
+the harness, not performance. Canonical evidence must come from the default
+matrix in a Release build on an otherwise idle machine.
+
+`runs.csv` contains one aggregate row per repetition. `latency_samples.csv`
+contains one nanosecond RTT per client iteration, keyed by run, format, cell,
+repetition, client and iteration. Phase 5 creates the timestamped result
+directory, validates these files, records metadata and generates summaries and
+graphs.

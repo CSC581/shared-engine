@@ -277,6 +277,20 @@ target_link_libraries(network-client PRIVATE engine network-core)
 add_executable(multiplayer-demo sandbox/MultiplayerDemo.cpp)
 target_link_libraries(multiplayer-demo PRIVATE engine multiplayer)
 
+# Headless Part 1C comparison. It uses the production client, host, ZeroMQ
+# transport and moving-platform world; no SDL or synthetic codec loop stands
+# in for the real stack.
+add_executable(network-performance-benchmark benchmarks/NetworkPerformanceBenchmark.cpp)
+target_link_libraries(network-performance-benchmark PRIVATE network-core Threads::Threads)
+
+add_test(
+    NAME network-performance-benchmark-quick
+    COMMAND network-performance-benchmark --quick
+            --runs ${CMAKE_CURRENT_BINARY_DIR}/performance-quick-runs.csv
+            --latency ${CMAKE_CURRENT_BINARY_DIR}/performance-quick-latency.csv
+)
+set_tests_properties(network-performance-benchmark-quick PROPERTIES TIMEOUT 60)
+
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent
     individual-games/harsha/src/apexAscent.cpp
