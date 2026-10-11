@@ -53,6 +53,7 @@ target_link_libraries(engine-threads PUBLIC Threads::Threads)
 # non-blocking ZeroMQ client adapter. A headless server can link this without
 # the window engine.
 add_library(network-core STATIC
+    src/BinaryNetworkProtocol.cpp
     src/NetworkProtocol.cpp
     src/NetworkServer.cpp
     src/NetworkServerHost.cpp
@@ -171,6 +172,11 @@ add_executable(network-tests tests/NetworkTests.cpp)
 target_link_libraries(network-tests PRIVATE network-core engine-geometry)
 
 add_test(NAME network-tests COMMAND network-tests)
+
+add_executable(binary-network-protocol-tests tests/BinaryNetworkProtocolTests.cpp)
+target_link_libraries(binary-network-protocol-tests PRIVATE network-core)
+
+add_test(NAME binary-network-protocol-tests COMMAND binary-network-protocol-tests)
 
 # The real NetworkServerHost on loopback: handshake -> private worker, rejoin,
 # LEAVE reaping, GET_WORLD without joining, listen mode, and clean shutdown.
