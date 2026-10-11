@@ -506,3 +506,25 @@ contains one nanosecond RTT per client iteration, keyed by run, format, cell,
 repetition, client and iteration. Phase 5 creates the timestamped result
 directory, validates these files, records metadata and generates summaries and
 graphs.
+
+### Canonical results
+
+The canonical Release collection from 2026-10-11 completed all 90 runs with
+no correctness failures and validated 210,000 RTT samples. Its reviewable
+summary, machine metadata and four SVG graphs are in
+`docs/performance-results/20261011T032629Z/`; the much larger raw run and RTT
+files remain under `build/performance-results/20261011T032629Z/`.
+
+On the recorded i7-12650H loopback run, binary reduced mean elapsed time in
+every matrix cell. The speedup ranged from 2.83x with four clients and ten
+platforms to 41.11x with one client and 500 platforms. Encoded payload per
+round trip improved as snapshots grew: the 500-platform cells were 23.4% to
+23.8% smaller. With four clients and only ten platforms, binary was 3.2%
+larger, showing that its large speed improvement in small scenes comes from
+using two frames per round trip instead of the text protocol's many multipart
+frames, rather than from guaranteed byte reduction.
+
+These values are a single-machine loopback baseline, not universal network
+performance claims. Payload counters measure ZeroMQ frame contents and omit
+transport framing and TCP/IP overhead; both formats still send identical full
+snapshots.
