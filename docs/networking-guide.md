@@ -503,7 +503,8 @@ matrix in a Release build on an otherwise idle machine.
 
 `runs.csv` contains one aggregate row per repetition. `latency_samples.csv`
 contains one nanosecond RTT per client iteration, keyed by run, format, cell,
-repetition, client and iteration. Phase 5 creates the timestamped result
+repetition, client and iteration, plus the format that client used
+(`client_format`). Phase 5 creates the timestamped result
 directory, validates these files, records metadata and generates summaries and
 graphs.
 
@@ -528,3 +529,42 @@ These values are a single-machine loopback baseline, not universal network
 performance claims. Payload counters measure ZeroMQ frame contents and omit
 transport framing and TCP/IP overhead; both formats still send identical full
 snapshots.
+
+### Mixed-format experiment
+
+The default matrix runs each format alone, so the two formats never share a
+server. `--mixed` asks whether they slow each other down when they do. It runs
+2 and 4 clients, 10/100/500 platforms and five repetitions, in three
+compositions per cell. These are all-text, all-binary, and mixed, where even
+client indexes use text and odd ones use binary. The three runs of a cell are
+adjacent within each repetition.
+
+```bash
+./build-release/network-performance-benchmark --mixed \
+  --runs build/performance-results/<ts>-mixed/runs.csv \
+  --latency build/performance-results/<ts>-mixed/latency_samples.csv
+python3 benchmarks/analyze_mixed_format.py build/performance-results/<ts>-mixed
+```
+
+For each format the analyzer compares the RTT of its clients in the mixed run
+("mixed") with the all-same-format run of the same total client count
+("alone"). It reports the mean of the per-run mean RTTs, their sample variance
+and the mixed/alone ratio, and writes `mixed_summary.csv` plus one SVG per
+format. CTest registers `network-performance-benchmark-mixed-quick` for the
+harness only.
+
+The 2026-10-13 Release collection on an i9-9880H MacBook loopback completed
+all 90 runs and is in `docs/performance-results/20261013T011546Z-mixed/`.
+Binary clients were not slowed by text clients. Their mixed/alone RTT ratio
+was 0.89 to 0.95 in five of six cells. The one ratio above 1.0 (1.05 with two
+clients and 500 platforms) is within one run-to-run standard deviation. Text
+clients were also slightly faster when mixed (0.86 to 0.97).
+
+Ratios below 1.0 do not mean mixing helps. A text client completes fewer
+requests per second than a binary client (1.4 to 12 times fewer here), so replacing binary
+neighbors with text neighbors lowers the total request rate the server
+sees. In a mixed run the binary clients also finish their iterations first,
+and the text clients then run with fewer competitors. The conclusion is only
+that a text client puts no extra burden on binary clients sharing its server.
+These absolute RTTs come from a different machine than the canonical results
+above and must not be compared with them.

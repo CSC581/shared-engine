@@ -7,3 +7,4 @@ individual-games/harsha/experiment.cpp
 individual-games/skim253/golf-game
 
 .ds_store
+__pycache__/

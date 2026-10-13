@@ -291,6 +291,14 @@ add_test(
 )
 set_tests_properties(network-performance-benchmark-quick PROPERTIES TIMEOUT 60)
 
+add_test(
+    NAME network-performance-benchmark-mixed-quick
+    COMMAND network-performance-benchmark --quick --mixed
+            --runs ${CMAKE_CURRENT_BINARY_DIR}/performance-mixed-quick-runs.csv
+            --latency ${CMAKE_CURRENT_BINARY_DIR}/performance-mixed-quick-latency.csv
+)
+set_tests_properties(network-performance-benchmark-mixed-quick PROPERTIES TIMEOUT 60)
+
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent
     individual-games/harsha/src/apexAscent.cpp
