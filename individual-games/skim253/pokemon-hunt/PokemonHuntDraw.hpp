@@ -18,17 +18,13 @@
 #include <string>
 #include <vector>
 
-// Everything the client draws: SDL shapes and text, the key help, sprite
-// sheets, the world, the party and the HUD. Each function draws from the state
-// it is handed; PokemonHuntGame::render decides what is on screen this frame.
+// Everything the client draws, from the state it is handed. Sprite sheets are
+// one PNG per character in media/pokemon-hunt/, 8 frames, facing left.
 namespace PokemonHunt {
 
-// ---------------------------------------------------------------------------
-// Drawing helpers
-// ---------------------------------------------------------------------------
 inline void setColor(SDL_Renderer* renderer, Color color, Uint8 alpha = Palette::opaque)
 {
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, alpha);
+    SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, alpha);
 }
 
 inline void fillRect(SDL_Renderer* renderer, float x, float y, float w, float h)
@@ -42,7 +38,6 @@ inline void fillScreen(SDL_Renderer* renderer)
     fillRect(renderer, 0.0F, 0.0F, static_cast<float>(windowWidth), static_cast<float>(windowHeight));
 }
 
-// Projectiles have no art yet; a flat disc stands in for them.
 inline void fillCircle(SDL_Renderer* renderer, float cx, float cy, float radius)
 {
     for (float dy = -radius; dy <= radius; dy += 1.0F) {
@@ -51,7 +46,6 @@ inline void fillCircle(SDL_Renderer* renderer, float cx, float cy, float radius)
     }
 }
 
-// Scales the debug font for titles.
 inline void drawText(SDL_Renderer* renderer, float x, float y, const std::string& text, float scale = 1.0F)
 {
     float oldX = 1.0F;
@@ -68,7 +62,6 @@ inline void drawTextCentered(SDL_Renderer* renderer, float cx, float y, const st
     drawText(renderer, cx - static_cast<float>(text.size()) * debugGlyphSize * 0.5F * scale, y, text, scale);
 }
 
-// A big centred title with a smaller line under it, in one colour.
 inline void drawBanner(SDL_Renderer* renderer, Color color, const std::string& title, float titleY,
                        float titleScale, const std::string& subtitle, float subtitleY)
 {
@@ -77,7 +70,6 @@ inline void drawBanner(SDL_Renderer* renderer, Color color, const std::string& t
     drawTextCentered(renderer, Layout::centerX, subtitleY, subtitle, Layout::subtitleScale);
 }
 
-// Tints the whole screen, then puts a banner over it.
 inline void drawOverlay(SDL_Renderer* renderer, Color tint, Uint8 tintAlpha, Color textColor,
                         const std::string& title, float titleY, const std::string& subtitle, float subtitleY)
 {
@@ -86,7 +78,7 @@ inline void drawOverlay(SDL_Renderer* renderer, Color tint, Uint8 tintAlpha, Col
     drawBanner(renderer, textColor, title, titleY, Layout::overlayScale, subtitle, subtitleY);
 }
 
-// "1.5" style: one decimal, whatever the locale.
+// Locale-independent number text: "1.5", and "2" without trailing zeros.
 inline std::string oneDecimal(double value)
 {
     std::ostringstream out;
@@ -97,7 +89,6 @@ inline std::string oneDecimal(double value)
     return out.str();
 }
 
-// "2" or "1.5": no trailing zeros, whatever the locale.
 inline std::string shortNumber(double value)
 {
     std::ostringstream out;
@@ -106,15 +97,11 @@ inline std::string shortNumber(double value)
     return out.str();
 }
 
-// ---------------------------------------------------------------------------
-// Key help along the bottom of the screen
-// ---------------------------------------------------------------------------
 struct KeyHint {
     std::string keys;
     std::string action;
 };
 
-// "<title>  <keys> <action>   <keys> <action>   |   <tip>"
 struct HelpLine {
     std::string title; // optional
     std::vector<KeyHint> hints;
@@ -122,7 +109,6 @@ struct HelpLine {
     Color color;
 };
 
-// "1/2/3 = 0.5x/1x/2x", from the speedKeys table.
 inline KeyHint speedKeysHint()
 {
     KeyHint hint{"", "="};
@@ -134,7 +120,6 @@ inline KeyHint speedKeysHint()
     return hint;
 }
 
-// Top to bottom. Add a hint or a line here and the HUD picks it up.
 inline const std::vector<HelpLine>& helpLines()
 {
     static const std::vector<HelpLine> lines{
@@ -174,10 +159,6 @@ inline void drawHelpLines(SDL_Renderer* renderer)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Sprites: one PNG per character in media/pokemon-hunt/, 8 frames side by
-// side, drawn facing left (flipped when facing right).
-// ---------------------------------------------------------------------------
 class SpriteSheet {
 public:
     static constexpr int frameCount = 8;
@@ -215,7 +196,7 @@ public:
         SDL_DestroySurface(surface);
     }
 
-    // Stands the sprite on (centerX, bottomY). `tint` multiplies its colours.
+    // Stands the sprite on (centerX, bottomY).
     void draw(SDL_Renderer* renderer, int frame, float centerX, float bottomY, float scale, bool faceRight,
               Color tint = Palette::white) const
     {
@@ -228,7 +209,7 @@ public:
         const SDL_FRect dst{centerX - w * 0.5F, bottomY - h, w, h};
         const SDL_FRect src{static_cast<float>((frame % frameCount) * cellWidth_) + content_.x, content_.y,
                             content_.w, content_.h};
-        SDL_SetTextureColorMod(texture_, tint.r, tint.g, tint.b);
+        SDL_SetTextureColorMod(texture_, tint.red, tint.green, tint.blue);
         SDL_RenderTextureRotated(renderer, texture_, &src, &dst, 0.0, nullptr,
                                  faceRight ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
     }
@@ -238,9 +219,7 @@ private:
     static constexpr int alphaByte = 3;
     static constexpr float placeholderSize = 40.0F;
 
-    // Frames are padded differently, so crop every frame to the box that
-    // holds the art of all of them: trimmed, and no jitter between frames.
-    // Returns false if the sheet is fully transparent.
+    // One crop box for all frames, so frames do not jitter.
     bool findContentBox(SDL_Surface* surface, SDL_FRect& box) const
     {
         int minX = cellWidth_;
@@ -268,7 +247,6 @@ private:
         return true;
     }
 
-    // Missing art: a visible placeholder rather than an invisible player.
     static void drawPlaceholder(SDL_Renderer* renderer, float centerX, float bottomY)
     {
         setColor(renderer, Palette::missingArt);
@@ -282,24 +260,20 @@ private:
     SDL_FRect content_{0.0F, 0.0F, placeholderSize, placeholderSize};
 };
 
-// ---------------------------------------------------------------------------
-// Drawing Pokemon
-// ---------------------------------------------------------------------------
-// Animation frame for something that animates on real time.
-inline int realTimeFrame()
+// `now` is the engine's real-time clock in nanoseconds.
+inline int realTimeFrame(std::int64_t now)
 {
-    return static_cast<int>(static_cast<double>(SDL_GetTicks()) * animationFps / 1000.0);
+    return static_cast<int>(static_cast<double>(now) * animationFps / static_cast<double>(kNsPerSec));
 }
 
-// True on every other `periodMs`-long slice of real time.
-inline bool realTimeBlink(Uint64 periodMs)
+inline bool realTimeBlink(std::int64_t now, Uint64 periodMs)
 {
-    return (SDL_GetTicks() / periodMs) % 2 == 0;
+    return (now / (static_cast<std::int64_t>(periodMs) * kNsPerMs)) % 2 == 0;
 }
 
-inline bool blinkHidden(bool blinking)
+inline bool blinkHidden(bool blinking, std::int64_t now)
 {
-    return blinking && realTimeBlink(blinkPeriodMs);
+    return blinking && realTimeBlink(now, blinkPeriodMs);
 }
 
 inline void drawShot(SDL_Renderer* renderer, int kind, float x, float y)
@@ -308,19 +282,14 @@ inline void drawShot(SDL_Renderer* renderer, int kind, float x, float y)
     fillCircle(renderer, x + shotSize * 0.5F, y + shotSize * 0.5F, shotSize * 0.5F);
 }
 
-// Centred above the Pokemon whose hitbox starts at (x, y).
 inline void drawNameTag(SDL_Renderer* renderer, float x, float y, const std::string& text, Color color)
 {
     setColor(renderer, color);
     drawTextCentered(renderer, x + pokemonSize * 0.5F, y - Layout::nameTagOffsetY, text);
 }
 
-// ---------------------------------------------------------------------------
-// State the game hands over
-// ---------------------------------------------------------------------------
 enum class TimeEffect { None, Haste, Frozen };
 
-// What the server says about Mewtwo (see bossStatusId).
 struct BossStatus {
     bool known = false;
     int hp = bossMaxHp;
@@ -328,7 +297,7 @@ struct BossStatus {
     long long knockouts = 0;
 };
 
-// Floating "+100" style text; `life` counts down in game seconds.
+// `life` counts down in game seconds.
 struct Popup {
     float x;
     float y;
@@ -344,7 +313,6 @@ struct ScoreRow {
     bool you;
 };
 
-// Everything the time panel shows about this client's clock.
 struct TimePanelState {
     Multiplayer::Mode mode;
     TimeEffect effect = TimeEffect::None;
@@ -355,22 +323,8 @@ struct TimePanelState {
     bool autoEffects = true;
 };
 
-// ---------------------------------------------------------------------------
-// The world
-// ---------------------------------------------------------------------------
-// No background art yet: flat floor and ledges on the clear colour.
-inline void drawLevel(SDL_Renderer* renderer)
-{
-    setColor(renderer, Palette::floor);
-    fillRect(renderer, 0.0F, groundY, static_cast<float>(windowWidth), windowHeight - groundY);
-    for (const Ledge& ledge : ledges) {
-        fillRect(renderer, ledge.x, ledge.y, ledge.width, ledge.height);
-    }
-}
-
-// Charging glows purple (the shadow ball is coming); a hit flashes red.
 inline void drawBoss(SDL_Renderer* renderer, const SpriteSheet& sprite, const Multiplayer::Platform& boss,
-                     bool hitFlash)
+                     bool hitFlash, std::int64_t now)
 {
     const std::uint32_t flags = boss.id - bossIdBase;
     const bool faceRight = (flags & bossFacingLeft) == 0;
@@ -378,10 +332,10 @@ inline void drawBoss(SDL_Renderer* renderer, const SpriteSheet& sprite, const Mu
     Color tint = Palette::white;
     if (hitFlash) {
         tint = Palette::bossHitTint;
-    } else if (charging && realTimeBlink(chargeGlowPeriodMs)) {
+    } else if (charging && realTimeBlink(now, chargeGlowPeriodMs)) {
         tint = Palette::bossChargeTint;
     }
-    sprite.draw(renderer, realTimeFrame(), boss.x + boss.width * 0.5F, boss.y + boss.height, bossSpriteScale,
+    sprite.draw(renderer, realTimeFrame(now), boss.x + boss.width * 0.5F, boss.y + boss.height, bossSpriteScale,
                 faceRight, tint);
 }
 
@@ -404,42 +358,23 @@ inline void drawPopups(SDL_Renderer* renderer, const std::vector<Popup>& popups)
     }
 }
 
-// ---------------------------------------------------------------------------
-// The party
-// ---------------------------------------------------------------------------
 using PokemonSprites = SpriteSheet[SpeciesCount];
 
-// One party member: its shot, its sprite (unless blinked out) and its name
-// tag. x, y is the top-left of its hitbox; sprites face left.
+// x, y is the top-left of the hitbox.
 inline void drawPartyMember(SDL_Renderer* renderer, const PokemonSprites& sprites, const PokemonData& data,
-                            float x, float y, int frame, const std::string& label, Color labelColor)
+                            float x, float y, int frame, const std::string& label, Color labelColor,
+                            std::int64_t now)
 {
     if (data.shot) {
         drawShot(renderer, data.species, static_cast<float>(data.shotX), static_cast<float>(data.shotY));
     }
-    if (!blinkHidden(data.blinking)) {
+    if (!blinkHidden(data.blinking, now)) {
         sprites[data.species].draw(renderer, frame, x + pokemonSize * 0.5F, y + pokemonSize, pokemonSpriteScale,
                                    data.facing > 0);
     }
     drawNameTag(renderer, x, y, label, labelColor);
 }
 
-// Remote Pokemon animate on real time; their game time is theirs.
-inline void drawRemotePokemon(SDL_Renderer* renderer, const PokemonSprites& sprites,
-                              const std::vector<Multiplayer::Player>& players)
-{
-    for (const Multiplayer::Player& player : players) {
-        PokemonData data;
-        if (decode(player.data, data)) {
-            drawPartyMember(renderer, sprites, data, player.x, player.y, realTimeFrame(),
-                            species[data.species].name, Palette::nameTag);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HUD: Mewtwo and the party
-// ---------------------------------------------------------------------------
 inline void drawBossBar(SDL_Renderer* renderer, const BossStatus& status)
 {
     using namespace Layout;
@@ -458,7 +393,6 @@ inline void drawBossBar(SDL_Renderer* renderer, const BossStatus& status)
     fillRect(renderer, bossBarX, bossBarY, bossBarWidth * static_cast<float>(hp) / bossMaxHp, bossBarHeight);
 }
 
-// Everyone in the party, best score first.
 inline std::vector<ScoreRow> scoreRows(const PokemonData& local, const std::vector<Multiplayer::Player>& remote)
 {
     std::vector<ScoreRow> rows{{species[local.species].name, local.score, local.species, true}};
@@ -492,7 +426,6 @@ inline void drawScoreboard(SDL_Renderer* renderer, const std::vector<ScoreRow>& 
     }
 }
 
-// Nothing when `text` is empty.
 inline void drawWarning(SDL_Renderer* renderer, const std::string& text)
 {
     if (text.empty()) {
@@ -502,8 +435,6 @@ inline void drawWarning(SDL_Renderer* renderer, const std::string& text)
     drawTextCentered(renderer, Layout::centerX, Layout::connectionStatusY, text);
 }
 
-// The countdown is the server's, on its real time: pausing or slowing this
-// client does not bring Mewtwo back any later.
 inline void drawFaintedBanner(SDL_Renderer* renderer, float respawnIn)
 {
     using namespace Layout;
@@ -514,10 +445,6 @@ inline void drawFaintedBanner(SDL_Renderer* renderer, float respawnIn)
                      "it comes back somewhere in " + oneDecimal(respawnIn) + "s", subtitleScale);
 }
 
-// ---------------------------------------------------------------------------
-// HUD: time effects
-// ---------------------------------------------------------------------------
-// A gold frame for as long as this client runs fast, and a banner as it starts.
 inline void drawHaste(SDL_Renderer* renderer, bool showBanner)
 {
     using namespace Layout;
@@ -565,7 +492,6 @@ inline void drawClock(SDL_Renderer* renderer, float x, float y, const TimePanelS
     drawText(renderer, x, y, clock, Layout::subtitleScale);
 }
 
-// Combo pips toward the next haste.
 inline void drawComboPips(SDL_Renderer* renderer, float x, float y, int combo)
 {
     using namespace Layout;
@@ -595,7 +521,6 @@ inline void drawAutoEffectsToggle(SDL_Renderer* renderer, float x, float y, bool
     drawText(renderer, x, y, on ? "auto effects: ON  (T)" : "auto effects: OFF (T)");
 }
 
-// Top right: this client's clock, the effect running on it, and the rules.
 inline void drawTimePanel(SDL_Renderer* renderer, const TimePanelState& time)
 {
     using namespace Layout;

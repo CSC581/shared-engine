@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Multiplayer.hpp"
+#include "NetworkServer.hpp"
 #include "WireFormat.hpp"
 
 #include <cstdint>
@@ -10,57 +11,49 @@
 #include <string>
 #include <vector>
 
-// The world both halves of Pokemon Hunt agree on: the client draws it and
-// moves its Pokemon in it, the server moves the boss in it. Screen coordinates
-// (960x540), y grows downward.
+// What client and server share. Level coordinates, y down; the camera scrolls
+// a 960x540 window across a levelWidth-wide level.
 namespace PokemonHunt {
 
 constexpr int windowWidth = 960;
 constexpr int windowHeight = 540;
+constexpr float levelWidth = 2400.0F;
 
-// Level: a floor and two brick ledges. Pokemon land on them; the boss ignores
-// the ledges (it floats through them) and walks on the floor.
+// Top of the floor. Pits are narrower than Mewtwo, so it walks across them and
+// the server needs no floor map (checked in PokemonHuntLevel.hpp).
 constexpr float groundY = 470.0F;
-struct Ledge {
-    float x, y, width, height;
-};
-constexpr Ledge ledges[] = {
-    {90.0F, 322.0F, 210.0F, 22.0F},
-    {660.0F, 322.0F, 210.0F, 22.0F},
-};
 
-// The boss.
+// One linear and one circular platform. 30 thick so the fastest fall still
+// lands at 60 fps and 2x speed.
+inline std::vector<Network::PlatformPath> movingPlatformPaths()
+{
+    const Network::PlatformPath across{1, 760.0F, 360.0F, 1110.0F, 360.0F, 90.0F, 140.0F, 30.0F};
+    const Network::PlatformPath circle{2, 0.0F, 0.0F, 0.0F, 0.0F, 110.0F, 140.0F, 30.0F,
+                                       Network::PlatformPath::Shape::Circular, 1730.0F, 330.0F, 70.0F};
+    return {across, circle};
+}
+
 constexpr float bossWidth = 90.0F;
 constexpr float bossHeight = 132.0F;
 constexpr float bossWalkSpeed = 150.0F;
 constexpr float bossJumpSpeed = 700.0F;
 constexpr float bossGravity = 1500.0F;
-// How close the boss walks to either edge of the screen before turning. The
-// client needs these too, to predict the boss between server snapshots.
+// Shared so the client can predict Mewtwo between snapshots.
 constexpr float bossWallMargin = 20.0F;
 constexpr float bossMinX = bossWallMargin;
-constexpr float bossMaxX = windowWidth - bossWallMargin - bossWidth;
+constexpr float bossMaxX = levelWidth - bossWallMargin - bossWidth;
 constexpr float shadowBallSize = 30.0F;
 constexpr float shadowBallSpeed = 340.0F;
-// Damage it takes to faint. The server owns this HP: a fainted boss vanishes
-// and drops back in at a random spot, at full health, after bossRespawnSeconds
-// of the server's real time.
 constexpr int bossMaxHp = 60;
 constexpr float bossRespawnSeconds = 5.0F;
 
-// The boss world is a list of Multiplayer::Platform. The id says what each
-// one is:
-//   bossIdBase + flags   the boss (flags: bossFacingLeft | bossCharging);
-//                        absent while it is fainted
-//   bossStatusId         never drawn; carries the boss's state in its fields:
-//                        x = HP, y = seconds until respawn (0 while alive),
-//                        width = KO count + 1, height = 1
-//                        (width and height must stay positive on the wire)
+// The boss world is a list of Multiplayer::Platform, told apart by id:
+//   bossIdBase + flags   Mewtwo (absent while fainted)
+//   bossStatusId         x = HP, y = seconds to respawn, width = KOs + 1
 //   shadowBallIdBase + n a shadow ball
 constexpr std::uint32_t bossIdBase = 1;
 constexpr std::uint32_t bossFacingLeft = 1;
 constexpr std::uint32_t bossCharging = 2;
-// One boss id per combination of flags.
 constexpr std::uint32_t bossIdCount = (bossFacingLeft | bossCharging) + 1;
 constexpr std::uint32_t bossStatusId = 50;
 constexpr std::uint32_t shadowBallIdBase = 100;
@@ -75,19 +68,13 @@ inline bool isShadowBall(std::uint32_t id)
     return id >= shadowBallIdBase;
 }
 
-// Mewtwo is a player too. The server runs it as a bot that joins the session
-// like any Pokemon, named bossPlayerName, and its player data carries the
-// whole boss world:
+// Mewtwo is a bot player whose data carries the boss world:
 //   "MEWTWO <id> <x> <y> <width> <height> <id> ..."
-// The engine relays player data without reading it, so this reaches every
-// client through the engine's own server and mesh, unchanged. A Pokemon's data
-// starts with a number, so the tag also keeps Mewtwo out of the party:
-// decode() rejects it, and nothing draws it as a Pokemon.
+// The tag also keeps it out of the party, since decode() rejects it.
 constexpr const char* bossPlayerName = "Mewtwo";
 constexpr const char* bossDataTag = "MEWTWO";
 
-// Status and boss first, then shadow balls until the engine's size limit, so
-// a crowded screen loses a ball rather than the whole message.
+// Shadow balls past the engine's size limit are dropped, not the message.
 inline std::string encodeBossWorld(const std::vector<Multiplayer::Platform>& world)
 {
     std::string data = bossDataTag;
@@ -121,15 +108,12 @@ inline bool decodeBossWorld(const std::string& data, std::vector<Multiplayer::Pl
     return in.eof();
 }
 
-// In peer-to-peer mode the bot is a peer with this id, on these ports. Pokemon
-// peers use ids 1..8 from port 7300 up, so neither collides with it.
+// Mewtwo's peer; Pokemon peers use ids 1..8 from port 7300.
 constexpr Multiplayer::PlayerId bossPeerId = 99;
 constexpr int bossPeerBasePort = 7290;
 constexpr const char* defaultBossPeerEndpoint = "tcp://127.0.0.1:7290";
 
-// A Pokemon's player data starts "<species> <score> <damage dealt> ...", all
-// integers (the client's encode() writes the rest). The boss bot reads only
-// the damage, a running total, to take HP off the boss.
+// The running damage total from a Pokemon's data (see PokemonHuntData.hpp).
 inline bool parseDamageDealt(const std::string& data, long long& damage)
 {
     std::istringstream in(data);
@@ -139,7 +123,6 @@ inline bool parseDamageDealt(const std::string& data, long long& damage)
     return static_cast<bool>(in >> species >> score >> damage) && damage >= 0;
 }
 
-// Default handshake address, off network-server's 5555 so both can run at once.
 constexpr const char* defaultServerBind = "tcp://*:5600";
 constexpr const char* defaultServerEndpoint = "tcp://127.0.0.1:5600";
 
