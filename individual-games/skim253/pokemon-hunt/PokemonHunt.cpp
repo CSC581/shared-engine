@@ -1,52 +1,30 @@
-// Pokemon Hunt: a Mario-style boss fight. Mewtwo (the boss) lives on the
-// server; every client is one Pokemon in the party fighting it.
+// Pokemon Hunt: each client is one Pokemon fighting the server's Mewtwo.
+// Design notes: docs/individual-games/skim253/pokemon-hunt-design.md
 //
 //   ./build/pokemon-hunt-server
-//   ./build/pokemon-hunt --pokemon pikachu                     # client-server
-//   ./build/pokemon-hunt --pokemon squirtle
-//
+//   ./build/pokemon-hunt --pokemon pikachu
 //   ./build/pokemon-hunt --mode peer-to-peer --pokemon charmander
-//   ./build/pokemon-hunt --mode peer-to-peer --pokemon bulbasaur
+//   ./build/pokemon-hunt --format binary --benchmark 3000
 //
-// Rules:
-//   Stomp Mewtwo (land on it from above)       -> 3 damage, +100 points
-//   Hit it with your skill (J)                 -> 1 damage, +20 points
-//   Bump into it from the side or from below,
-//   or get hit by a shadow ball                -> -50 points, knocked back
-//
-// Milestone 2 features, and where they show up:
-//   Timeline (S1)       - Pokemon physics, skills and cooldowns run on game
-//                         time. P pauses, 1/2/3 set 0.5x/1x/2x on this client.
-//   Client-server (S2)  - the server relays every Pokemon to every client.
-//   Threads (S3)        - FrameWorkers runs this Pokemon's physics on one
-//                         worker and the network on another; the main thread
-//                         waits for both, then runs the fight and draws.
-//   Async (S4)          - Mewtwo moves on the server's real time, so a slowed or
-//                         paused client still sees it where everyone else does.
-//                         Positions are sent on game time, so 0.5x / 2x halve /
-//                         double this client's message rate.
-//   Peer-to-peer (S5)   - --mode peer-to-peer: Pokemon go straight to each
-//                         other; only Mewtwo still comes from the server.
-//
-// Mewtwo is a bot player the server runs (see PokemonHuntWorld.hpp). Its data
-// carries the boss, and each Pokemon's data carries its total damage, which
-// the bot takes off Mewtwo's HP.
-#include "Collision.hpp"
+// Stomp Mewtwo: 3 damage, +100. Skill hit (J): 1 damage, +20.
+// Touching it from the side or below, or a shadow ball: -50 and knockback.
+#include "Components.hpp"
 #include "Engine.hpp"
-#include "Entity.hpp"
 #include "FrameWorkers.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
 #include "Multiplayer.hpp"
-#include "Physics.hpp"
+#include "NetworkWorldSync.hpp"
 #include "PokemonHuntConfig.hpp"
 #include "PokemonHuntData.hpp"
 #include "PokemonHuntDraw.hpp"
+#include "PokemonHuntLevel.hpp"
 #include "PokemonHuntPrediction.hpp"
 #include "PokemonHuntStyle.hpp"
 #include "PokemonHuntWorld.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
+#include "World.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -65,16 +43,21 @@ namespace {
 
 using namespace PokemonHunt;
 
-// ---------------------------------------------------------------------------
-// The game
-// ---------------------------------------------------------------------------
+// --benchmark: time `iterations` loops once `party` Pokemon have joined.
+struct BenchmarkPlan {
+    int iterations = 0; // 0: play normally
+    int party = 1;
+    int warmup = 200;
+};
+
 class PokemonHuntGame final : public Game {
 public:
     PokemonHuntGame(std::unique_ptr<Multiplayer::Session> session, int kind, SDL_Renderer* renderer,
-                    const std::string& mediaDir)
+                    const std::string& mediaDir, BenchmarkPlan benchmark)
         : session_(std::move(session)),
-          pokemon_(spawnX(kind), spawnY, pokemonSize, pokemonSize),
-          shot_(0.0F, 0.0F, shotSize, shotSize),
+          benchmark_(benchmark),
+          sync_(world_, makeRemotePokemon,
+                [](World& world, const Multiplayer::Platform&) -> GameObject& { return makeMovingPlatform(world); }),
           workers_({
               [this](float dt) { physicsStep(dt); },
               [this](float) { networkStep(); },
@@ -85,7 +68,22 @@ public:
             pokemonSprites_[i].load(renderer, mediaDir + species[i].file);
         }
         bossSprite_.load(renderer, mediaDir + bossSpriteFile);
-        Physics::setGravity(gravity);
+
+        buildLevel(world_);
+        makeDeathZone(world_, [this](GameObject&, GameObject& other) {
+            if (&other == pokemon_) {
+                fallIntoPit();
+            }
+        });
+        pokemon_ = &makePokemon(spawnPointFor(world_, kind));
+        shot_ = &makeShot();
+        bossHitbox_ = &makeBossHitbox();
+        scrollLeft_ = &makeScrollBoundary(true);
+        scrollRight_ = &makeScrollBoundary(false);
+        view_ = &makeView();
+        const Transform& body = *pokemon_->get<Transform>();
+        cameraX_ = clampCamera(body.x + body.width * 0.5F - windowWidth * 0.5F);
+        placeCameraZones();
     }
 
     void handleInput(Engine& engine) override
@@ -109,20 +107,24 @@ public:
             endEffect(gameTime);
         }
 
-        // Section 3: physics and the network each run on their own worker;
-        // this returns once both are done, so everything below reads their
-        // finished results. The network is pumped even while paused, so the
-        // others and Mewtwo keep moving on this screen.
+        // Physics and network on their own workers; the network runs even while paused.
         controlLocked_ = controlLock_ > 0.0;
+        frameTime_ = time;
         workers_.runFrame(dt);
 
-        // Everything below runs on game time: paused means frozen, 2x means
-        // cooldowns and knockback finish twice as fast.
+        // Workers are done: the World is this thread's again.
+        sync_.apply(*session_);
+        rideMovingPlatform();
+        mirrorBossWorld();
+        placeCameraZones();
+
         if (dt > 0.0F) {
-            playFrame(time.dtSeconds);
+            playFrame(time);
         }
+        world_.flushDestroyed();
 
         applyEarnedEffects(gameTime);
+        timeBenchmark(engine.realTime().now());
         publishLocalPokemon();
 
         updateTitle(engine);
@@ -130,32 +132,37 @@ public:
         speed_ = gameTime.scale();
     }
 
-    // Drawing itself lives in PokemonHuntDraw.hpp; this decides what is on
-    // screen this frame.
     void render(SDL_Renderer* renderer) const override
     {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-        drawLevel(renderer);
+        // Level coordinates throughout; sprites are shifted by the same camera.
+        renderWorld(renderer, world_, cameraX_, 0.0F);
 
-        const Multiplayer::Platform* boss = findBoss();
-        drawShadowBalls(renderer, world_);
-        if (boss != nullptr) {
-            drawBoss(renderer, bossSprite_, *boss, bossFlash_ > 0.0);
+        std::vector<Multiplayer::Platform> bossOnScreen = bossWorld_;
+        for (Multiplayer::Platform& object : bossOnScreen) {
+            object.x -= cameraX_;
         }
-        drawRemotePokemon(renderer, pokemonSprites_, session_->remotePlayers());
-        // Drawn from the same data the others receive (publishLocalPokemon
-        // fills it in every update), animated on this client's game time.
-        drawPartyMember(renderer, pokemonSprites_, local_, pokemon_.getX(), pokemon_.getY(),
-                        static_cast<int>(animationTime_ * animationFps), "YOU", Palette::you);
+        drawShadowBalls(renderer, bossOnScreen);
+        for (const Multiplayer::Platform& object : bossOnScreen) {
+            if (isBoss(object.id)) {
+                drawBoss(renderer, bossSprite_, object, bossFlash_ > 0.0, now_);
+            }
+        }
+        drawOtherPokemon(renderer);
+        const Transform& body = *pokemon_->get<Transform>();
+        drawPartyMember(renderer, pokemonSprites_, onScreen(local_), body.x - cameraX_, body.y,
+                        static_cast<int>(animationTime_ * animationFps), "YOU", Palette::you, now_);
 
-        drawPopups(renderer, popups_);
-        drawHud(renderer, boss);
+        std::vector<Popup> popups = popups_;
+        for (Popup& popup : popups) {
+            popup.x -= cameraX_;
+        }
+        drawPopups(renderer, popups);
+        drawHud(renderer, findBoss());
     }
 
 private:
-    // --- Input ---------------------------------------------------------------
-    // Manual time controls always win: they end any running effect first,
-    // which puts back the speed the player had chosen.
+    // Manual time keys end any running effect first.
     void handleTimeKeys(Timeline& gameTime, std::int64_t now)
     {
         if (Input::isKeyJustPressed(SDL_SCANCODE_P)) {
@@ -168,7 +175,6 @@ private:
                 gameTime.setScale(speed.scale);
             }
         }
-        // The effects on demand, and the switch for triggering them in play.
         const bool manuallyPaused = gameTime.isPaused() && effect_ != TimeEffect::Frozen;
         if (Input::isKeyJustPressed(SDL_SCANCODE_H) && !manuallyPaused) {
             startEffect(TimeEffect::Haste, gameTime, now);
@@ -181,8 +187,7 @@ private:
         }
     }
 
-    // Movement for the physics worker; the skill press is kept until used.
-    // Written only here, before runFrame(), so the worker reads it unlocked.
+    // Written before runFrame(), so the physics worker reads it unlocked.
     void readControls()
     {
         axis_ = std::clamp(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D) +
@@ -193,77 +198,182 @@ private:
                         Input::isKeyJustPressed(SDL_SCANCODE_X);
     }
 
-    // --- Physics worker: this Pokemon, and nothing the network touches. ------
-    void physicsStep(float dt)
+    // Its Solid Collider stands it on the level and reports the fight, the
+    // death zone and scrolling.
+    GameObject& makePokemon(const Transform& spawn)
     {
-        previousBottom_ = pokemon_.getY() + pokemonSize;
-        if (dt <= 0.0F) {
-            return;
-        }
-        if (!controlLocked_) {
-            pokemon_.setVelocityX(axis_ * walkSpeed);
-            if (axis_ != 0.0F) {
-                facing_ = axis_ < 0.0F ? -1 : 1;
-            }
-            if (jumpPressed_ && onGround_) {
-                pokemon_.setVelocityY(-jumpSpeed);
-            }
-        }
-        Physics::applyGravity(pokemon_, dt);
-        pokemon_.update(dt);
-        onGround_ = land(previousBottom_);
+        GameObject& pokemon = world_.create("pokemon");
+        pokemon.add<Transform>(spawn.x, spawn.y, pokemonSize, pokemonSize);
+        pokemon.add<Motion>();
+        pokemon.add<Gravity>(gravity);
+        pokemon.add<Behavior>([this](GameObject& self, const FrameTime&) { steer(self); });
+        Collider& collider = pokemon.add<Collider>(Collider::Kind::Solid, hurtLayer | zoneLayer | solidLayer);
+        collider.onCollide = [this](GameObject&, GameObject& other) { touch(other); };
+        pokemon.setActive(true);
+        return pokemon;
     }
 
-    // --- Network worker: the session and Mewtwo, never the Pokemon. ---------
+    // Hidden trigger past the scroll margin; touching it scrolls the camera.
+    GameObject& makeScrollBoundary(bool left)
+    {
+        GameObject& boundary = world_.create(left ? "scroll-left" : "scroll-right");
+        boundary.add<Transform>(0.0F, -levelHeightPadding, levelWidth, windowHeight + 2.0F * levelHeightPadding);
+        boundary.add<Collider>(Collider::Kind::Trigger, zoneLayer).onCollide = [this, left](GameObject&,
+                                                                                           GameObject& other) {
+            if (&other != pokemon_) {
+                return;
+            }
+            const Transform& body = *other.get<Transform>();
+            cameraX_ = clampCamera(left ? body.x - scrollMargin : body.x + body.width - (windowWidth - scrollMargin));
+        };
+        boundary.setActive(true);
+        return boundary;
+    }
+
+    // Hidden trigger over the screen; a shot that leaves it is switched off.
+    GameObject& makeView()
+    {
+        GameObject& view = world_.create("view");
+        view.add<Transform>(0.0F, 0.0F, static_cast<float>(windowWidth), static_cast<float>(windowHeight));
+        view.add<Collider>(Collider::Kind::Trigger, shotLayer).onExit = [this](GameObject&, GameObject& other) {
+            if (&other == shot_) {
+                shot_->setActive(false);
+            }
+        };
+        view.setActive(true);
+        return view;
+    }
+
+    GameObject& makeShot()
+    {
+        GameObject& shot = world_.create("shot");
+        shot.add<Transform>(0.0F, 0.0F, shotSize, shotSize);
+        shot.add<Motion>();
+        Collider& collider = shot.add<Collider>(Collider::Kind::Trigger, shotLayer);
+        collider.onCollide = [this](GameObject& self, GameObject& other) {
+            if (other.tag() == "boss" && self.isActive()) {
+                hitBossWithShot(self);
+            }
+        };
+        return shot;
+    }
+
+    // Follows the predicted Mewtwo; inactive while it is absent.
+    GameObject& makeBossHitbox()
+    {
+        GameObject& boss = world_.create("boss");
+        boss.add<Transform>();
+        boss.add<Collider>(Collider::Kind::Trigger, hurtLayer | shotLayer);
+        return boss;
+    }
+
+    GameObject& makeShadowBallHitbox()
+    {
+        GameObject& ball = world_.create("shadow-ball");
+        ball.add<Transform>();
+        ball.add<Collider>(Collider::Kind::Trigger, hurtLayer);
+        return ball;
+    }
+
+    // NetworkWorldSync's factory. Mewtwo's bot player gets a bare marker.
+    static GameObject& makeRemotePokemon(World& world, const Multiplayer::Player& player)
+    {
+        GameObject& object = world.create(player.name == bossPlayerName ? "boss-link" : "remote-pokemon");
+        object.add<Transform>(player.x, player.y, pokemonSize, pokemonSize);
+        return object;
+    }
+
+    static constexpr float levelHeightPadding = 1000.0F;
+
+    static float clampCamera(float x) { return std::clamp(x, 0.0F, levelWidth - windowWidth); }
+
+    void placeCameraZones()
+    {
+        Transform& left = *scrollLeft_->get<Transform>();
+        left.x = cameraX_ + scrollMargin - left.width;
+        scrollRight_->get<Transform>()->x = cameraX_ + windowWidth - scrollMargin;
+        view_->get<Transform>()->x = cameraX_;
+    }
+
+    PokemonData onScreen(PokemonData data) const
+    {
+        data.shotX -= static_cast<int>(cameraX_);
+        return data;
+    }
+
+    void fallIntoPit()
+    {
+        const Transform& spawn = spawnPointFor(world_, local_.species);
+        Transform& body = *pokemon_->get<Transform>();
+        body.x = spawn.x;
+        body.y = spawn.y;
+        Motion& motion = *pokemon_->get<Motion>();
+        motion.velocityX = 0.0F;
+        motion.velocityY = 0.0F;
+        riding_ = 0;
+        addPopup(body.x + pokemonSize * 0.5F, body.y, "FELL! back to spawn", Palette::popupHurt);
+    }
+
+    // The engine does not carry riders: follow the platform's movement.
+    void rideMovingPlatform()
+    {
+        GameObject* platform = riding_ != 0 ? world_.find(riding_) : nullptr;
+        if (platform == nullptr) {
+            riding_ = 0;
+            return;
+        }
+        const Transform& box = *platform->get<Transform>();
+        Transform& body = *pokemon_->get<Transform>();
+        body.x += box.x - ridingX_;
+        body.y += box.y - ridingY_;
+        ridingX_ = box.x;
+        ridingY_ = box.y;
+    }
+
+    // Physics worker: only the "pokemon" tag, so no object is shared.
+    void physicsStep(float dt)
+    {
+        const Transform& body = *pokemon_->get<Transform>();
+        previousBottom_ = body.y + body.height;
+        if (dt > 0.0F) {
+            world_.updateComponents(frameTime_, "pokemon");
+        }
+    }
+
+    void steer(GameObject& self)
+    {
+        if (controlLocked_) {
+            return;
+        }
+        Motion& motion = *self.get<Motion>();
+        motion.velocityX = axis_ * walkSpeed;
+        if (axis_ != 0.0F) {
+            facing_ = axis_ < 0.0F ? -1 : 1;
+        }
+        if (jumpPressed_ && onGround_) {
+            motion.velocityY = -jumpSpeed;
+        }
+    }
+
     void networkStep()
     {
         session_->update();
         refreshWorld();
     }
 
-    // Walls, floor and one-way ledges. Returns whether we are standing.
-    bool land(float previousBottom)
+    void playFrame(const FrameTime& time)
     {
-        const float x = std::clamp(pokemon_.getX(), 0.0F, windowWidth - pokemonSize);
-        float y = pokemon_.getY();
-        bool standing = false;
-
-        if (pokemon_.getVelocityY() >= 0.0F) {
-            // Where the feet went this step. Testing the whole path rather
-            // than where they ended up means a fast fall cannot skip a ledge.
-            const Rect feetPath{x, previousBottom, pokemonSize, y + pokemonSize - previousBottom};
-            if (Collision::intersects(feetPath, floorBounds)) {
-                y = groundY - pokemonSize;
-                standing = true;
-            }
-            // Only a ledge's top surface catches, so we can jump up through it.
-            for (const Ledge& ledge : ledges) {
-                const Rect top{ledge.x, ledge.y, ledge.width, ledgeLandTolerance};
-                if (Collision::intersects(feetPath, top)) {
-                    y = ledge.y - pokemonSize;
-                    standing = true;
-                }
-            }
-        }
-        pokemon_.setPosition(x, y);
-        if (standing) {
-            pokemon_.setVelocityY(0.0F);
-        }
-        return standing;
-    }
-
-    // --- Main thread, after both workers finish. ---------------------------
-    void playFrame(double dt)
-    {
-        // Our own animation is on game time too: it freezes with the pause.
+        const double dt = time.dtSeconds;
         animationTime_ += dt;
         tickTimers(dt);
         if (skillPressed_) {
             skillPressed_ = false;
             fireShot();
         }
-        moveShot(static_cast<float>(dt));
-        fightBoss(previousBottom_);
+        moveShot(time);
+        onGround_ = false;
+        riding_ = 0;
+        world_.resolveCollisions();
     }
 
     void tickTimers(double dt)
@@ -293,41 +403,25 @@ private:
 
     void fireShot()
     {
-        if (shotActive_ || shotCooldown_ > 0.0 || controlLock_ > 0.0) {
+        if (shot_->isActive() || shotCooldown_ > 0.0 || controlLock_ > 0.0) {
             return;
         }
-        shotActive_ = true;
         const auto direction = static_cast<float>(facing_);
-        shot_.setPosition(pokemon_.getX() + pokemonSize * 0.5F + direction * shotSpawnOffset - shotSize * 0.5F,
-                          pokemon_.getY() + pokemonSize * shotSpawnHeightRatio);
-        shot_.setVelocity(direction * shotSpeed, 0.0F);
+        const Transform& body = *pokemon_->get<Transform>();
+        Transform& shot = *shot_->get<Transform>();
+        shot.x = body.x + pokemonSize * 0.5F + direction * shotSpawnOffset - shotSize * 0.5F;
+        shot.y = body.y + pokemonSize * shotSpawnHeightRatio;
+        shot_->get<Motion>()->velocityX = direction * shotSpeed;
+        shot_->setActive(true);
         shotCooldown_ = shotCooldown;
     }
 
-    void moveShot(float dt)
+    void moveShot(const FrameTime& time)
     {
-        if (!shotActive_) {
+        if (!shot_->isActive()) {
             return;
         }
-        shot_.update(dt);
-        if (!Collision::intersects(shot_.getBounds(), screenBounds)) {
-            shotActive_ = false;
-        }
-    }
-
-    // --- The fight -------------------------------------------------------------
-    void fightBoss(float previousBottom)
-    {
-        const Multiplayer::Platform* boss = findBoss();
-        if (boss == nullptr) {
-            return;
-        }
-        const Rect bossBox = generateHitbox(*boss, bossHitInsets);
-        const Rect me = pokemon_.getBounds();
-
-        hitBossWithShot(bossBox);
-        touchBoss(*boss, bossBox, me, previousBottom);
-        touchShadowBalls(me);
+        world_.updateComponents(time, "shot");
     }
 
     static Rect generateHitbox(const Multiplayer::Platform& object, const Insets& insets)
@@ -336,39 +430,81 @@ private:
                 object.height - insets.top - insets.bottom};
     }
 
-    void hitBossWithShot(const Rect& bossBox)
+    static void placeAt(GameObject& object, const Rect& box)
     {
-        if (shotActive_ && Collision::intersects(shot_.getBounds(), bossBox)) {
-            shotActive_ = false;
-            dealDamage(shotDamage, shotPoints, shot_.getX(), shot_.getY(), species[local_.species].skill);
-        }
+        Transform& transform = *object.get<Transform>();
+        transform.x = box.x;
+        transform.y = box.y;
+        transform.width = box.width;
+        transform.height = box.height;
     }
 
-    // Mario rule: coming down onto its head is a stomp; any other contact
-    // (side, or from underneath) hurts us.
-    void touchBoss(const Multiplayer::Platform& boss, const Rect& bossBox, const Rect& me, float previousBottom)
+    // Ball hitboxes are a pool filled in list order; spares stay inactive.
+    void mirrorBossWorld()
     {
-        if (!Collision::intersects(me, bossBox)) {
-            return;
+        const Multiplayer::Platform* boss = findBoss();
+        if (boss != nullptr) {
+            placeAt(*bossHitbox_, generateHitbox(*boss, bossHitInsets));
         }
-        const bool stomp = pokemon_.getVelocityY() > 0.0F && previousBottom <= bossBox.y + stompTolerance;
-        if (stomp) {
-            pokemon_.setPosition(me.x, bossBox.y - pokemonSize);
-            pokemon_.setVelocityY(-stompBounce);
-            invincible_ = std::max(invincible_, stompInvincible);
-            dealDamage(stompDamage, stompPoints, me.x + me.width * 0.5F, me.y, "STOMP!");
-        } else {
-            getHurt(boss.x + boss.width * 0.5F);
-        }
-    }
+        bossHitbox_->setActive(boss != nullptr);
 
-    void touchShadowBalls(const Rect& me)
-    {
-        for (const Multiplayer::Platform& object : world_) {
-            if (isShadowBall(object.id) &&
-                Collision::intersects(me, generateHitbox(object, shadowBallHitInsets))) {
-                getHurt(object.x + object.width * 0.5F);
+        std::size_t used = 0;
+        for (const Multiplayer::Platform& object : bossWorld_) {
+            if (!isShadowBall(object.id)) {
+                continue;
             }
+            if (used == ballHitboxes_.size()) {
+                ballHitboxes_.push_back(&makeShadowBallHitbox());
+            }
+            GameObject& ball = *ballHitboxes_[used++];
+            placeAt(ball, generateHitbox(object, shadowBallHitInsets));
+            ball.setActive(true);
+        }
+        for (; used < ballHitboxes_.size(); ++used) {
+            ballHitboxes_[used]->setActive(false);
+        }
+    }
+
+    void touch(GameObject& other)
+    {
+        if (other.tag() == "boss") {
+            touchBoss(*other.get<Transform>());
+        } else if (other.tag() == "shadow-ball") {
+            const Transform& ball = *other.get<Transform>();
+            getHurt(ball.x + ball.width * 0.5F);
+        } else if (other.tag() == "platform" || other.tag() == "moving-platform") {
+            const Transform& box = *other.get<Transform>();
+            if (standsOn(*pokemon_->get<Transform>(), box)) {
+                onGround_ = true;
+                if (other.tag() == "moving-platform") {
+                    riding_ = other.id();
+                    ridingX_ = box.x;
+                    ridingY_ = box.y;
+                }
+            }
+        }
+    }
+
+    void hitBossWithShot(GameObject& shot)
+    {
+        shot.setActive(false);
+        const Transform& box = *shot.get<Transform>();
+        dealDamage(shotDamage, shotPoints, box.x, box.y, species[local_.species].skill);
+    }
+
+    // Coming down onto its head is a stomp; any other contact hurts.
+    void touchBoss(const Transform& bossBox)
+    {
+        Transform& body = *pokemon_->get<Transform>();
+        Motion& motion = *pokemon_->get<Motion>();
+        const bool stomp = motion.velocityY > 0.0F && previousBottom_ <= bossBox.y + stompTolerance;
+        if (stomp) {
+            body.y = bossBox.y - pokemonSize;
+            motion.velocityY = -stompBounce;
+            invincible_ = std::max(invincible_, stompInvincible);
+            dealDamage(stompDamage, stompPoints, body.x + body.width * 0.5F, body.y, "STOMP!");
+        } else {
+            getHurt(bossBox.x + bossBox.width * 0.5F);
         }
     }
 
@@ -392,20 +528,20 @@ private:
         combo_ = 0;
         countHurtTowardFreeze();
         local_.score -= hurtPoints;
-        addPopup(pokemon_.getX() + pokemonSize * 0.5F, pokemon_.getY(), "OUCH -" + std::to_string(hurtPoints),
-                 Palette::popupHurt);
+        const Transform& body = *pokemon_->get<Transform>();
+        addPopup(body.x + pokemonSize * 0.5F, body.y, "OUCH -" + std::to_string(hurtPoints), Palette::popupHurt);
     }
 
-    // Thrown up and away from whatever hit us, briefly out of control.
     void knockBack(float fromX)
     {
-        const float away = pokemon_.getX() + pokemonSize * 0.5F < fromX ? -1.0F : 1.0F;
-        pokemon_.setVelocity(away * hurtKnockbackX, -hurtKnockbackY);
+        const float away = pokemon_->get<Transform>()->x + pokemonSize * 0.5F < fromX ? -1.0F : 1.0F;
+        Motion& motion = *pokemon_->get<Motion>();
+        motion.velocityX = away * hurtKnockbackX;
+        motion.velocityY = -hurtKnockbackY;
         invincible_ = hurtInvincible;
         controlLock_ = hurtControlLock;
     }
 
-    // Getting hurt freezeHurtCount times within freezeWindowSeconds earns a freeze.
     void countHurtTowardFreeze()
     {
         hurtTimes_.push_back(now_);
@@ -419,8 +555,6 @@ private:
         }
     }
 
-    // --- Time effects on this client's game timeline ------------------------
-    // What the fight earned this frame, applied to this client's timeline.
     void applyEarnedEffects(Timeline& gameTime)
     {
         if (freezeEarned_ && autoEffects_) {
@@ -468,15 +602,16 @@ private:
         return std::max(0.0, static_cast<double>(effectEndsAt_ - now_) / static_cast<double>(kNsPerSec));
     }
 
-    // --- Network ------------------------------------------------------------
     void publishLocalPokemon()
     {
         local_.facing = facing_;
         local_.blinking = invincible_ > 0.0;
-        local_.shot = shotActive_;
-        local_.shotX = static_cast<int>(shot_.getX());
-        local_.shotY = static_cast<int>(shot_.getY());
-        session_->publishLocalPlayer(pokemon_.getX(), pokemon_.getY(), encode(local_));
+        const Transform& shot = *shot_->get<Transform>();
+        local_.shot = shot_->isActive();
+        local_.shotX = static_cast<int>(shot.x);
+        local_.shotY = static_cast<int>(shot.y);
+        const Transform& body = *pokemon_->get<Transform>();
+        session_->publishLocalPlayer(body.x, body.y, encode(local_));
     }
 
     void refreshWorld()
@@ -485,11 +620,7 @@ private:
         readBossStatus();
     }
 
-    // Everything the server owns, read off Mewtwo's player data. Kept as last
-    // received while Mewtwo is missing, like the engine keeps platforms. In
-    // client-server mode it comes only as often as this client sends, which
-    // follows its game speed, so Mewtwo is moved on between updates on real
-    // time (see WorldPredictor).
+    // The boss world from Mewtwo's player data, predicted between snapshots.
     void fetchWorld()
     {
         bossSeen_ = false;
@@ -501,12 +632,12 @@ private:
                 break;
             }
         }
-        world_ = predictor_.predict(now_);
+        bossWorld_ = predictor_.predict(now_);
     }
 
     void readBossStatus()
     {
-        for (const Multiplayer::Platform& object : world_) {
+        for (const Multiplayer::Platform& object : bossWorld_) {
             if (object.id != bossStatusId) {
                 continue;
             }
@@ -518,10 +649,9 @@ private:
         }
     }
 
-    // Null while Mewtwo is fainted, or before the server has been heard from.
     const Multiplayer::Platform* findBoss() const
     {
-        for (const Multiplayer::Platform& object : world_) {
+        for (const Multiplayer::Platform& object : bossWorld_) {
             if (isBoss(object.id)) {
                 return &object;
             }
@@ -529,7 +659,63 @@ private:
         return nullptr;
     }
 
-    // --- The HUD --------------------------------------------------------------
+    // Positions from the World, looks from player data, animation on real time.
+    void drawOtherPokemon(SDL_Renderer* renderer) const
+    {
+        const std::vector<Multiplayer::Player>& players = session_->remotePlayers();
+        for (const auto& object : world_.objects()) {
+            const auto* identity = object->get<NetworkIdentity>();
+            if (!object->isActive() || object->tag() != "remote-pokemon" || identity == nullptr) {
+                continue;
+            }
+            const auto player = std::find_if(players.begin(), players.end(), [&](const Multiplayer::Player& p) {
+                return p.id == identity->id;
+            });
+            PokemonData data;
+            if (player == players.end() || !decode(player->data, data)) {
+                continue;
+            }
+            const Transform& body = *object->get<Transform>();
+            drawPartyMember(renderer, pokemonSprites_, onScreen(data), body.x - cameraX_, body.y, realTimeFrame(now_),
+                            species[data.species].name, Palette::nameTag, now_);
+        }
+    }
+
+    // Times whole frames and update() alone; drawing depends on whether the OS
+    // throttles a background window, update() does not.
+    void timeBenchmark(std::int64_t updateEnd)
+    {
+        if (benchmark_.iterations <= 0 || benchmarkDone_) {
+            return;
+        }
+        if (benchmarkStartedAt_ == 0) {
+            if (partySize() < benchmark_.party || ++benchmarkWarmedUp_ < benchmark_.warmup) {
+                return;
+            }
+            benchmarkStartedAt_ = now_;
+            return;
+        }
+        benchmarkUpdateNs_ += updateEnd - now_;
+        if (++benchmarkCounted_ < benchmark_.iterations) {
+            return;
+        }
+        benchmarkDone_ = true;
+        const auto seconds = [](std::int64_t ns) { return static_cast<double>(ns) / static_cast<double>(kNsPerSec); };
+        std::cout << "PH_BENCHMARK seconds=" << seconds(now_ - benchmarkStartedAt_)
+                  << " update_seconds=" << seconds(benchmarkUpdateNs_) << " iterations=" << benchmarkCounted_
+                  << " party=" << partySize() << " platforms=" << session_->platforms().size() << std::endl;
+    }
+
+    int partySize() const
+    {
+        int size = 1;
+        PokemonData data;
+        for (const Multiplayer::Player& player : session_->remotePlayers()) {
+            size += decode(player.data, data) ? 1 : 0;
+        }
+        return size;
+    }
+
     void drawHud(SDL_Renderer* renderer, const Multiplayer::Platform* boss) const
     {
         drawBossBar(renderer, status_);
@@ -552,7 +738,6 @@ private:
 
     bool bossFainted() const { return status_.known && status_.respawnIn > 0.0F; }
 
-    // Why Mewtwo or the party may be missing, or empty if all is well.
     std::string connectionWarning(const Multiplayer::Platform* boss) const
     {
         if (session_->state() != Multiplayer::State::Ready) {
@@ -590,20 +775,41 @@ private:
     }
 
     std::unique_ptr<Multiplayer::Session> session_;
+    BenchmarkPlan benchmark_;
+    std::int64_t benchmarkStartedAt_ = 0;
+    int benchmarkWarmedUp_ = 0;
+    int benchmarkCounted_ = 0;
+    std::int64_t benchmarkUpdateNs_ = 0;
+    bool benchmarkDone_ = false;
+    // Main thread owns world_; its objects live as long as the game.
+    World world_;
+    NetworkWorldSync sync_;
+    GameObject* pokemon_ = nullptr;
+    GameObject* shot_ = nullptr;
+    GameObject* bossHitbox_ = nullptr;
+    GameObject* scrollLeft_ = nullptr;
+    GameObject* scrollRight_ = nullptr;
+    GameObject* view_ = nullptr;
+    // Left edge of the screen in level coordinates.
+    float cameraX_ = 0.0F;
+    // Platform ridden (0 for none) and where it was.
+    ObjectId riding_ = 0;
+    float ridingX_ = 0.0F;
+    float ridingY_ = 0.0F;
+    std::vector<GameObject*> ballHitboxes_;
+    FrameTime frameTime_{0.0, 0};
+
     // Written by the network worker, read by main after runFrame().
     WorldPredictor predictor_;
-    std::vector<Multiplayer::Platform> world_;
+    std::vector<Multiplayer::Platform> bossWorld_;
     BossStatus status_;
     bool bossSeen_ = false;
     PokemonSprites pokemonSprites_;
     SpriteSheet bossSprite_;
     double animationTime_ = 0.0;
-    Entity pokemon_;
-    Entity shot_;
     PokemonData local_;
 
     // Main-thread game state.
-    bool shotActive_ = false;
     double shotCooldown_ = 0.0;
     double invincible_ = 0.0;
     double controlLock_ = 0.0;
@@ -612,7 +818,7 @@ private:
     bool paused_ = false;
     double speed_ = 1.0;
 
-    // Time effects. All times are real-time nanoseconds.
+    // Real-time nanoseconds.
     TimeEffect effect_ = TimeEffect::None;
     double savedScale_ = 1.0;
     std::int64_t effectEndsAt_ = 0;
@@ -628,25 +834,23 @@ private:
     float axis_ = 0.0F;
     bool jumpPressed_ = false;
     bool controlLocked_ = false;
+    bool onGround_ = false;
     // Main thread only; the worker never sees the skill key.
     bool skillPressed_ = false;
 
     // Written by the physics worker, read by main after runFrame().
     int facing_ = 1;
     float previousBottom_ = 0.0F;
-    bool onGround_ = false;
 
-    // Section 3: physics and network each on their own thread every frame.
-    // Declared last so its threads are joined before any member they use is
-    // destroyed.
+    // Last, so its threads join before any member they use is destroyed.
     FrameWorkers workers_;
 };
 
-// ---------------------------------------------------------------------------
-// Command line
-// ---------------------------------------------------------------------------
 struct Options {
     Multiplayer::Config config;
+    // Peer-to-peer: where the moving platforms come from.
+    std::string platformServer = defaultServerEndpoint;
+    BenchmarkPlan benchmark;
     int requested = -1; // species asked for with --pokemon, or -1 for any
     bool idGiven = false;
     bool portGiven = false;
@@ -673,6 +877,12 @@ void printUsage()
   --mode MODE       client-server (default) or peer-to-peer.
   --server ENDPOINT Mewtwo's server. Default tcp://127.0.0.1:5600, or in
                     peer-to-peer mode Mewtwo's peer, tcp://127.0.0.1:7290.
+  --format FORMAT   client-server encoding: text (default) or binary.
+
+Benchmark:
+  --benchmark N     Time N game-loop iterations, print a PH_BENCHMARK line.
+  --benchmark-party K
+                    Start timing once K Pokemon (this one included) are here.
 
 Peer-to-peer only:
   --id N            This peer's id, 1..8. Leave it out to take the first free
@@ -681,10 +891,12 @@ Peer-to-peer only:
   --peer ENDPOINT   Any running peer. Default: peer 1 on this machine, unless
                     this is peer 1.
   --advertise HOST  Address other machines should reach this peer at.
+  --platforms ENDPOINT
+                    The server whose moving platforms every peer rides.
+                    Default tcp://127.0.0.1:5600 (pokemon-hunt-server).
 )";
 }
 
-// Applies one "--option value" pair. False (after saying why) if it is invalid.
 bool applyOption(const std::string& arg, const std::string& value, Options& options)
 {
     Multiplayer::Config& config = options.config;
@@ -703,6 +915,19 @@ bool applyOption(const std::string& arg, const std::string& value, Options& opti
     } else if (arg == "--server") {
         config.serverEndpoint = value;
         options.serverGiven = true;
+    } else if (arg == "--format") {
+        if (value != "text" && value != "binary") {
+            std::cerr << "pokemon-hunt: --format must be text or binary\n";
+            return false;
+        }
+        config.clientServerDataFormat = value == "binary" ? Net::DataFormat::Binary : Net::DataFormat::TextMultipart;
+    } else if (arg == "--benchmark" || arg == "--benchmark-party") {
+        const int count = std::atoi(value.c_str());
+        if (count < 1) {
+            std::cerr << "pokemon-hunt: " << arg << " needs a positive count\n";
+            return false;
+        }
+        (arg == "--benchmark" ? options.benchmark.iterations : options.benchmark.party) = count;
     } else if (arg == "--id") {
         const int id = std::atoi(value.c_str());
         if (id < 1 || id > maxPeerId) {
@@ -719,6 +944,8 @@ bool applyOption(const std::string& arg, const std::string& value, Options& opti
         options.peerGiven = true;
     } else if (arg == "--advertise") {
         config.advertiseHost = value;
+    } else if (arg == "--platforms") {
+        options.platformServer = value;
     } else {
         std::cerr << "pokemon-hunt: unknown option " << arg << "\n\n";
         printUsage();
@@ -727,12 +954,9 @@ bool applyOption(const std::string& arg, const std::string& value, Options& opti
     return true;
 }
 
-// False means exit now, with `exitCode`.
 bool parseArgs(int argc, char* argv[], Options& options, int& exitCode)
 {
     options.config.serverEndpoint = defaultServerEndpoint;
-    // The server shows this in its log; on screen a Pokemon is named by its
-    // species, which is only settled after joining.
     options.config.playerName = "trainer";
     options.config.sendIntervalGameTics = sendIntervalGameTics;
     options.config.heartbeatIntervalRealTics = heartbeatIntervalRealTics;
@@ -755,18 +979,19 @@ bool parseArgs(int argc, char* argv[], Options& options, int& exitCode)
             return false;
         }
     }
+    if (options.config.mode == Multiplayer::Mode::PeerToPeer &&
+        options.config.clientServerDataFormat == Net::DataFormat::Binary) {
+        std::cerr << "pokemon-hunt: --format binary needs client-server mode\n";
+        exitCode = 1;
+        return false;
+    }
     if (options.config.mode == Multiplayer::Mode::PeerToPeer && !options.serverGiven) {
         options.config.serverEndpoint = defaultBossPeerEndpoint;
     }
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Joining the party
-// ---------------------------------------------------------------------------
-// The engine's game time, which paces sends. The session is opened before the
-// window, and so the engine, exists; until attach() this reads 0, which is
-// harmless because nothing is published before the game starts.
+// The engine's game time, attached once the engine exists (reads 0 until then).
 class GameClock final : public TimeSource {
 public:
     std::int64_t now() const override { return target_ != nullptr ? target_->now() : 0; }
@@ -777,15 +1002,12 @@ private:
     const TimeSource* target_ = nullptr;
 };
 
-// Why a session cannot be joined, or empty if it can.
 std::string sessionProblem(const Multiplayer::Session& session)
 {
     return session.state() == Multiplayer::State::Failed ? session.status() : std::string();
 }
 
-// Each id gets its own ports, so two peers with the same id on one machine
-// collide on the port instead of silently confusing the mesh. Without --id,
-// take the first id whose ports are free.
+// Without --id, takes the first peer id whose ports are free.
 std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, const TimeSource& clock,
                                                       const TimeSource& gameClock)
 {
@@ -795,10 +1017,7 @@ std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, co
     for (Multiplayer::PlayerId id = first; id <= last; ++id) {
         Multiplayer::Config attempt = options.config;
         attempt.peerId = id;
-        // Mewtwo is a peer in the mesh, so there is no world authority to
-        // poll. Greeting its peer is how this Pokemon meets it, whichever of
-        // the two starts first.
-        attempt.serverEndpoint.clear();
+        attempt.serverEndpoint = options.platformServer;
         if (!options.portGiven) {
             attempt.basePort = firstPeerBasePort + portsPerPeer * static_cast<int>(id - 1);
         }
@@ -822,8 +1041,6 @@ std::unique_ptr<Multiplayer::Session> openPeerSession(const Options& options, co
     return nullptr;
 }
 
-// Waits for the party to show up: the server's WELCOME in client-server
-// mode, the other peers' announcements in peer-to-peer mode.
 bool waitForParty(Multiplayer::Session& session, const TimeSource& clock)
 {
     const std::int64_t start = clock.now();
@@ -847,8 +1064,7 @@ bool waitForParty(Multiplayer::Session& session, const TimeSource& clock)
     return true;
 }
 
-// Picks this client's species: the one asked for, or else the first free one.
-// Returns -1 (after saying why) if that is not possible.
+// The species asked for, or the first free one; -1 if neither works.
 int chooseSpecies(const Multiplayer::Session& session, int requested)
 {
     bool taken[SpeciesCount] = {};
@@ -881,8 +1097,7 @@ int chooseSpecies(const Multiplayer::Session& session, int requested)
     return requested >= 0 ? requested : firstFree;
 }
 
-// Joins the session and looks at who is already in the party, before any
-// window opens, so a clash is an error message rather than a broken game.
+// Joins before any window opens, so a species clash is just an error message.
 std::unique_ptr<Multiplayer::Session> joinParty(const Options& options, int& kind, const TimeSource& clock,
                                                 const TimeSource& gameClock)
 {
@@ -902,27 +1117,23 @@ std::unique_ptr<Multiplayer::Session> joinParty(const Options& options, int& kin
     return session;
 }
 
-// ---------------------------------------------------------------------------
-// Running
-// ---------------------------------------------------------------------------
-// CMake copies media/ next to the binary, so this works from any directory.
 std::string mediaDirectory()
 {
     const char* base = SDL_GetBasePath();
     return std::string(base != nullptr ? base : "") + "media/pokemon-hunt/";
 }
 
-int runGame(std::unique_ptr<Multiplayer::Session> session, int kind, GameClock& gameClock)
+int runGame(std::unique_ptr<Multiplayer::Session> session, int kind, GameClock& gameClock,
+            BenchmarkPlan benchmark)
 {
     try {
         Engine engine("Pokemon Hunt", windowWidth, windowHeight);
         engine.setScaleToggleKey(SDL_SCANCODE_UNKNOWN);
-        engine.setClearColor(Palette::clear.r, Palette::clear.g, Palette::clear.b);
+        engine.setClearColor(Palette::clear);
 
-        // From here the session's sends follow this engine's pause and speed.
         gameClock.attach(engine.gameTime());
 
-        PokemonHuntGame game(std::move(session), kind, engine.getRenderer(), mediaDirectory());
+        PokemonHuntGame game(std::move(session), kind, engine.getRenderer(), mediaDirectory(), benchmark);
         engine.run(game);
     } catch (const std::exception& exception) {
         std::cerr << "pokemon-hunt: " << exception.what() << '\n';
@@ -949,5 +1160,5 @@ int main(int argc, char* argv[])
     if (!session) {
         return 1;
     }
-    return runGame(std::move(session), kind, gameClock);
+    return runGame(std::move(session), kind, gameClock, options.benchmark);
 }

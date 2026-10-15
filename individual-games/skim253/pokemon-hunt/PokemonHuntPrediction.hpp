@@ -13,21 +13,12 @@
 
 namespace PokemonHunt {
 
-// Moves Mewtwo and its shadow balls between server snapshots.
-//
-// A snapshot only arrives as the reply to one of this client's position sends,
-// and those are paced on game time: 30 a second at 1x, 15 at 0.5x, one per
-// heartbeat while paused. Drawn as received, Mewtwo would stutter at that rate
-// even though it moves on the server's real time. So each snapshot is carried
-// forward on this client's real time with the server's own rules -- walk at
-// bossWalkSpeed the way it faces, stand still while charging, fall under
-// bossGravity, balls fly straight -- and the next snapshot corrects whatever
-// the guess got wrong (a turn, a jump, a new shadow ball).
+// Moves Mewtwo and its shadow balls between snapshots, which arrive only as
+// often as this client sends (game-time paced), with the server's own rules.
+// The next snapshot corrects any wrong guess.
 class WorldPredictor {
 public:
-    // Hands over the world as the network has it now. The same snapshot comes
-    // back every frame until a new one arrives; only a changed one is taken,
-    // stamped with `now` (real-time nanoseconds).
+    // Takes the snapshot only when it changed; `now` is real-time nanoseconds.
     void receive(const std::vector<Multiplayer::Platform>& world, std::int64_t now)
     {
         if (sameWorld(world, latest_)) {
@@ -52,7 +43,6 @@ public:
         received_ = true;
     }
 
-    // The latest snapshot, moved forward to `now`.
     std::vector<Multiplayer::Platform> predict(std::int64_t now) const
     {
         const auto t = static_cast<float>(std::min(secondsBetween(receivedAt_, now), maxPredictSeconds));
@@ -63,8 +53,8 @@ public:
                 moveBoss(object, t);
             } else if (isShadowBall(object.id)) {
                 object.x += ballDirections_.at(object.id) * shadowBallSpeed * t;
-                if (object.x + object.width < 0.0F || object.x > static_cast<float>(windowWidth)) {
-                    continue; // the server drops a ball once it leaves the screen
+                if (object.x + object.width < 0.0F || object.x > levelWidth) {
+                    continue;
                 }
             }
             world.push_back(object);
@@ -108,8 +98,7 @@ private:
 
     static bool airborne(float y) { return y < bossFloorY - 0.5F; }
 
-    // Which way a ball flies: the way it moved since the last snapshot, or,
-    // for a new one, the way the boss that just fired it is facing.
+    // A new ball flies the way Mewtwo faces.
     float ballDirection(const Multiplayer::Platform& ball, float bossDirection) const
     {
         for (const Multiplayer::Platform& old : latest_) {
@@ -121,9 +110,7 @@ private:
         return known != ballDirections_.end() ? known->second : bossDirection;
     }
 
-    // Mewtwo's vertical speed at the snapshot. Mid-jump it follows from two
-    // airborne snapshots; on the first one it follows from the height: rising
-    // if it just left the floor, else falling from its respawn drop.
+    // From two airborne snapshots, or else from the height: a jump or a respawn drop.
     static float estimateVelocityY(const Multiplayer::Platform* old, const Multiplayer::Platform& now, double gap)
     {
         if (!airborne(now.y)) {
@@ -144,7 +131,6 @@ private:
     {
         const bool charging = ((boss.id - bossIdBase) & bossCharging) != 0;
         if (!charging) {
-            // Turn around at the walls, as the server does.
             float x = boss.x + facing(boss) * bossWalkSpeed * t;
             bool turned = false;
             if (x > bossMaxX) {

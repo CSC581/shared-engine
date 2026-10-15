@@ -9,9 +9,8 @@
 
 namespace PokemonHunt {
 
-// What one Pokemon tells the others, all integers so no locale can bend it:
+// A Pokemon's player data, all integers:
 //   "<species> <score> <damage dealt> <facing> <blinking> <shot?> <shotX> <shotY>"
-// The server reads the first three (see parseDamageDealt).
 struct PokemonData {
     int species = Pikachu;
     long long score = 0;
