@@ -571,8 +571,9 @@ above and must not be compared with them.
 
 ### Optional engine diagnostics
 
-The focused collision, component-update, frame-worker, codec and multiplayer-
-mode benchmarks are diagnostic tools, not additional network-format evidence.
+The focused collision, component-update, frame-worker, codec, multiplayer-mode
+and snapshot-strategy benchmarks are diagnostic tools, not additional
+production network-format evidence.
 Their quick CTest entries verify that each harness runs; they do not enforce a
 performance threshold. Full Release matrices can be collected with:
 
@@ -583,3 +584,11 @@ performance threshold. Full Release matrices can be collected with:
 The collector checks the expected row counts, five repetitions per summary
 cell and finite summary values. These results are not canonical until they are
 collected on an idle machine, reviewed and deliberately selected as evidence.
+
+`snapshot-strategy-benchmark` is a feasibility test for the proposed
+full-state-versus-property-delta comparison. Full-state measurements use the
+production binary codec. The delta side models a specified packet size and
+times typed diff/replay work; it does not serialize packets or use ZeroMQ, so
+its CPU timings must not be presented as an end-to-end speedup. It starts from
+a full baseline, verifies every reconstructed state and reports steady-update
+payload savings for player-only, platform-only and all-moving traces.

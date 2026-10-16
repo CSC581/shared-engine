@@ -14,7 +14,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 release_build=${1:-"${repo_root}/build-release"}
 result_root=${2:-"${repo_root}/build/performance-results"}
-benchmarks=${BENCHMARKS:-"collision component-update frame-workers codec multiplayer-mode"}
+benchmarks=${BENCHMARKS:-"collision component-update frame-workers codec multiplayer-mode snapshot-strategy"}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 result_dir="${result_root}/${timestamp}-engine"
 
@@ -27,6 +27,7 @@ expected_rows() {
         frame-workers) echo "100 20" ;;
         codec) echo "120 24" ;;
         multiplayer-mode) echo "45 9" ;;
+        snapshot-strategy) echo "405 81" ;;
         *) echo "unknown benchmark: $1" >&2; return 1 ;;
     esac
 }

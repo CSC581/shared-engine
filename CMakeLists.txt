@@ -317,7 +317,10 @@ target_link_libraries(codec-benchmark PRIVATE network-core)
 add_executable(multiplayer-mode-benchmark benchmarks/MultiplayerModeBenchmark.cpp)
 target_link_libraries(multiplayer-mode-benchmark PRIVATE multiplayer)
 
-foreach(benchmark_name IN ITEMS collision component-update frame-workers codec multiplayer-mode)
+add_executable(snapshot-strategy-benchmark benchmarks/SnapshotStrategyBenchmark.cpp)
+target_link_libraries(snapshot-strategy-benchmark PRIVATE network-core)
+
+foreach(benchmark_name IN ITEMS collision component-update frame-workers codec multiplayer-mode snapshot-strategy)
     add_test(
         NAME ${benchmark_name}-benchmark-quick
         COMMAND ${benchmark_name}-benchmark --quick
