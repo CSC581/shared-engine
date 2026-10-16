@@ -28,18 +28,28 @@ struct Options {
     int repetitions = 5;
     int warmupIterations = 100;
     int measuredIterations = 1000;
+    bool mixed = false;
     std::string runsPath = "runs.csv";
     std::string latencyPath = "latency_samples.csv";
 };
 
+// Which formats the clients in one run use. Mixed alternates text and binary
+// by client index, so one server serves both at the same time.
+enum class Composition {
+    Text,
+    Binary,
+    Mixed,
+};
+
 struct Cell {
-    Net::DataFormat format;
+    Composition composition;
     int clients;
     int platforms;
     int repetition;
 };
 
 struct ClientResult {
+    Net::DataFormat format = Net::DataFormat::TextMultipart;
     Network::PlayerId playerId = 0;
     Network::TransportTelemetry before;
     Network::TransportTelemetry after;
@@ -138,6 +148,32 @@ struct RunControl {
 const char* formatName(Net::DataFormat format)
 {
     return format == Net::DataFormat::Binary ? "binary" : "text";
+}
+
+const char* compositionName(Composition composition)
+{
+    switch (composition) {
+    case Composition::Text:
+        return "text";
+    case Composition::Binary:
+        return "binary";
+    case Composition::Mixed:
+        return "mixed";
+    }
+    return "unknown";
+}
+
+Net::DataFormat clientFormat(const Cell& cell, std::size_t clientIndex)
+{
+    switch (cell.composition) {
+    case Composition::Text:
+        return Net::DataFormat::TextMultipart;
+    case Composition::Binary:
+        return Net::DataFormat::Binary;
+    case Composition::Mixed:
+        break;
+    }
+    return clientIndex % 2 == 0 ? Net::DataFormat::TextMultipart : Net::DataFormat::Binary;
 }
 
 std::string csv(std::string value)
@@ -249,7 +285,7 @@ void runClient(std::size_t clientIndex, const Cell& cell, const Options& options
                const std::string& endpoint, RunControl& control, ClientResult& result)
 {
     RealTimeClock clock;
-    Network::NetworkClient client(clock, endpoint, cell.format);
+    Network::NetworkClient client(clock, endpoint, result.format);
     client.setPlayerName("benchmark-" + std::to_string(clientIndex));
     client.start();
 
@@ -367,6 +403,8 @@ RunResult runCell(const Cell& cell, const Options& options)
     std::vector<std::thread> threads;
     threads.reserve(static_cast<std::size_t>(cell.clients));
     for (int index = 0; index < cell.clients; ++index) {
+        result.clients[static_cast<std::size_t>(index)].format =
+            clientFormat(cell, static_cast<std::size_t>(index));
         threads.emplace_back(runClient, static_cast<std::size_t>(index), std::cref(cell),
                              std::cref(options), host.boundEndpoint(), std::ref(control),
                              std::ref(result.clients[static_cast<std::size_t>(index)]));
@@ -428,6 +466,7 @@ RunResult runCell(const Cell& cell, const Options& options)
     const std::uint64_t expected = static_cast<std::uint64_t>(cell.clients) *
                                    static_cast<std::uint64_t>(options.measuredIterations);
     result.trafficMatch = !control.failed;
+    bool binaryFramesMatch = true;
     for (const ClientResult& client : result.clients) {
         result.completed += client.completed;
         result.objectChecks += client.objectChecks;
@@ -435,6 +474,12 @@ RunResult runCell(const Cell& cell, const Options& options)
         result.disconnects += client.disconnects;
         const Network::TransportTelemetry delta = difference(client.after, client.before);
         add(result.traffic, delta);
+        // Checked per client so a mixed run still proves its binary clients
+        // used one frame per message.
+        if (client.format == Net::DataFormat::Binary &&
+            (delta.framesSent != delta.messagesSent || delta.framesReceived != delta.messagesReceived)) {
+            binaryFramesMatch = false;
+        }
 
         const auto before = beforeTraffic.find(client.playerId);
         const auto after = afterTraffic.find(client.playerId);
@@ -451,9 +496,6 @@ RunResult runCell(const Cell& cell, const Options& options)
 
     const bool transportCountsMatch = result.traffic.messagesSent == expected &&
                                       result.traffic.messagesReceived == expected;
-    const bool binaryFramesMatch = cell.format != Net::DataFormat::Binary ||
-                                   (result.traffic.framesSent == expected &&
-                                    result.traffic.framesReceived == expected);
     result.success = !control.failed && result.completed == expected &&
                      result.objectChecks == expected && result.objectFailures == 0 &&
                      result.disconnects == 0 && result.serverUpdates == expected &&
@@ -484,6 +526,8 @@ void usage()
     std::cout <<
         "network-performance-benchmark [options]\n\n"
         "  --quick              1 repetition, 5 warm-up and 20 measured iterations\n"
+        "  --mixed              run the mixed-format experiment instead: text, binary and\n"
+        "                       half-text/half-binary clients sharing one server, 2/4 clients\n"
         "  --repetitions N      repetitions per matrix cell (default 5)\n"
         "  --warmup N           warm-up iterations per client (default 100)\n"
         "  --iterations N       measured iterations per client (default 1000)\n"
@@ -503,6 +547,10 @@ bool parseOptions(int argc, char* argv[], Options& options)
             options.repetitions = 1;
             options.warmupIterations = 5;
             options.measuredIterations = 20;
+            continue;
+        }
+        if (argument == "--mixed") {
+            options.mixed = true;
             continue;
         }
         if (index + 1 >= argc) {
@@ -554,14 +602,19 @@ int main(int argc, char* argv[])
             "messages_sent,messages_received,frames_sent,frames_received,payload_bytes_sent,"
             "payload_bytes_received,object_count_checks,object_count_failures,disconnects,"
             "server_position_updates,expected_position_updates,traffic_match,success,error\n";
-    latency << "run_id,format,clients,platforms,repetition,client_index,iteration,rtt_ns\n";
+    // `format` is the run's composition; `client_format` is what this client
+    // used, which differs from it only in mixed runs.
+    latency << "run_id,format,clients,platforms,repetition,client_index,iteration,rtt_ns,client_format\n";
     runs << std::setprecision(12);
 
-    const std::vector<Net::DataFormat> formats = {
-        Net::DataFormat::TextMultipart,
-        Net::DataFormat::Binary,
-    };
-    const std::vector<int> clientCounts = {1, 2, 4};
+    // The mixed experiment keeps all-text and all-binary runs as same-machine
+    // baselines. A mixed run needs at least one client of each format.
+    std::vector<Composition> compositions = {Composition::Text, Composition::Binary};
+    std::vector<int> clientCounts = {1, 2, 4};
+    if (options.mixed) {
+        compositions.push_back(Composition::Mixed);
+        clientCounts = {2, 4};
+    }
     const std::vector<int> platformCounts = {10, 100, 500};
     int runId = 0;
     int failures = 0;
@@ -571,10 +624,10 @@ int main(int argc, char* argv[])
     for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
         for (int clients : clientCounts) {
             for (int platforms : platformCounts) {
-                for (Net::DataFormat format : formats) {
-                    const Cell cell{format, clients, platforms, repetition};
+                for (Composition composition : compositions) {
+                    const Cell cell{composition, clients, platforms, repetition};
                     ++runId;
-                    std::cout << "run " << runId << ": " << formatName(format) << ", " << clients
+                    std::cout << "run " << runId << ": " << compositionName(composition) << ", " << clients
                               << " client(s), " << platforms << " platform(s), repetition " << repetition
                               << '/' << options.repetitions << std::endl;
                     const RunResult result = runCell(cell, options);
@@ -587,7 +640,7 @@ int main(int argc, char* argv[])
                     for (const ClientResult& client : result.clients) {
                         samples += client.rttNs.size();
                     }
-                    runs << runId << ',' << formatName(format) << ',' << clients << ',' << platforms << ','
+                    runs << runId << ',' << compositionName(composition) << ',' << clients << ',' << platforms << ','
                          << repetition << ',' << options.warmupIterations << ',' << options.measuredIterations
                          << ',' << result.elapsedSeconds << ',' << result.completed << ',' << throughput << ','
                          << samples << ',' << result.traffic.messagesSent << ','
@@ -598,11 +651,11 @@ int main(int argc, char* argv[])
                          << ',' << expected << ',' << (result.trafficMatch ? 1 : 0) << ','
                          << (result.success ? 1 : 0) << ',' << csv(result.error) << '\n';
                     for (std::size_t clientIndex = 0; clientIndex < result.clients.size(); ++clientIndex) {
-                        const std::vector<std::int64_t>& samplesForClient = result.clients[clientIndex].rttNs;
-                        for (std::size_t iteration = 0; iteration < samplesForClient.size(); ++iteration) {
-                            latency << runId << ',' << formatName(format) << ',' << clients << ',' << platforms
-                                    << ',' << repetition << ',' << clientIndex << ',' << iteration << ','
-                                    << samplesForClient[iteration] << '\n';
+                        const ClientResult& client = result.clients[clientIndex];
+                        for (std::size_t iteration = 0; iteration < client.rttNs.size(); ++iteration) {
+                            latency << runId << ',' << compositionName(composition) << ',' << clients << ','
+                                    << platforms << ',' << repetition << ',' << clientIndex << ',' << iteration
+                                    << ',' << client.rttNs[iteration] << ',' << formatName(client.format) << '\n';
                         }
                     }
                     runs.flush();

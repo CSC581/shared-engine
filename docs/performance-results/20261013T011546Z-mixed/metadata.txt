@@ -1,0 +1,25 @@
+collected_utc=20261013T011546Z
+git_branch=milestone3-1c-mixed-format
+git_base_commit=3f46c67b9cd8ad0072e600fc2b346b1cb14a96ee
+git_status_begin
+ M CMakeLists.txt
+ M benchmarks/NetworkPerformanceBenchmark.cpp
+ M docs/networking-guide.md
+?? AGENTS.md
+?? benchmarks/__pycache__/
+?? benchmarks/analyze_mixed_format.py
+?? milestone-3-changes.md
+?? overview.md
+?? worldobject.md
+git_status_end
+build_type=Release
+command=network-performance-benchmark --mixed
+matrix=compositions(text,binary,mixed);clients(2,4);platforms(10,100,500);repetitions(5)
+warmup_iterations_per_client=100
+measured_iterations_per_client=1000
+os=Darwin 24.4.0 x86_64
+cpu_model=Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz
+cpu_count=16
+compiler=Apple clang version 13.0.0 (clang-1300.0.29.3)
+load_before={ 9.07 5.60 4.21 }
+load_after={ 5.43 5.29 4.23 }
