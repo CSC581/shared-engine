@@ -299,6 +299,35 @@ add_test(
 )
 set_tests_properties(network-performance-benchmark-mixed-quick PROPERTIES TIMEOUT 60)
 
+# Focused headless benchmarks for the object model, worker scheduler, codecs
+# and public multiplayer interface. Quick mode is registered with CTest only
+# as a correctness/smoke check; canonical measurements use the full Release
+# matrices through benchmarks/collect_engine_performance.sh.
+add_executable(collision-benchmark benchmarks/CollisionBenchmark.cpp)
+target_link_libraries(collision-benchmark PRIVATE engine-geometry)
+
+add_executable(component-update-benchmark benchmarks/ComponentUpdateBenchmark.cpp)
+target_link_libraries(component-update-benchmark PRIVATE engine-geometry)
+
+add_executable(frame-workers-benchmark benchmarks/FrameWorkersBenchmark.cpp)
+target_link_libraries(frame-workers-benchmark PRIVATE engine-geometry engine-threads)
+
+add_executable(codec-benchmark benchmarks/CodecBenchmark.cpp)
+target_link_libraries(codec-benchmark PRIVATE network-core)
+
+add_executable(multiplayer-mode-benchmark benchmarks/MultiplayerModeBenchmark.cpp)
+target_link_libraries(multiplayer-mode-benchmark PRIVATE multiplayer)
+
+foreach(benchmark_name IN ITEMS collision component-update frame-workers codec multiplayer-mode)
+    add_test(
+        NAME ${benchmark_name}-benchmark-quick
+        COMMAND ${benchmark_name}-benchmark --quick
+                --runs ${CMAKE_CURRENT_BINARY_DIR}/${benchmark_name}-quick-runs.csv
+                --summary ${CMAKE_CURRENT_BINARY_DIR}/${benchmark_name}-quick-summary.csv
+    )
+    set_tests_properties(${benchmark_name}-benchmark-quick PROPERTIES TIMEOUT 60)
+endforeach()
+
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent
     individual-games/harsha/src/apexAscent.cpp
