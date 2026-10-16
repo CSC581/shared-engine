@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Runs the five engine benchmarks with their full matrices in a Release build.
+# Runs optional engine diagnostic benchmarks with their full matrices in a
+# Release build. These complement, but do not replace, the required network
+# format comparison and its canonical evidence.
 #
 #   ./benchmarks/collect_engine_performance.sh [release_build] [result_root]
 #   BENCHMARKS="collision codec" ./benchmarks/collect_engine_performance.sh
@@ -18,8 +20,53 @@ result_dir="${result_root}/${timestamp}-engine"
 
 mkdir -p "${result_dir}"
 
+expected_rows() {
+    case "$1" in
+        collision) echo "75 15" ;;
+        component-update) echo "75 15" ;;
+        frame-workers) echo "100 20" ;;
+        codec) echo "120 24" ;;
+        multiplayer-mode) echo "45 9" ;;
+        *) echo "unknown benchmark: $1" >&2; return 1 ;;
+    esac
+}
+
+validate_results() {
+    local name=$1
+    local runs_file="${result_dir}/${name}-runs.csv"
+    local summary_file="${result_dir}/${name}-summary.csv"
+    local expected_run_rows expected_summary_rows
+    read -r expected_run_rows expected_summary_rows < <(expected_rows "${name}")
+
+    awk -F, -v expected="${expected_run_rows}" '
+        NR == 1 { if (NF < 3) exit 1; next }
+        { rows++ }
+        END { if (rows != expected) exit 1 }
+    ' "${runs_file}" || { echo "invalid run matrix for ${name}" >&2; return 1; }
+
+    awk -F, -v expected="${expected_summary_rows}" '
+        NR == 1 {
+            for (column = 1; column <= NF; ++column) {
+                if ($column == "runs") runs_column = column
+            }
+            if (!runs_column) exit 1
+            next
+        }
+        {
+            rows++
+            if ($runs_column != 5) exit 1
+            for (column = 1; column <= NF; ++column) {
+                lower = tolower($column)
+                if (lower == "nan" || lower == "inf" || lower == "-inf") exit 1
+            }
+        }
+        END { if (rows != expected) exit 1 }
+    ' "${summary_file}" || { echo "invalid summary matrix for ${name}" >&2; return 1; }
+}
+
 targets=()
 for name in ${benchmarks}; do
+    expected_rows "${name}" >/dev/null
     targets+=("${name}-benchmark")
 done
 cmake -S "${repo_root}" -B "${release_build}" -DCMAKE_BUILD_TYPE=Release
@@ -52,6 +99,7 @@ for name in ${benchmarks}; do
         --runs "${result_dir}/${name}-runs.csv" \
         --summary "${result_dir}/${name}-summary.csv" \
         2>&1 | tee "${result_dir}/${name}.log"
+    validate_results "${name}"
 done
 
 echo "RESULT_DIR=${result_dir}"

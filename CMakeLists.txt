@@ -299,10 +299,9 @@ add_test(
 )
 set_tests_properties(network-performance-benchmark-mixed-quick PROPERTIES TIMEOUT 60)
 
-# Focused headless benchmarks for the object model, worker scheduler, codecs
-# and public multiplayer interface. Quick mode is registered with CTest only
-# as a correctness/smoke check; canonical measurements use the full Release
-# matrices through benchmarks/collect_engine_performance.sh.
+# Optional headless diagnostics for the object model, worker scheduler, codecs
+# and public multiplayer interface. They are not substitutes for the required
+# network-format experiment. Quick mode is only a correctness/smoke check.
 add_executable(collision-benchmark benchmarks/CollisionBenchmark.cpp)
 target_link_libraries(collision-benchmark PRIVATE engine-geometry)
 

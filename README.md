@@ -7,10 +7,10 @@ This is our C++17 game engine. It uses SDL3 for the window, input and drawing, a
 ```bash
 git submodule update --init --recursive
 cmake -S . -B build && cmake --build build -j 4 -- -k   # -k: keep going past the unported games
-ctest --test-dir build --output-on-failure -E starfall
+ctest --test-dir build --output-on-failure -E 'starfall|multiplayer-tests'
 ```
 
-> The individual games and two sandbox tools (`timeline-sandbox`, `thread-loop-sandbox`) still use Milestone 2's `Entity` class and are being ported, so a full build currently reports errors for those targets only. Every engine library, the demo programs and all 13 engine test suites build and pass.
+> The timeline and persistent-thread sandboxes use the component model. The individual games still contain Milestone 2 `Entity`/`Physics` code and are being ported separately, so build focused engine targets while that work remains out of scope.
 
 ## Milestone 3 progress
 
@@ -18,7 +18,7 @@ ctest --test-dir build --output-on-failure -E starfall
 | ---- | ------------------- | ------ | ------------- |
 | 1A | A component-, property- or custom-based object model (no monolithic hierarchy) that new object types can be built from | Done | A `GameObject` is an id, a tag and the components it owns. A new kind of object is a new mix of components, not a new class. `World` owns all objects and runs each frame |
 | 1B | The object model on every network endpoint; up to 4 clients; movement and platforms synced; disconnects handled | Done | The server keeps players and platforms as `GameObject`s. `NetworkWorldSync` mirrors each client's session into its `World`, removing a player's object when they leave or time out. Every endpoint is multithreaded and there is no player cap. Measured keyboard-to-other-screen latency: ~20 ms with 4 clients |
-| 1C | A second network data format and performance experiments | Not started | |
+| 1C | A second network data format and performance experiments | Done | Multipart text and compact one-frame binary carry identical snapshots through the real client-server stack. The tracked Release evidence covers 1/2/4 clients, 10/100/500 platforms and five repetitions |
 | 2 | Individual games built on the engine | In progress | Games are being ported to the object model |
 
 ### Components
@@ -64,13 +64,17 @@ Move with WASD. Each window shows the measured latency. Close one window and its
 ├── include/NetworkServer.hpp                   src/NetworkServer.cpp  server scene kept in a World
 ├── include/NetworkWorldSync.hpp                src/NetworkWorldSync.cpp  mirrors a session into a client's World
 └── include/Multiplayer.hpp                     src/Multiplayer.cpp    client-server session on its own network thread
+1C Network formats and experiments
+├── include/BinaryNetworkProtocol.hpp          src/BinaryNetworkProtocol.cpp  compact binary codec
+├── benchmarks/NetworkPerformanceBenchmark.cpp                       real-stack comparison
+└── benchmarks/analyze_network_performance.py                         validation and graphs
 ```
 
 ### Design decisions
 
 - **Composition, not inheritance.** Components declare what they need with `require<T>()` (e.g. `Gravity` pulls in `Motion` and `Transform`). Lookups are one array read per type.
 - **Fixed update order.** Components run by priority (`Behavior` → `PathMover` → `Gravity` → `Motion`), so input, then velocity, then position, every frame. The sorted order is cached and rebuilt only when objects or components change.
-- **The network protocol did not change.** Both ends now keep the scene in a `World`. Network threads never touch a `World`: the server works on it under its lock, and clients hand data over through `Session::update()` on the main thread.
+- **The legacy text protocol remains compatible.** Client-server sessions may instead select the binary representation; both carry the same typed requests, replies and full snapshots. Network threads never touch a game's `World`.
 - **Platforms move on the server's tick** (60 Hz), not once per client request, so the server's work does not grow with the number of clients.
 - **Threads:** `World::destroy()` is safe from any thread. Creating objects is main-thread only.
 

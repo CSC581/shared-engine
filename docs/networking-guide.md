@@ -568,3 +568,18 @@ and the text clients then run with fewer competitors. The conclusion is only
 that a text client puts no extra burden on binary clients sharing its server.
 These absolute RTTs come from a different machine than the canonical results
 above and must not be compared with them.
+
+### Optional engine diagnostics
+
+The focused collision, component-update, frame-worker, codec and multiplayer-
+mode benchmarks are diagnostic tools, not additional network-format evidence.
+Their quick CTest entries verify that each harness runs; they do not enforce a
+performance threshold. Full Release matrices can be collected with:
+
+```bash
+./benchmarks/collect_engine_performance.sh
+```
+
+The collector checks the expected row counts, five repetitions per summary
+cell and finite summary values. These results are not canonical until they are
+collected on an idle machine, reviewed and deliberately selected as evidence.

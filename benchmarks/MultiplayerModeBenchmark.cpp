@@ -32,6 +32,7 @@ namespace {
 
 constexpr auto frameInterval = std::chrono::microseconds(16667);
 constexpr auto readyTimeout = std::chrono::seconds(15);
+constexpr auto drainTimeout = std::chrono::seconds(1);
 // Peer ports for run n start at peerPortBase + n * portsPerRun, so a run never
 // rebinds a port the previous one just released.
 constexpr int peerPortBase = 41000;
@@ -100,6 +101,47 @@ struct RunResult {
     double sessionCostUs = 0.0;
 };
 
+using SeenByReceiver = std::vector<std::map<Multiplayer::PlayerId, std::int64_t>>;
+
+void observeRemotePlayers(const Multiplayer::Session& session, std::size_t receiver,
+                          std::int64_t received, std::int64_t measurementStart,
+                          SeenByReceiver& lastSeen, RunResult& result, std::uint64_t& delivered)
+{
+    for (const Multiplayer::Player& player : session.remotePlayers()) {
+        std::int64_t stamp = 0;
+        if (!parseStamp(player.data, stamp)) {
+            continue;
+        }
+        std::int64_t& last = lastSeen[receiver][player.id];
+        if (stamp == last) {
+            continue;
+        }
+        last = stamp;
+        if (measurementStart != 0 && stamp >= measurementStart) {
+            result.latencyMs.push_back(static_cast<double>(received - stamp) / 1e6);
+            ++delivered;
+        }
+    }
+}
+
+bool finalPosesObserved(const std::vector<std::unique_ptr<Multiplayer::Session>>& sessions,
+                        const std::map<Multiplayer::PlayerId, std::int64_t>& finalStamps,
+                        const SeenByReceiver& lastSeen)
+{
+    for (std::size_t receiver = 0; receiver < sessions.size(); ++receiver) {
+        for (const auto& [sender, stamp] : finalStamps) {
+            if (sender == sessions[receiver]->localPlayerId()) {
+                continue;
+            }
+            const auto seen = lastSeen[receiver].find(sender);
+            if (seen == lastSeen[receiver].end() || seen->second != stamp) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 RunResult runOnce(const std::string& mode, int players, int runIndex, int warmupFrames, int measuredFrames)
 {
     RealTimeClock clock;
@@ -112,7 +154,9 @@ RunResult runOnce(const std::string& mode, int players, int runIndex, int warmup
     RunResult result;
     // Last stamp each receiver saw from each sender, and how many distinct
     // stamps it saw while measuring.
-    std::vector<std::map<Multiplayer::PlayerId, std::int64_t>> lastSeen(sessions.size());
+    SeenByReceiver lastSeen(sessions.size());
+    std::map<Multiplayer::PlayerId, std::int64_t> finalStamps;
+    std::int64_t measurementStart = 0;
     std::uint64_t delivered = 0;
     double sessionNs = 0.0;
     int measuring = -1;  // frames measured so far, or -1 before the party is ready
@@ -121,29 +165,20 @@ RunResult runOnce(const std::string& mode, int players, int runIndex, int warmup
 
     for (int frame = 0;; ++frame) {
         const bool counting = measuring >= warmupFrames;
+        if (counting && measurementStart == 0) {
+            measurementStart = Bench::nowNs();
+        }
         for (std::size_t s = 0; s < sessions.size(); ++s) {
             Multiplayer::Session& session = *sessions[s];
             const std::int64_t start = Bench::nowNs();
             session.update();
             const std::int64_t received = Bench::nowNs();
-            for (const Multiplayer::Player& player : session.remotePlayers()) {
-                std::int64_t stamp = 0;
-                if (!parseStamp(player.data, stamp)) {
-                    continue;
-                }
-                std::int64_t& last = lastSeen[s][player.id];
-                if (stamp != last) {
-                    last = stamp;
-                    if (counting) {
-                        result.latencyMs.push_back(static_cast<double>(received - stamp) / 1e6);
-                        ++delivered;
-                    }
-                }
-            }
+            observeRemotePlayers(session, s, received, measurementStart, lastSeen, result, delivered);
             const std::int64_t sent = Bench::nowNs();
             session.publishLocalPlayer(10.0F * static_cast<float>(s), static_cast<float>(frame % 500),
                                        std::to_string(sent));
             if (counting) {
+                finalStamps[session.localPlayerId()] = sent;
                 sessionNs += static_cast<double>((received - start) + (Bench::nowNs() - sent));
             }
         }
@@ -165,6 +200,18 @@ RunResult runOnce(const std::string& mode, int players, int runIndex, int warmup
 
         nextFrame += frameInterval;
         std::this_thread::sleep_until(nextFrame);
+    }
+
+    // The last publish occurs after the last measured update. Drain receives
+    // without publishing again so those final poses are not classified as
+    // lost merely because the measurement loop ended first.
+    const auto drainDeadline = Bench::Clock::now() + drainTimeout;
+    while (!finalPosesObserved(sessions, finalStamps, lastSeen) && Bench::Clock::now() < drainDeadline) {
+        for (std::size_t s = 0; s < sessions.size(); ++s) {
+            sessions[s]->update();
+            observeRemotePlayers(*sessions[s], s, Bench::nowNs(), measurementStart, lastSeen, result, delivered);
+        }
+        std::this_thread::sleep_for(frameInterval);
     }
 
     result.ready = true;
