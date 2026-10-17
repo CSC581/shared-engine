@@ -31,9 +31,13 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
     playerTransform_ = player_->get<Transform>();
     playerMotion_ = player_->get<Motion>();
     playerGravity_ = player_->get<Gravity>();
-    player_->get<Collider>()->onCollide = [this](GameObject&, GameObject& other) {
-        onPlayerCollide(other);
-    };
+    const std::vector<GameObject*> windZones = world_.findAllWith<WindZone>();
+    windZoneObject_ = windZones.empty() ? nullptr : windZones.front();
+
+    Collider& playerCollider = *player_->get<Collider>();
+    playerCollider.onCollide = [this](GameObject&, GameObject& other) { onPlayerCollide(other); };
+    playerCollider.onEnter = [this](GameObject&, GameObject& other) { onPlayerEnter(other); };
+    playerCollider.onExit = [this](GameObject&, GameObject& other) { onPlayerExit(other); };
     previousPlayerBottom_ = startY_ + playerHeight;
 
     // Online: other climbers and server-owned platforms become objects in the
@@ -85,6 +89,9 @@ void ApexGame::handleInput(Engine& engine)
         gameTime.setScale(2.0);
     }
 
+    // Walking is recomputed from the keys every frame; nothing held, no walk.
+    walkIntent_ = 0.0F;
+
     // Paused: freeze the climber. Only quit and the timeline keys above act.
     if (gameTime.isPaused()) {
         if (Input::isKeyJustPressed(SDL_SCANCODE_ESCAPE)) {
@@ -105,8 +112,11 @@ void ApexGame::handleInput(Engine& engine)
     if (isOnGround_ && Input::isKeyPressed(SDL_SCANCODE_SPACE)) {
         isCharging_ = true;
         aimDirection_ = aim;
-    } else if (isCharging_ == false && aim != 0.0F){
-        playerMotion_->velocityX = aim * walkSpeed;
+    } else if (!isCharging_ && isOnGround_) {
+        // Walking needs ground underfoot: no air control once a jump is
+        // released (design §3). The player worker turns this into speed,
+        // because how fast you get going depends on the surface.
+        walkIntent_ = aim;
     }
 
     // "Not held" rather than "just released": a release during a pause is
@@ -208,6 +218,15 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     // surface. Set here, before the workers start, so no thread races on it.
     playerGravity_->acceleration = isOnGround_ ? 0.0F : gravity;
 
+    // Friction of whatever the climber stands on, read here on the main
+    // thread so the player worker never touches a platform object.
+    groundFriction_ = Surface::ground;
+    if (const GameObject* platform = groundedPlatformId_ != 0 ? world_.find(groundedPlatformId_) : nullptr) {
+        if (const Surface* surface = platform->get<Surface>()) {
+            groundFriction_ = surface->friction;
+        }
+    }
+
     // Platforms and player physics run in parallel, one worker each; this
     // returns once both are done, so everything below reads finished results.
     // The workers read frameTime_, which nothing writes until runFrame returns.
@@ -239,6 +258,13 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     world_.flushDestroyed();
 
     updateCamera(deltaTime);
+
+    // Wind cue state for render(): the gust right now, and streak drift that
+    // follows it (and stops while paused, like the gust itself).
+    if (windZoneObject_ != nullptr) {
+        windNow_ = windZoneObject_->get<WindZone>()->accelerationAt(static_cast<double>(time.gameTimeUs) / 1e6);
+        windStreakOffset_ += windNow_ * 0.6F * deltaTime;
+    }
 
     if (!gameTimePaused_) {
         PlayerAnimation::AnimInput animInput;
@@ -310,6 +336,21 @@ void ApexGame::onPlayerCollide(GameObject& other)
     }
 }
 
+// Player's onEnter / onExit: hidden trigger zones the climber moves through.
+void ApexGame::onPlayerEnter(GameObject& other)
+{
+    if (const WindZone* zone = other.get<WindZone>()) {
+        wind_ = zone;
+    }
+}
+
+void ApexGame::onPlayerExit(GameObject& other)
+{
+    if (other.get<WindZone>() == wind_) {
+        wind_ = nullptr;
+    }
+}
+
 // Smooth vertical follow, clamped to the world.
 void ApexGame::updateCamera(float deltaTime)
 {
@@ -335,9 +376,30 @@ void ApexGame::updatePlayerPhysics(float deltaTime)
         }
     }
 
-    // Kill leftover horizontal slide after landing.
+    // Ground speed: walking and sliding both depend on the surface.
     if (isOnGround_) {
-        playerMotion_->velocityX *= std::pow(Surface::ground, deltaTime);
+        float& velocityX = playerMotion_->velocityX;
+        const float keep = std::pow(groundFriction_, deltaTime);
+        if (walkIntent_ != 0.0F && groundFriction_ > Surface::ground) {
+            // Slippery: walking only pulls speed toward the walk speed, so
+            // you take a moment to get going, and slide when you stop.
+            const float target = walkIntent_ * walkSpeed;
+            velocityX = target + (velocityX - target) * keep;
+        } else {
+            // Grippy ground (as before): walking sets the speed outright,
+            // and friction kills any leftover slide almost at once.
+            if (walkIntent_ != 0.0F) {
+                velocityX = walkIntent_ * walkSpeed;
+            }
+            velocityX *= keep;
+        }
+    }
+
+    // Wind pushes only while airborne: gusts throw a jump off line but never
+    // shove a standing climber off a ledge.
+    if (wind_ != nullptr && !isOnGround_) {
+        const double seconds = static_cast<double>(frameTime_.gameTimeUs) / 1e6;
+        playerMotion_->velocityX += wind_->accelerationAt(seconds) * deltaTime;
     }
 
     // Gravity, then Motion (their priority order) move the player.

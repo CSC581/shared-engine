@@ -7,6 +7,8 @@
 #include "Component.hpp"
 #include "Components.hpp"
 
+#include <cmath>
+
 // What a platform is. Drives its colour and the per-kind rules (slingshot
 // fling, the summit banner).
 class ApexPlatform : public Component {
@@ -26,6 +28,9 @@ public:
 class Surface : public Component {
 public:
     static constexpr float ground = 0.00002F;
+    // Ice: about 4x the slide of stone. (0.6 slid ~590 px after a walk,
+    // wider than any ice ledge.)
+    static constexpr float ice = 0.02F;
 
     explicit Surface(float friction = ground)
         : friction(friction)
@@ -33,6 +38,27 @@ public:
     }
 
     float friction;
+};
+
+// A hidden gusty region (a trigger with no Renderable). While a climber is
+// airborne inside it, sideways speed gains amplitude * sin(2*pi*t / period)
+// per second, t being game time: gusts swing left and right, freeze on pause
+// and follow the timeline's scale.
+class WindZone : public Component {
+public:
+    WindZone(float amplitude, float period)
+        : amplitude(amplitude), period(period)
+    {
+    }
+
+    // Sideways acceleration (units per second squared) at game time t.
+    float accelerationAt(double seconds) const
+    {
+        return amplitude * static_cast<float>(std::sin(2.0 * 3.14159265358979 * seconds / period));
+    }
+
+    float amplitude;
+    float period;
 };
 
 // Measures how far its object moved this frame, so a climber standing on it

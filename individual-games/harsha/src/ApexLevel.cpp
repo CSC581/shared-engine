@@ -35,7 +35,7 @@ GameObject& makeStatic(World& world, float x, float y, float width, float height
     platform.add<Collider>(Collider::Kind::Solid, platformLayer);
     platform.add<Renderable>(colorFor(kind));
     platform.add<ApexPlatform>(kind);
-    platform.add<Surface>();
+    platform.add<Surface>(kind == ApexPlatform::Kind::Ice ? Surface::ice : Surface::ground);
     platform.setActive(true);
     return platform;
 }
@@ -76,6 +76,17 @@ GameObject& makeMover(World& world, const ApexNetwork::MoverSpec& spec)
     platform.add<Carrier>();
     platform.setActive(true);
     return platform;
+}
+
+GameObject& makeWindZone(World& world, float x, float y, float width, float height, float amplitude,
+                         float period)
+{
+    GameObject& zone = world.create("trigger");
+    zone.add<Transform>(x, y, width, height);
+    zone.add<Collider>(Collider::Kind::Trigger, triggerLayer);
+    zone.add<WindZone>(amplitude, period);
+    zone.setActive(true);
+    return zone;
 }
 
 GameObject& makePlayer(World& world, float x, float y, float width, float height, float gravity)
@@ -119,6 +130,11 @@ namespace {
 using Kind = ApexPlatform::Kind;
 
 constexpr float wallThickness = 40.0F;
+
+// Room 5 wind: peak sideways push (u/s^2) and the time for one left-right
+// swing. Tuned in the real game so the narrow ledges stay reachable.
+constexpr float windAmplitude = 300.0F;
+constexpr float windPeriod = 4.0F;
 constexpr float platformThickness = ApexNetwork::platformThickness;
 
 // One room's frame of reference: y offsets inside a room are measured from
@@ -205,6 +221,9 @@ void buildRoom5(const Room& room)
     makeStatic(room.world, 140.0F, room.top + 290.0F, ledgeWidth, platformThickness, Kind::Stone);
 
     makeStatic(room.world, 560.0F, room.top + 100.0F, 260.0F, platformThickness, Kind::Summit);
+
+    // The whole room is gusty. Hidden: the game draws streaks as the cue.
+    makeWindZone(room.world, 0.0F, room.top, room.width, 900.0F, windAmplitude, windPeriod);
 }
 
 } // namespace

@@ -41,6 +41,26 @@ void ApexGame::render(SDL_Renderer* renderer) const
         }
     }
 
+    // Wind cue: the zone itself is hidden, so pale streaks drift with the gust,
+    // longer when it is stronger.
+    if (windZoneObject_ != nullptr) {
+        const Transform& zone = *windZoneObject_->get<Transform>();
+        if (zone.y + zone.height > camera_ && zone.y < camera_ + viewHeight_) {
+            const float strength = std::fabs(windNow_) / windZoneObject_->get<WindZone>()->amplitude;
+            const float length = 8.0F + 52.0F * strength;
+            const float direction = windNow_ >= 0.0F ? 1.0F : -1.0F;
+            SDL_SetRenderDrawColor(renderer, 120, 140, 165, 255);
+            for (int i = 0; i < 16; ++i) {
+                // Fixed scatter per streak; drift is shared.
+                const float y = zone.y + std::fmod(57.0F * static_cast<float>(i) + 23.0F, zone.height);
+                const float x = std::fmod(97.0F * static_cast<float>(i) + windStreakOffset_ * (1.0F + 0.15F * (i % 3)),
+                                          zone.width);
+                const float startX = zone.x + (x < 0.0F ? x + zone.width : x);
+                SDL_RenderLine(renderer, startX, y - camera_, startX - direction * length, y - camera_);
+            }
+        }
+    }
+
     // Platforms: every object with a Renderable (colour set per kind by
     // ApexLevel). The player has none; its sprite is drawn below.
     renderWorld(renderer, world_, 0.0F, camera_);
@@ -119,6 +139,14 @@ void ApexGame::render(SDL_Renderer* renderer) const
         const float bannerX = (viewWidth_ - 8.0F * static_cast<float>(std::strlen(banner))) * 0.5F;
         SDL_SetRenderDrawColor(renderer, 240, 200, 70, 255);
         SDL_RenderDebugText(renderer, bannerX, viewHeight_ * 0.5F, banner);
+    }
+
+    // In the wind: which way it is pushing right now.
+    if (wind_ != nullptr) {
+        const float strength = std::fabs(windNow_) / wind_->amplitude;
+        const char* arrow = strength < 0.2F ? "Wind: calm" : windNow_ > 0.0F ? "Wind: >>>" : "Wind: <<<";
+        SDL_SetRenderDrawColor(renderer, 170, 200, 230, 255);
+        SDL_RenderDebugText(renderer, viewWidth_ - 120.0F, 20.0F, arrow);
     }
 
     char hud[128];

@@ -31,6 +31,10 @@ ApexPlatform::Kind kindFor(ApexNetwork::MoverStyle style);
 // owns movers). Carrier lets a climber standing on it be carried.
 GameObject& makeMover(World& world, const ApexNetwork::MoverSpec& spec);
 
+// A hidden wind region: trigger collider, no Renderable.
+GameObject& makeWindZone(World& world, float x, float y, float width, float height, float amplitude,
+                         float period);
+
 // The local climber. No Renderable: ApexGame draws the animated sprite itself.
 GameObject& makePlayer(World& world, float x, float y, float width, float height, float gravity);
 

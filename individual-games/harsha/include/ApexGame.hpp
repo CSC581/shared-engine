@@ -51,6 +51,8 @@ private:
     void handleCollisions();
     void onPlayerCollide(GameObject& other);
     void applySlingshotFling();
+    void onPlayerEnter(GameObject& other);
+    void onPlayerExit(GameObject& other);
     void updateCamera(float deltaTime);
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
@@ -72,6 +74,18 @@ private:
     ObjectId groundedPlatformId_ = 0;
     // This frame's time, stashed for the worker threads.
     FrameTime frameTime_{};
+    // Walk direction from this frame's keys (-1, 0, +1); only set on ground.
+    float walkIntent_ = 0.0F;
+    // Surface::friction of the platform underfoot, refreshed each frame.
+    float groundFriction_ = Surface::ground;
+    // Wind zone the climber is inside, set and cleared by the player's
+    // trigger callbacks (main thread); read by the player worker.
+    const WindZone* wind_ = nullptr;
+    // For drawing the wind cue: the (only) wind zone, its push this frame,
+    // and how far the streaks have drifted.
+    const GameObject* windZoneObject_ = nullptr;
+    float windNow_ = 0.0F;
+    float windStreakOffset_ = 0.0F;
 
     // Milestone 4: climb-loop clips + facing driven by gameplay.
     PlayerAnimation playerAnim_;
