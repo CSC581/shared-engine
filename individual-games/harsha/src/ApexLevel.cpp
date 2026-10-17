@@ -15,6 +15,8 @@ Color colorFor(ApexPlatform::Kind kind)
     case ApexPlatform::Kind::Ice:
         // Pale cyan: reads as slippery before you touch it.
         return {170, 220, 235};
+    case ApexPlatform::Kind::Slingshot:
+        return {220, 60, 200};
     case ApexPlatform::Kind::Stone:
     default:
         return {90, 100, 130};
@@ -164,6 +166,22 @@ void buildRoom2(const Room& room)
     makeStatic(room.world, 20.0F, room.top + 500.0F, 340.0F, platformThickness, Kind::Stone);
 }
 
+// Room 3, the slingshot. A fast magenta rail (movers(), id 3) shuttles over a
+// pit; ride it from the launch ledge and jump off at its right end to reach
+// the goal ledge. The pit floor becomes a spike death zone (Step 4).
+void buildRoom3(const Room& room)
+{
+    // Launch ledge, reached from room 2's top ice ledge.
+    makeStatic(room.world, 380.0F, room.top + 840.0F, 180.0F, platformThickness, Kind::Stone);
+
+    // Goal ledge, up and right of the rail's far end.
+    makeStatic(room.world, 740.0F, room.top + 240.0F, 140.0F, platformThickness, Kind::Stone);
+
+    // Pit floor under the rail's far end and the goal; climbable back to the
+    // launch ledge until it gets spikes.
+    makeStatic(room.world, 620.0F, room.top + 900.0F, 280.0F, platformThickness, Kind::Stone);
+}
+
 // Placeholder zig-zag for rooms not designed yet; each is replaced by its own
 // buildRoomN as the rooms land.
 void buildStaircaseRoom(const Room& room, int index)
@@ -200,7 +218,8 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
     buildRoom0(room(0));
     buildRoom1(room(1));
     buildRoom2(room(2));
-    for (int index = 3; index < ApexNetwork::roomCount; ++index) {
+    buildRoom3(room(3));
+    for (int index = 4; index < ApexNetwork::roomCount; ++index) {
         buildStaircaseRoom(room(index), index);
     }
 

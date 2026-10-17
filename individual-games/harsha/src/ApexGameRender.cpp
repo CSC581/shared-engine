@@ -1,5 +1,6 @@
 #include "ApexGame.hpp"
 
+#include "ApexNetworkConfig.hpp"
 #include "ApexPresence.hpp"
 
 #include <cctype>
@@ -15,6 +16,19 @@ void ApexGame::render(SDL_Renderer* renderer) const
         const SDL_FRect rect{bounds.x, bounds.y - camera_, bounds.width, bounds.height};
         SDL_RenderFillRect(renderer, &rect);
     };
+
+    // Slingshot rails: a thin track along the mover's path, drawn under the
+    // platforms so the rail visibly rides on it.
+    for (const ApexNetwork::MoverSpec& spec : ApexNetwork::movers()) {
+        if (spec.style != ApexNetwork::MoverStyle::Slingshot) {
+            continue;
+        }
+        const Network::PlatformPath& path = spec.path;
+        const float y = path.startY + path.height * 0.5F - camera_;
+        SDL_SetRenderDrawColor(renderer, 120, 40, 110, 255);
+        const SDL_FRect track{path.startX, y - 2.0F, path.endX + path.width - path.startX, 4.0F};
+        SDL_RenderFillRect(renderer, &track);
+    }
 
     // Platforms: every object with a Renderable (colour set per kind by
     // ApexLevel). The player has none; its sprite is drawn below.
