@@ -184,6 +184,11 @@ target_link_libraries(snapshot-delta-tests PRIVATE network-core)
 
 add_test(NAME snapshot-delta-tests COMMAND snapshot-delta-tests)
 
+add_executable(snapshot-delta-codec-tests tests/SnapshotDeltaCodecTests.cpp)
+target_link_libraries(snapshot-delta-codec-tests PRIVATE network-core)
+
+add_test(NAME snapshot-delta-codec-tests COMMAND snapshot-delta-codec-tests)
+
 # The real NetworkServerHost on loopback: handshake -> private worker, rejoin,
 # LEAVE reaping, GET_WORLD without joining, listen mode, and clean shutdown.
 add_executable(network-server-host-tests tests/NetworkServerHostTests.cpp)

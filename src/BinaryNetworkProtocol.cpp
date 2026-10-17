@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -19,12 +20,20 @@ enum class MessageType : std::uint8_t {
     Position = 2,
     Leave = 3,
     GetWorld = 4,
+    JoinDelta = 5,
+    PositionDelta = 6,
     Welcome = 0x81,
     Snapshot = 0x82,
     WorldState = 0x83,
     Error = 0x84,
     Goodbye = 0x85,
+    WelcomeDelta = 0x86,
+    SnapshotDelta = 0x87,
 };
+
+constexpr std::uint8_t forceFullSnapshotFlag = 1U << 0U;
+constexpr std::uint8_t playerFieldMask = 0x0FU;
+constexpr std::uint8_t platformFieldMask = 0x0FU;
 
 class Writer {
 public:
@@ -218,21 +227,67 @@ bool validSessionToken(const std::string& token)
     return true;
 }
 
-void validatePlayer(const PlayerState& player)
+bool isValidPlayer(const PlayerState& player)
 {
-    if (player.id == 0 || !Net::isValidName(player.name) || !Net::isValidPlayerData(player.data) ||
-        !std::isfinite(player.x) || !std::isfinite(player.y)) {
-        throw std::invalid_argument("invalid player in binary snapshot");
-    }
+    return player.id != 0 && Net::isValidName(player.name) &&
+           Net::isValidPlayerData(player.data) && std::isfinite(player.x) &&
+           std::isfinite(player.y);
 }
 
-void validatePlatform(const PlatformState& platform)
+bool isValidPlatform(const PlatformState& platform)
 {
-    if (platform.id == 0 || !std::isfinite(platform.x) || !std::isfinite(platform.y) ||
-        !std::isfinite(platform.width) || !std::isfinite(platform.height) ||
-        platform.width <= 0.0F || platform.height <= 0.0F) {
+    return platform.id != 0 && std::isfinite(platform.x) && std::isfinite(platform.y) &&
+           std::isfinite(platform.width) && std::isfinite(platform.height) &&
+           platform.width > 0.0F && platform.height > 0.0F;
+}
+
+constexpr std::uint8_t bit(PlayerField field)
+{
+    return static_cast<std::uint8_t>(field);
+}
+
+constexpr std::uint8_t bit(PlatformField field)
+{
+    return static_cast<std::uint8_t>(field);
+}
+
+void writePlayer(Writer& writer, const PlayerState& player)
+{
+    if (!isValidPlayer(player)) {
+        throw std::invalid_argument("invalid player in binary snapshot");
+    }
+    writer.u32(player.id);
+    writer.string(player.name);
+    writer.f32(player.x);
+    writer.f32(player.y);
+    writer.string(player.data);
+}
+
+bool readPlayer(Reader& reader, PlayerState& player)
+{
+    return reader.u32(player.id) && player.id != 0 &&
+           reader.string(player.name, Net::maxNameLength) && Net::isValidName(player.name) &&
+           reader.f32(player.x) && reader.f32(player.y) &&
+           reader.string(player.data, Net::maxPlayerDataLength);
+}
+
+void writePlatform(Writer& writer, const PlatformState& platform)
+{
+    if (!isValidPlatform(platform)) {
         throw std::invalid_argument("invalid platform in binary snapshot");
     }
+    writer.u32(platform.id);
+    writer.f32(platform.x);
+    writer.f32(platform.y);
+    writer.f32(platform.width);
+    writer.f32(platform.height);
+}
+
+bool readPlatform(Reader& reader, PlatformState& platform)
+{
+    return reader.u32(platform.id) && platform.id != 0 && reader.f32(platform.x) &&
+           reader.f32(platform.y) && reader.f32(platform.width) &&
+           reader.f32(platform.height) && platform.width > 0.0F && platform.height > 0.0F;
 }
 
 void writePlatforms(Writer& writer, const std::vector<PlatformState>& platforms)
@@ -242,12 +297,7 @@ void writePlatforms(Writer& writer, const std::vector<PlatformState>& platforms)
     }
     writer.u32(static_cast<std::uint32_t>(platforms.size()));
     for (const PlatformState& platform : platforms) {
-        validatePlatform(platform);
-        writer.u32(platform.id);
-        writer.f32(platform.x);
-        writer.f32(platform.y);
-        writer.f32(platform.width);
-        writer.f32(platform.height);
+        writePlatform(writer, platform);
     }
 }
 
@@ -259,12 +309,7 @@ void writeSnapshot(Writer& writer, const WorldSnapshot& snapshot)
     writer.u64(snapshot.serverTick);
     writer.u32(static_cast<std::uint32_t>(snapshot.players.size()));
     for (const PlayerState& player : snapshot.players) {
-        validatePlayer(player);
-        writer.u32(player.id);
-        writer.string(player.name);
-        writer.f32(player.x);
-        writer.f32(player.y);
-        writer.string(player.data);
+        writePlayer(writer, player);
     }
     writePlatforms(writer, snapshot.platforms);
 }
@@ -282,9 +327,7 @@ bool readPlatforms(Reader& reader, std::vector<PlatformState>& platforms, std::s
     platforms.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index) {
         PlatformState platform;
-        if (!reader.u32(platform.id) || !reader.f32(platform.x) || !reader.f32(platform.y) ||
-            !reader.f32(platform.width) || !reader.f32(platform.height) || platform.id == 0 ||
-            platform.width <= 0.0F || platform.height <= 0.0F) {
+        if (!readPlatform(reader, platform)) {
             error = "invalid platform in binary snapshot";
             return false;
         }
@@ -312,15 +355,220 @@ bool readSnapshot(Reader& reader, WorldSnapshot& snapshot, std::string& error)
     snapshot.players.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index) {
         PlayerState player;
-        if (!reader.u32(player.id) || !reader.string(player.name, Net::maxNameLength) ||
-            !Net::isValidName(player.name) || !reader.f32(player.x) || !reader.f32(player.y) ||
-            !reader.string(player.data, Net::maxPlayerDataLength) || player.id == 0) {
+        if (!readPlayer(reader, player)) {
             error = "invalid player in binary snapshot";
             return false;
         }
         snapshot.players.push_back(std::move(player));
     }
     return readPlatforms(reader, snapshot.platforms, error);
+}
+
+template <typename Value>
+void writeCount(Writer& writer, const std::vector<Value>& values, const char* description)
+{
+    if (values.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::invalid_argument(std::string("too many ") + description + " in snapshot delta");
+    }
+    writer.u32(static_cast<std::uint32_t>(values.size()));
+}
+
+bool validateDelta(const SnapshotDelta& delta, std::string& error)
+{
+    if (delta.targetTick <= delta.baseTick) {
+        error = "snapshot delta target tick must exceed its base tick";
+        return false;
+    }
+    std::set<PlayerId> playerIds;
+    for (const PlayerState& player : delta.addedPlayers) {
+        if (!isValidPlayer(player) || !playerIds.insert(player.id).second) {
+            error = "invalid or repeated player in snapshot delta";
+            return false;
+        }
+    }
+    for (PlayerId id : delta.removedPlayers) {
+        if (id == 0 || !playerIds.insert(id).second) {
+            error = "invalid or repeated player in snapshot delta";
+            return false;
+        }
+    }
+    for (const PlayerPatch& patch : delta.changedPlayers) {
+        if (patch.id == 0 || !playerIds.insert(patch.id).second || patch.fields == 0 ||
+            (patch.fields & ~playerFieldMask) != 0 ||
+            ((patch.fields & bit(PlayerField::Name)) != 0 && !Net::isValidName(patch.name)) ||
+            ((patch.fields & bit(PlayerField::X)) != 0 && !std::isfinite(patch.x)) ||
+            ((patch.fields & bit(PlayerField::Y)) != 0 && !std::isfinite(patch.y)) ||
+            ((patch.fields & bit(PlayerField::Data)) != 0 && !Net::isValidPlayerData(patch.data))) {
+            error = "invalid or repeated player patch in snapshot delta";
+            return false;
+        }
+    }
+
+    std::set<std::uint32_t> platformIds;
+    for (const PlatformState& platform : delta.addedPlatforms) {
+        if (!isValidPlatform(platform) || !platformIds.insert(platform.id).second) {
+            error = "invalid or repeated platform in snapshot delta";
+            return false;
+        }
+    }
+    for (std::uint32_t id : delta.removedPlatforms) {
+        if (id == 0 || !platformIds.insert(id).second) {
+            error = "invalid or repeated platform in snapshot delta";
+            return false;
+        }
+    }
+    for (const PlatformPatch& patch : delta.changedPlatforms) {
+        if (patch.id == 0 || !platformIds.insert(patch.id).second || patch.fields == 0 ||
+            (patch.fields & ~platformFieldMask) != 0 ||
+            ((patch.fields & bit(PlatformField::X)) != 0 && !std::isfinite(patch.x)) ||
+            ((patch.fields & bit(PlatformField::Y)) != 0 && !std::isfinite(patch.y)) ||
+            ((patch.fields & bit(PlatformField::Width)) != 0 &&
+             (!std::isfinite(patch.width) || patch.width <= 0.0F)) ||
+            ((patch.fields & bit(PlatformField::Height)) != 0 &&
+             (!std::isfinite(patch.height) || patch.height <= 0.0F))) {
+            error = "invalid or repeated platform patch in snapshot delta";
+            return false;
+        }
+    }
+    return true;
+}
+
+void writeDelta(Writer& writer, const SnapshotDelta& delta)
+{
+    std::string error;
+    if (!validateDelta(delta, error)) {
+        throw std::invalid_argument(error);
+    }
+    writer.u64(delta.baseTick);
+    writer.u64(delta.targetTick);
+    writer.u32(delta.targetPlayerCount);
+    writer.u32(delta.targetPlatformCount);
+
+    writeCount(writer, delta.addedPlayers, "added players");
+    for (const PlayerState& player : delta.addedPlayers) writePlayer(writer, player);
+    writeCount(writer, delta.removedPlayers, "removed players");
+    for (PlayerId id : delta.removedPlayers) writer.u32(id);
+    writeCount(writer, delta.changedPlayers, "changed players");
+    for (const PlayerPatch& patch : delta.changedPlayers) {
+        writer.u32(patch.id);
+        writer.u8(patch.fields);
+        if ((patch.fields & bit(PlayerField::Name)) != 0) writer.string(patch.name);
+        if ((patch.fields & bit(PlayerField::X)) != 0) writer.f32(patch.x);
+        if ((patch.fields & bit(PlayerField::Y)) != 0) writer.f32(patch.y);
+        if ((patch.fields & bit(PlayerField::Data)) != 0) writer.string(patch.data);
+    }
+
+    writeCount(writer, delta.addedPlatforms, "added platforms");
+    for (const PlatformState& platform : delta.addedPlatforms) writePlatform(writer, platform);
+    writeCount(writer, delta.removedPlatforms, "removed platforms");
+    for (std::uint32_t id : delta.removedPlatforms) writer.u32(id);
+    writeCount(writer, delta.changedPlatforms, "changed platforms");
+    for (const PlatformPatch& patch : delta.changedPlatforms) {
+        writer.u32(patch.id);
+        writer.u8(patch.fields);
+        if ((patch.fields & bit(PlatformField::X)) != 0) writer.f32(patch.x);
+        if ((patch.fields & bit(PlatformField::Y)) != 0) writer.f32(patch.y);
+        if ((patch.fields & bit(PlatformField::Width)) != 0) writer.f32(patch.width);
+        if ((patch.fields & bit(PlatformField::Height)) != 0) writer.f32(patch.height);
+    }
+}
+
+bool readCount(Reader& reader, std::uint32_t& count, std::size_t minimumBytes,
+               const char* description, std::string& error)
+{
+    if (!reader.u32(count) || count > reader.remaining() / minimumBytes) {
+        error = std::string("invalid binary ") + description + " count";
+        return false;
+    }
+    return true;
+}
+
+bool readDelta(Reader& reader, SnapshotDelta& delta, std::string& error)
+{
+    delta = {};
+    if (!reader.u64(delta.baseTick) || !reader.u64(delta.targetTick) ||
+        !reader.u32(delta.targetPlayerCount) || !reader.u32(delta.targetPlatformCount)) {
+        error = "invalid binary snapshot delta header";
+        return false;
+    }
+
+    std::uint32_t count = 0;
+    constexpr std::size_t minimumPlayerBytes = 16U;
+    if (!readCount(reader, count, minimumPlayerBytes, "added player", error)) return false;
+    delta.addedPlayers.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        PlayerState player;
+        if (!readPlayer(reader, player)) {
+            error = "invalid added player in binary snapshot delta";
+            return false;
+        }
+        delta.addedPlayers.push_back(std::move(player));
+    }
+    if (!readCount(reader, count, 4U, "removed player", error)) return false;
+    delta.removedPlayers.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        PlayerId id = 0;
+        if (!reader.u32(id)) {
+            error = "invalid removed player in binary snapshot delta";
+            return false;
+        }
+        delta.removedPlayers.push_back(id);
+    }
+    if (!readCount(reader, count, 5U, "changed player", error)) return false;
+    delta.changedPlayers.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        PlayerPatch patch;
+        if (!reader.u32(patch.id) || !reader.u8(patch.fields) || patch.fields == 0 ||
+            (patch.fields & ~playerFieldMask) != 0 ||
+            ((patch.fields & bit(PlayerField::Name)) != 0 &&
+             !reader.string(patch.name, Net::maxNameLength)) ||
+            ((patch.fields & bit(PlayerField::X)) != 0 && !reader.f32(patch.x)) ||
+            ((patch.fields & bit(PlayerField::Y)) != 0 && !reader.f32(patch.y)) ||
+            ((patch.fields & bit(PlayerField::Data)) != 0 &&
+             !reader.string(patch.data, Net::maxPlayerDataLength))) {
+            error = "invalid player patch in binary snapshot delta";
+            return false;
+        }
+        delta.changedPlayers.push_back(std::move(patch));
+    }
+
+    if (!readCount(reader, count, 20U, "added platform", error)) return false;
+    delta.addedPlatforms.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        PlatformState platform;
+        if (!readPlatform(reader, platform)) {
+            error = "invalid added platform in binary snapshot delta";
+            return false;
+        }
+        delta.addedPlatforms.push_back(platform);
+    }
+    if (!readCount(reader, count, 4U, "removed platform", error)) return false;
+    delta.removedPlatforms.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        std::uint32_t id = 0;
+        if (!reader.u32(id)) {
+            error = "invalid removed platform in binary snapshot delta";
+            return false;
+        }
+        delta.removedPlatforms.push_back(id);
+    }
+    if (!readCount(reader, count, 5U, "changed platform", error)) return false;
+    delta.changedPlatforms.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        PlatformPatch patch;
+        if (!reader.u32(patch.id) || !reader.u8(patch.fields) || patch.fields == 0 ||
+            (patch.fields & ~platformFieldMask) != 0 ||
+            ((patch.fields & bit(PlatformField::X)) != 0 && !reader.f32(patch.x)) ||
+            ((patch.fields & bit(PlatformField::Y)) != 0 && !reader.f32(patch.y)) ||
+            ((patch.fields & bit(PlatformField::Width)) != 0 && !reader.f32(patch.width)) ||
+            ((patch.fields & bit(PlatformField::Height)) != 0 && !reader.f32(patch.height))) {
+            error = "invalid platform patch in binary snapshot delta";
+            return false;
+        }
+        delta.changedPlatforms.push_back(patch);
+    }
+    if (!validateDelta(delta, error)) return false;
+    return true;
 }
 
 bool finish(Reader& reader, std::string& error)
@@ -414,6 +662,70 @@ BinaryMessage encodeBinaryReply(const Reply& reply)
         return Writer(MessageType::Goodbye).finish();
     }
     throw std::invalid_argument("unknown binary reply type");
+}
+
+BinaryMessage encodeBinaryRequest(const BinaryRequestEnvelope& envelope)
+{
+    if (envelope.snapshotStrategy == Net::SnapshotStrategy::FullSnapshot) {
+        if (envelope.acknowledgedServerTick != 0 || envelope.forceFullSnapshot) {
+            throw std::invalid_argument("full-snapshot request has delta delivery metadata");
+        }
+        return encodeBinaryRequest(envelope.request);
+    }
+
+    const Request& request = envelope.request;
+    if (request.type == RequestType::Join) {
+        if (envelope.acknowledgedServerTick != 0 || envelope.forceFullSnapshot ||
+            !validSessionToken(request.sessionToken) || !Net::isValidName(request.playerName)) {
+            throw std::invalid_argument("invalid binary delta JOIN request");
+        }
+        Writer writer(MessageType::JoinDelta);
+        writer.string(request.sessionToken);
+        writer.string(request.playerName);
+        return writer.finish();
+    }
+    if (request.type == RequestType::Position) {
+        if (request.playerId == 0 || !validSessionToken(request.sessionToken) ||
+            envelope.acknowledgedServerTick == 0 || request.position.sequence == 0 ||
+            !Net::isValidPlayerData(request.position.data)) {
+            throw std::invalid_argument("invalid binary delta POSITION request");
+        }
+        Writer writer(MessageType::PositionDelta);
+        writer.u32(request.playerId);
+        writer.string(request.sessionToken);
+        writer.u64(envelope.acknowledgedServerTick);
+        writer.u8(envelope.forceFullSnapshot ? forceFullSnapshotFlag : 0U);
+        writer.u64(request.position.sequence);
+        writer.f32(request.position.x);
+        writer.f32(request.position.y);
+        writer.string(request.position.data);
+        return writer.finish();
+    }
+    throw std::invalid_argument("property-delta envelope supports JOIN and POSITION only");
+}
+
+BinaryMessage encodeBinaryReply(const BinaryReplyEnvelope& envelope)
+{
+    switch (envelope.kind) {
+    case BinaryReplyKind::Standard:
+        return encodeBinaryReply(envelope.reply);
+    case BinaryReplyKind::DeltaWelcome: {
+        if (envelope.reply.type != ReplyType::Welcome || envelope.reply.playerId == 0) {
+            throw std::invalid_argument("invalid binary delta WELCOME reply");
+        }
+        Writer writer(MessageType::WelcomeDelta);
+        writer.u32(envelope.reply.playerId);
+        writer.string(envelope.reply.sessionEndpoint);
+        writeSnapshot(writer, envelope.reply.snapshot);
+        return writer.finish();
+    }
+    case BinaryReplyKind::SnapshotDelta: {
+        Writer writer(MessageType::SnapshotDelta);
+        writeDelta(writer, envelope.delta);
+        return writer.finish();
+    }
+    }
+    throw std::invalid_argument("unknown binary reply envelope kind");
 }
 
 bool decodeBinaryRequest(const BinaryMessage& message, Request& request, std::string& error)
@@ -515,6 +827,93 @@ bool decodeBinaryReply(const BinaryMessage& message, Reply& reply, std::string& 
         return false;
     }
     return finish(reader, error);
+}
+
+bool decodeBinaryRequest(const BinaryMessage& message, BinaryRequestEnvelope& envelope,
+                         std::string& error)
+{
+    Reader reader(message);
+    MessageType type = MessageType::Join;
+    if (!reader.header(type, error)) {
+        return false;
+    }
+
+    envelope = {};
+    if (type == MessageType::JoinDelta) {
+        envelope.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
+        envelope.request.type = RequestType::Join;
+        if (!reader.string(envelope.request.sessionToken, 32) ||
+            !validSessionToken(envelope.request.sessionToken) ||
+            !reader.string(envelope.request.playerName, Net::maxNameLength) ||
+            !Net::isValidName(envelope.request.playerName)) {
+            error = "invalid binary delta JOIN request";
+            return false;
+        }
+        return finish(reader, error);
+    }
+    if (type == MessageType::PositionDelta) {
+        envelope.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
+        envelope.request.type = RequestType::Position;
+        std::uint8_t flags = 0;
+        if (!reader.u32(envelope.request.playerId) || envelope.request.playerId == 0 ||
+            !reader.string(envelope.request.sessionToken, 32) ||
+            !validSessionToken(envelope.request.sessionToken) ||
+            !reader.u64(envelope.acknowledgedServerTick) ||
+            envelope.acknowledgedServerTick == 0 || !reader.u8(flags) ||
+            (flags & ~forceFullSnapshotFlag) != 0 ||
+            !reader.u64(envelope.request.position.sequence) ||
+            envelope.request.position.sequence == 0 || !reader.f32(envelope.request.position.x) ||
+            !reader.f32(envelope.request.position.y) ||
+            !reader.string(envelope.request.position.data, Net::maxPlayerDataLength)) {
+            error = "invalid binary delta POSITION request";
+            return false;
+        }
+        envelope.forceFullSnapshot = (flags & forceFullSnapshotFlag) != 0;
+        return finish(reader, error);
+    }
+
+    if (!decodeBinaryRequest(message, envelope.request, error)) {
+        return false;
+    }
+    envelope.snapshotStrategy = Net::SnapshotStrategy::FullSnapshot;
+    return true;
+}
+
+bool decodeBinaryReply(const BinaryMessage& message, BinaryReplyEnvelope& envelope,
+                       std::string& error)
+{
+    Reader reader(message);
+    MessageType type = MessageType::Error;
+    if (!reader.header(type, error)) {
+        return false;
+    }
+
+    envelope = {};
+    if (type == MessageType::WelcomeDelta) {
+        envelope.kind = BinaryReplyKind::DeltaWelcome;
+        envelope.reply.type = ReplyType::Welcome;
+        if (!reader.u32(envelope.reply.playerId) || envelope.reply.playerId == 0 ||
+            !reader.string(envelope.reply.sessionEndpoint,
+                           std::numeric_limits<std::uint16_t>::max()) ||
+            !readSnapshot(reader, envelope.reply.snapshot, error)) {
+            if (error.empty()) error = "invalid binary delta WELCOME reply";
+            return false;
+        }
+        return finish(reader, error);
+    }
+    if (type == MessageType::SnapshotDelta) {
+        envelope.kind = BinaryReplyKind::SnapshotDelta;
+        if (!readDelta(reader, envelope.delta, error)) {
+            return false;
+        }
+        return finish(reader, error);
+    }
+
+    if (!decodeBinaryReply(message, envelope.reply, error)) {
+        return false;
+    }
+    envelope.kind = BinaryReplyKind::Standard;
+    return true;
 }
 
 } // namespace Network
