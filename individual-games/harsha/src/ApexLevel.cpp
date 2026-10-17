@@ -12,6 +12,9 @@ Color colorFor(ApexPlatform::Kind kind)
         return {90, 150, 80};
     case ApexPlatform::Kind::Sandstone:
         return {200, 170, 110};
+    case ApexPlatform::Kind::Ice:
+        // Pale cyan: reads as slippery before you touch it.
+        return {170, 220, 235};
     case ApexPlatform::Kind::Stone:
     default:
         return {90, 100, 130};
@@ -147,6 +150,20 @@ void buildRoom1(const Room& room)
     makeStatic(room.world, 680.0F, room.top + 120.0F, mossWidth, platformThickness, Kind::Moss);
 }
 
+// Room 2, ice. Three ice ledges zig-zag up; the last (top left) is the one
+// you have to land on, and a stone shelf waits under it to catch a short jump
+// or a slide off the edge. The shelf becomes a spike death zone (Step 4).
+void buildRoom2(const Room& room)
+{
+    makeStatic(room.world, 260.0F, room.top + 760.0F, 260.0F, platformThickness, Kind::Ice);
+    makeStatic(room.world, 560.0F, room.top + 480.0F, 260.0F, platformThickness, Kind::Ice);
+    makeStatic(room.world, 60.0F, room.top + 180.0F, 220.0F, platformThickness, Kind::Ice);
+
+    // Spike shelf under the top ledge, wide enough to catch a slide off
+    // either edge.
+    makeStatic(room.world, 20.0F, room.top + 500.0F, 340.0F, platformThickness, Kind::Stone);
+}
+
 // Placeholder zig-zag for rooms not designed yet; each is replaced by its own
 // buildRoomN as the rooms land.
 void buildStaircaseRoom(const Room& room, int index)
@@ -182,7 +199,8 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
     };
     buildRoom0(room(0));
     buildRoom1(room(1));
-    for (int index = 2; index < ApexNetwork::roomCount; ++index) {
+    buildRoom2(room(2));
+    for (int index = 3; index < ApexNetwork::roomCount; ++index) {
         buildStaircaseRoom(room(index), index);
     }
 
