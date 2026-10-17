@@ -8,6 +8,10 @@ Color colorFor(ApexPlatform::Kind kind)
     case ApexPlatform::Kind::Mover:
         // Amber so moving platforms read as intentional.
         return {200, 150, 60};
+    case ApexPlatform::Kind::Moss:
+        return {90, 150, 80};
+    case ApexPlatform::Kind::Sandstone:
+        return {200, 170, 110};
     case ApexPlatform::Kind::Stone:
     default:
         return {90, 100, 130};
@@ -126,6 +130,23 @@ void buildRoom0(const Room& room)
     makeStatic(room.world, 220.0F, room.top + 280.0F, 220.0F, platformThickness, Kind::Stone);
 }
 
+// Room 1, the lift. The moss ledges sit too high above the sandstone to jump
+// to (a jump that rises h also travels about 1.1h sideways, and the room is
+// too narrow), so the elevator (movers(), id 2) is the only way up.
+// Heights were tuned with a jump simulation so every jump allows at least
+// ~0.14 s of charge error.
+void buildRoom1(const Room& room)
+{
+    constexpr float mossWidth = 90.0F;
+
+    // Landing from room 0's mover; wide and forgiving.
+    makeStatic(room.world, 520.0F, room.top + 800.0F, 340.0F, platformThickness, Kind::Sandstone);
+
+    // Off the top of the lift, then up to the ledge below room 2.
+    makeStatic(room.world, 380.0F, room.top + 260.0F, mossWidth, platformThickness, Kind::Moss);
+    makeStatic(room.world, 680.0F, room.top + 120.0F, mossWidth, platformThickness, Kind::Moss);
+}
+
 // Placeholder zig-zag for rooms not designed yet; each is replaced by its own
 // buildRoomN as the rooms land.
 void buildStaircaseRoom(const Room& room, int index)
@@ -160,7 +181,8 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
         return Room{world, worldHeight - viewHeight * static_cast<float>(index + 1), worldWidth};
     };
     buildRoom0(room(0));
-    for (int index = 1; index < ApexNetwork::roomCount; ++index) {
+    buildRoom1(room(1));
+    for (int index = 2; index < ApexNetwork::roomCount; ++index) {
         buildStaircaseRoom(room(index), index);
     }
 

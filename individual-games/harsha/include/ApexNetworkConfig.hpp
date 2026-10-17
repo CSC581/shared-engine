@@ -23,9 +23,15 @@ inline float worldHeight()
     return static_cast<float>(designHeight * roomCount);
 }
 
+// Top edge of room `index` (0 = bottom room) in world coordinates.
+inline float roomTop(int index)
+{
+    return worldHeight() - static_cast<float>(designHeight * (index + 1));
+}
+
 inline float room0Top()
 {
-    return worldHeight() - static_cast<float>(designHeight);
+    return roomTop(0);
 }
 
 // How a mover behaves beyond following its path. ApexLevel maps it to an
@@ -58,6 +64,19 @@ inline const std::vector<MoverSpec>& movers()
         horizontal.width = 150.0F;
         horizontal.height = platformThickness;
         specs.push_back({MoverStyle::Plain, horizontal});
+
+        // Room 1: elevator on the left wall, from the sandstone ledge's height
+        // up to the moss route.
+        Network::PlatformPath elevator;
+        elevator.id = 2;
+        elevator.startX = 100.0F;
+        elevator.startY = roomTop(1) + 700.0F;
+        elevator.endX = elevator.startX;
+        elevator.endY = roomTop(1) + 300.0F;
+        elevator.speed = 120.0F;
+        elevator.width = 130.0F;
+        elevator.height = platformThickness;
+        specs.push_back({MoverStyle::Plain, elevator});
 
         return specs;
     }();
