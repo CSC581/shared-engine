@@ -100,6 +100,16 @@ GameObject& makeDeathZone(World& world, float x, float y, float width, float hei
     return zone;
 }
 
+GameObject& makeRoomZone(World& world, int room, float top, float width, float height)
+{
+    GameObject& zone = world.create("trigger");
+    zone.add<Transform>(0.0F, top, width, height);
+    zone.add<Collider>(Collider::Kind::Trigger, triggerLayer);
+    zone.add<RoomZone>(room);
+    zone.setActive(true);
+    return zone;
+}
+
 GameObject& makeWindZone(World& world, float x, float y, float width, float height, float amplitude,
                          float period)
 {
@@ -285,6 +295,11 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
     const auto room = [&](int index) {
         return Room{world, worldHeight - viewHeight * static_cast<float>(index + 1), worldWidth};
     };
+    // Hidden room boundaries for the room-snap camera, one per room.
+    for (int index = 0; index < ApexNetwork::roomCount; ++index) {
+        makeRoomZone(world, index, room(index).top, worldWidth, viewHeight);
+    }
+
     buildRoom0(room(0));
     buildRoom1(room(1));
     buildRoom2(room(2));

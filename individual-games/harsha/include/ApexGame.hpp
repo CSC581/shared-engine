@@ -58,6 +58,7 @@ private:
     void onPlayerExit(GameObject& other);
     void updateCamera(float deltaTime);
     float cameraTarget() const;
+    int roomAt(float worldY) const;
     void snapCamera();
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
@@ -115,8 +116,10 @@ private:
     bool pendingRespawn_ = false;
     int deaths_ = 0;
 
-    // Vertical scroll: world Y minus camera_ is screen Y.
+    // Vertical scroll: world Y minus camera_ is screen Y. It eases toward the
+    // top of cameraRoom_, the room whose hidden RoomZone holds the climber.
     float camera_ = 0.0F;
+    int cameraRoom_ = 0;
 
     float chargePower_ = 0.0F;
     float aimDirection_ = 0.0F;

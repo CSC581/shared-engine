@@ -5,6 +5,7 @@
 #include "ApexPresence.hpp"
 #include "Input.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
@@ -356,6 +357,16 @@ void ApexGame::onPlayerCollide(GameObject& other)
         }
         return;
     }
+    // Room-snap camera: show the room whose zone holds the climber's centre.
+    // A climber straddling two rooms overlaps both zones; the centre decides.
+    if (const RoomZone* room = other.get<RoomZone>()) {
+        const Transform& zone = *other.get<Transform>();
+        const float centreY = playerTransform_->y + playerHeight * 0.5F;
+        if (centreY >= zone.y && centreY < zone.y + zone.height) {
+            cameraRoom_ = room->room;
+        }
+        return;
+    }
     if (other.tag() != "platform") {
         return;
     }
@@ -412,21 +423,32 @@ void ApexGame::onPlayerExit(GameObject& other)
     }
 }
 
-float ApexGame::cameraTarget() const
+// Which room a world y is in (0 = bottom), clamped to the tower.
+int ApexGame::roomAt(float worldY) const
 {
-    const float target = playerTransform_->y + playerHeight * 0.5F - viewHeight_ * 0.5F;
-    return std::fmin(std::fmax(target, 0.0F), worldHeight_ - viewHeight_);
+    const int room = static_cast<int>((worldHeight_ - worldY) / viewHeight_);
+    return std::max(0, std::min(room, roomCount - 1));
 }
 
+// The top of the room on screen: each room is exactly one screen tall.
+float ApexGame::cameraTarget() const
+{
+    return worldHeight_ - viewHeight_ * static_cast<float>(cameraRoom_ + 1);
+}
+
+// Straight to the climber's room, for spawns and respawns: the zones only
+// report on the next collision pass, and a teleport should not pan.
 void ApexGame::snapCamera()
 {
+    cameraRoom_ = roomAt(playerTransform_->y + playerHeight * 0.5F);
     camera_ = cameraTarget();
 }
 
-// Smooth vertical follow, clamped to the world.
+// Ease toward the current room's top: a quick slide (about a tenth of a
+// second) instead of a hard cut, so the jump into a new room still reads.
 void ApexGame::updateCamera(float deltaTime)
 {
-    camera_ += (cameraTarget() - camera_) * (1.0F - std::pow(0.001F, deltaTime));
+    camera_ += (cameraTarget() - camera_) * (1.0F - std::pow(0.0001F, deltaTime));
 }
 
 // Player worker thread: touches only the player and its charge, never a

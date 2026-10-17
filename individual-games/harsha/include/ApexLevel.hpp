@@ -39,6 +39,9 @@ GameObject& makeSpawnMarker(World& world, float x, float y, float width, int roo
 // A hidden death zone (trigger, no Renderable).
 GameObject& makeDeathZone(World& world, float x, float y, float width, float height, bool spikes);
 
+// A hidden room boundary covering one whole room (trigger, no Renderable).
+GameObject& makeRoomZone(World& world, int room, float top, float width, float height);
+
 // A hidden wind region: trigger collider, no Renderable.
 GameObject& makeWindZone(World& world, float x, float y, float width, float height, float amplitude,
                          float period);

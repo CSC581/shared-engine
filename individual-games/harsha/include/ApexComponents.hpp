@@ -68,6 +68,20 @@ public:
     bool spikes;
 };
 
+// A hidden room boundary: a trigger covering one whole room. While the
+// climber's centre is inside it, the camera shows that room. Whole-room
+// volumes rather than thin boundary lines, so even the fastest leap cannot
+// skip past one between frames.
+class RoomZone : public Component {
+public:
+    explicit RoomZone(int room)
+        : room(room)
+    {
+    }
+
+    int room;
+};
+
 // A hidden gusty region (a trigger with no Renderable). While a climber is
 // airborne inside it, sideways speed gains amplitude * sin(2*pi*t / period)
 // per second, t being game time: gusts swing left and right, freeze on pause
