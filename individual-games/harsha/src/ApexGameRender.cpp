@@ -17,17 +17,27 @@ void ApexGame::render(SDL_Renderer* renderer) const
         SDL_RenderFillRect(renderer, &rect);
     };
 
-    // Slingshot rails: a thin track along the mover's path, drawn under the
-    // platforms so the rail visibly rides on it.
+    // Mover guides, drawn under the platforms: a thin track along each
+    // slingshot rail, a faint circle traced by each orbit wheel's centre.
     for (const ApexNetwork::MoverSpec& spec : ApexNetwork::movers()) {
-        if (spec.style != ApexNetwork::MoverStyle::Slingshot) {
-            continue;
-        }
         const Network::PlatformPath& path = spec.path;
-        const float y = path.startY + path.height * 0.5F - camera_;
-        SDL_SetRenderDrawColor(renderer, 120, 40, 110, 255);
-        const SDL_FRect track{path.startX, y - 2.0F, path.endX + path.width - path.startX, 4.0F};
-        SDL_RenderFillRect(renderer, &track);
+        if (spec.style == ApexNetwork::MoverStyle::Slingshot) {
+            const float y = path.startY + path.height * 0.5F - camera_;
+            SDL_SetRenderDrawColor(renderer, 120, 40, 110, 255);
+            const SDL_FRect track{path.startX, y - 2.0F, path.endX + path.width - path.startX, 4.0F};
+            SDL_RenderFillRect(renderer, &track);
+        } else if (spec.style == ApexNetwork::MoverStyle::Orbit) {
+            constexpr int segments = 64;
+            SDL_FPoint circle[segments + 1];
+            const float cx = path.centerX + path.width * 0.5F;
+            const float cy = path.centerY + path.height * 0.5F - camera_;
+            for (int i = 0; i <= segments; ++i) {
+                const float angle = 2.0F * 3.14159265F * static_cast<float>(i) / segments;
+                circle[i] = {cx + path.radius * std::cos(angle), cy + path.radius * std::sin(angle)};
+            }
+            SDL_SetRenderDrawColor(renderer, 70, 60, 105, 255);
+            SDL_RenderLines(renderer, circle, segments + 1);
+        }
     }
 
     // Platforms: every object with a Renderable (colour set per kind by

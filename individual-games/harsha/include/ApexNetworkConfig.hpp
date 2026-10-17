@@ -91,6 +91,29 @@ inline const std::vector<MoverSpec>& movers()
         rail.height = platformThickness;
         specs.push_back({MoverStyle::Slingshot, rail});
 
+        // Room 4: three orbit wheels stacked up the room. Angular speeds are
+        // 3:2:1, so every wheel is back at its start (angle 0) together every
+        // orbitPeriod seconds and the whole pattern repeats exactly.
+        // PathMover::Circular takes a rim speed, so speed = radius * omega.
+        constexpr float orbitPeriod = 8.0F;
+        constexpr float baseOmega = 2.0F * 3.14159265F / orbitPeriod;
+        const auto orbit = [](std::uint32_t id, float centerX, float centerY, float radius,
+                              float omega) {
+            Network::PlatformPath path;
+            path.id = id;
+            path.shape = Network::PlatformPath::Shape::Circular;
+            path.centerX = centerX;
+            path.centerY = centerY;
+            path.radius = radius;
+            path.speed = radius * omega;
+            path.width = 110.0F;
+            path.height = platformThickness;
+            return MoverSpec{MoverStyle::Orbit, path};
+        };
+        specs.push_back(orbit(4, 600.0F, roomTop(4) + 640.0F, 100.0F, 3.0F * baseOmega));
+        specs.push_back(orbit(5, 200.0F, roomTop(4) + 380.0F, 120.0F, 2.0F * baseOmega));
+        specs.push_back(orbit(6, 580.0F, roomTop(4) + 110.0F, 140.0F, 1.0F * baseOmega));
+
         return specs;
     }();
     return list;

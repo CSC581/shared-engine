@@ -17,6 +17,8 @@ Color colorFor(ApexPlatform::Kind kind)
         return {170, 220, 235};
     case ApexPlatform::Kind::Slingshot:
         return {220, 60, 200};
+    case ApexPlatform::Kind::Orbit:
+        return {150, 110, 230};
     case ApexPlatform::Kind::Stone:
     default:
         return {90, 100, 130};
@@ -182,6 +184,15 @@ void buildRoom3(const Room& room)
     makeStatic(room.world, 620.0F, room.top + 900.0F, 280.0F, platformThickness, Kind::Stone);
 }
 
+// Room 4, the orbit. A stone hub, then three violet wheels (movers(), ids
+// 4-6) circling their own centres, each higher and slower than the last. The
+// challenge is landing on a moving target; the 3:2:1 speeds make the pattern
+// repeat every 8 s, so it can be learned.
+void buildRoom4(const Room& room)
+{
+    makeStatic(room.world, 300.0F, room.top + 880.0F, 180.0F, platformThickness, Kind::Stone);
+}
+
 // Placeholder zig-zag for rooms not designed yet; each is replaced by its own
 // buildRoomN as the rooms land.
 void buildStaircaseRoom(const Room& room, int index)
@@ -219,7 +230,8 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
     buildRoom1(room(1));
     buildRoom2(room(2));
     buildRoom3(room(3));
-    for (int index = 4; index < ApexNetwork::roomCount; ++index) {
+    buildRoom4(room(4));
+    for (int index = 5; index < ApexNetwork::roomCount; ++index) {
         buildStaircaseRoom(room(index), index);
     }
 
