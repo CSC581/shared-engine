@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <locale>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -23,6 +24,12 @@
 namespace Network {
 namespace {
 
+struct DeliveryState {
+    std::mutex mutex;
+    Net::SnapshotStrategy strategy = Net::SnapshotStrategy::FullSnapshot;
+    std::optional<WorldSnapshot> lastSentSnapshot;
+};
+
 // Shared between one worker thread and the handshake that started it.
 struct WorkerState {
     // Cleared to ask the worker to exit (failed JOIN, shutdown).
@@ -31,6 +38,7 @@ struct WorkerState {
     // join it without blocking. `alive` alone is not enough: a cancelled
     // worker can still be sitting in its receive timeout.
     std::atomic<bool> finished{false};
+    std::shared_ptr<DeliveryState> delivery = std::make_shared<DeliveryState>();
 };
 
 struct Worker {
@@ -72,24 +80,32 @@ Net::DataFormat detectFormat(const Message& message)
 }
 
 bool decodeTransportRequest(const Message& message, Net::DataFormat format,
-                            Request& request, std::string& error)
+                            BinaryRequestEnvelope& envelope, std::string& error)
 {
     if (format == Net::DataFormat::Binary) {
         if (message.size() != 1) {
             error = "binary request must contain exactly one frame";
             return false;
         }
-        return decodeBinaryRequest(message.front(), request, error);
+        return decodeBinaryRequest(message.front(), envelope, error);
     }
-    return decodeRequest(message, request, error);
+    envelope = {};
+    return decodeRequest(message, envelope.request, error);
+}
+
+Message encodeTransportReply(const BinaryReplyEnvelope& envelope, Net::DataFormat format)
+{
+    if (format == Net::DataFormat::Binary) {
+        return {encodeBinaryReply(envelope)};
+    }
+    return encodeReply(envelope.reply);
 }
 
 Message encodeTransportReply(const Reply& reply, Net::DataFormat format)
 {
-    if (format == Net::DataFormat::Binary) {
-        return {encodeBinaryReply(reply)};
-    }
-    return encodeReply(reply);
+    BinaryReplyEnvelope envelope;
+    envelope.reply = reply;
+    return encodeTransportReply(envelope, format);
 }
 
 Reply errorReply(std::string error)
@@ -122,6 +138,51 @@ struct NetworkServerHost::Impl {
         }
     }
 
+    void resetDelivery(const std::shared_ptr<DeliveryState>& delivery,
+                       Net::SnapshotStrategy strategy, const WorldSnapshot& snapshot)
+    {
+        const std::lock_guard<std::mutex> lock(delivery->mutex);
+        delivery->strategy = strategy;
+        delivery->lastSentSnapshot = snapshot;
+    }
+
+    bool deliveryMatches(const std::shared_ptr<DeliveryState>& delivery,
+                         const BinaryRequestEnvelope& request)
+    {
+        if (request.request.type != RequestType::Position) return true;
+        const std::lock_guard<std::mutex> lock(delivery->mutex);
+        return delivery->strategy == request.snapshotStrategy;
+    }
+
+    bool sendSessionReply(zmq::socket_t& socket, const Reply& serverReply,
+                          Net::DataFormat format, const BinaryRequestEnvelope& request,
+                          const std::shared_ptr<DeliveryState>& delivery)
+    {
+        // Keep selection, transmission and baseline advancement atomic with
+        // respect to a rejoin resetting this session's delivery state.
+        const std::lock_guard<std::mutex> lock(delivery->mutex);
+        BinaryReplyEnvelope outgoing;
+        outgoing.reply = serverReply;
+        std::optional<WorldSnapshot> sentSnapshot;
+        if (delivery->strategy == Net::SnapshotStrategy::PropertyDelta &&
+            format == Net::DataFormat::Binary && request.request.type == RequestType::Position &&
+            serverReply.type == ReplyType::Snapshot) {
+            sentSnapshot = serverReply.snapshot;
+            if (!request.forceFullSnapshot && delivery->lastSentSnapshot &&
+                request.acknowledgedServerTick == delivery->lastSentSnapshot->serverTick) {
+                outgoing.kind = BinaryReplyKind::SnapshotDelta;
+                outgoing.delta = makeSnapshotDelta(*delivery->lastSentSnapshot,
+                                                   serverReply.snapshot);
+            }
+        }
+
+        const bool sent = Net::send(socket, encodeTransportReply(outgoing, format));
+        if (sent && sentSnapshot) {
+            delivery->lastSentSnapshot = std::move(*sentSnapshot);
+        }
+        return sent;
+    }
+
     // Server-owned platforms move on real time whether or not anybody is
     // asking, so they get a thread of their own rather than being advanced
     // only when a request happens to arrive.
@@ -131,6 +192,16 @@ struct NetworkServerHost::Impl {
         std::unordered_map<PlayerId, std::uint64_t> lastCounts;
         while (running.load()) {
             server.update();
+            {
+                const std::lock_guard<std::mutex> lock(listenDeliveriesMutex);
+                for (auto entry = listenDeliveries.begin(); entry != listenDeliveries.end();) {
+                    if (!server.hasSession(entry->first)) {
+                        entry = listenDeliveries.erase(entry);
+                    } else {
+                        ++entry;
+                    }
+                }
+            }
             if (config.trafficLogInterval.count() > 0 && config.log) {
                 const auto now = std::chrono::steady_clock::now();
                 if (now - lastTrafficLog >= config.trafficLogInterval) {
@@ -179,11 +250,53 @@ struct NetworkServerHost::Impl {
             }
             if (received) {
                 const Net::DataFormat format = detectFormat(request);
-                Request decoded;
+                BinaryRequestEnvelope decoded;
                 std::string error;
                 const bool valid = decodeTransportRequest(request, format, decoded, error);
-                const Reply reply = valid ? server.handle(std::move(decoded)) : errorReply(std::move(error));
-                Net::send(socket, encodeTransportReply(reply, format));
+                if (!valid) {
+                    Net::send(socket, encodeTransportReply(errorReply(std::move(error)), format));
+                    continue;
+                }
+                Reply reply;
+                std::shared_ptr<DeliveryState> delivery;
+                if (decoded.request.type == RequestType::Join) {
+                    reply = server.handle(decoded.request);
+                    if (reply.type == ReplyType::Welcome) {
+                        const std::lock_guard<std::mutex> lock(listenDeliveriesMutex);
+                        delivery = listenDeliveries[decoded.request.sessionToken];
+                        if (!delivery) {
+                            delivery = listenDeliveries[decoded.request.sessionToken] =
+                                std::make_shared<DeliveryState>();
+                        }
+                    }
+                } else {
+                    {
+                        const std::lock_guard<std::mutex> lock(listenDeliveriesMutex);
+                        const auto found = listenDeliveries.find(decoded.request.sessionToken);
+                        if (found != listenDeliveries.end()) delivery = found->second;
+                    }
+                    if (delivery && !deliveryMatches(delivery, decoded)) {
+                        reply = errorReply("snapshot strategy does not match this session");
+                    } else {
+                        reply = server.handle(decoded.request);
+                    }
+                }
+                if (decoded.request.type == RequestType::Join && reply.type == ReplyType::Welcome && delivery) {
+                    resetDelivery(delivery, decoded.snapshotStrategy, reply.snapshot);
+                    BinaryReplyEnvelope outgoing;
+                    outgoing.reply = reply;
+                    if (decoded.snapshotStrategy == Net::SnapshotStrategy::PropertyDelta)
+                        outgoing.kind = BinaryReplyKind::DeltaWelcome;
+                    Net::send(socket, encodeTransportReply(outgoing, format));
+                } else if (delivery) {
+                    sendSessionReply(socket, reply, format, decoded, delivery);
+                } else {
+                    Net::send(socket, encodeTransportReply(reply, format));
+                }
+                if (decoded.request.type == RequestType::Leave && reply.type == ReplyType::Goodbye) {
+                    const std::lock_guard<std::mutex> lock(listenDeliveriesMutex);
+                    listenDeliveries.erase(decoded.request.sessionToken);
+                }
             }
         }
     }
@@ -223,23 +336,41 @@ struct NetworkServerHost::Impl {
                 }
 
                 const Net::DataFormat format = detectFormat(requestMessage);
-                Request request;
+                BinaryRequestEnvelope request;
                 std::string error;
                 const bool decoded = decodeTransportRequest(requestMessage, format, request, error);
-                const Reply reply = decoded ? server.handle(request) : errorReply(std::move(error));
-                Net::send(socket, encodeTransportReply(reply, format));
+                Reply reply;
+                if (!decoded) {
+                    reply = errorReply(std::move(error));
+                } else if (!deliveryMatches(state->delivery, request)) {
+                    reply = errorReply("snapshot strategy does not match this session");
+                } else {
+                    reply = server.handle(request.request);
+                }
+                if (decoded) {
+                    sendSessionReply(socket, reply, format, request, state->delivery);
+                } else {
+                    Net::send(socket, encodeTransportReply(reply, format));
+                }
 
                 // A malformed or unauthorized LEAVE produces ERROR. Keep this
                 // worker alive unless the server actually accepted the departure.
-                if (isAcceptedLeave(request, decoded, reply)) {
+                if (isAcceptedLeave(request.request, decoded, reply)) {
                     break;
                 }
             }
-        } catch (...) {
+        } catch (const std::exception& exception) {
+            log(std::string("worker failed: ") + exception.what());
             try {
                 endpointReady.set_value({});
             } catch (const std::future_error&) {
                 // The endpoint was already published before the failure.
+            }
+        } catch (...) {
+            log("worker failed with an unknown exception");
+            try {
+                endpointReady.set_value({});
+            } catch (const std::future_error&) {
             }
         }
 
@@ -300,8 +431,10 @@ struct NetworkServerHost::Impl {
 
     // Answers a JOIN whose session token already has a live worker by
     // pointing it back at that worker. Returns false if there is none.
-    bool rejoin(zmq::socket_t& handshake, const Request& request, Net::DataFormat format)
+    bool rejoin(zmq::socket_t& handshake, const BinaryRequestEnvelope& envelope,
+                Net::DataFormat format)
     {
+        const Request& request = envelope.request;
         const std::lock_guard<std::mutex> lock(endpointsMutex);
         const auto existing = endpointsByToken.find(request.sessionToken);
         if (existing == endpointsByToken.end()) {
@@ -314,13 +447,20 @@ struct NetworkServerHost::Impl {
             return true;
         }
         welcome.sessionEndpoint = existing->second.endpoint;
-        Net::send(handshake, encodeTransportReply(welcome, format));
+        resetDelivery(existing->second.owner->delivery, envelope.snapshotStrategy, welcome.snapshot);
+        BinaryReplyEnvelope outgoing;
+        outgoing.reply = welcome;
+        if (envelope.snapshotStrategy == Net::SnapshotStrategy::PropertyDelta)
+            outgoing.kind = BinaryReplyKind::DeltaWelcome;
+        Net::send(handshake, encodeTransportReply(outgoing, format));
         return true;
     }
 
-    void join(zmq::socket_t& handshake, const Request& request, Net::DataFormat format)
+    void join(zmq::socket_t& handshake, const BinaryRequestEnvelope& envelope,
+              Net::DataFormat format)
     {
-        if (rejoin(handshake, request, format)) {
+        const Request& request = envelope.request;
+        if (rejoin(handshake, envelope, format)) {
             return;
         }
 
@@ -360,7 +500,12 @@ struct NetworkServerHost::Impl {
         }
         log("player " + std::to_string(welcome.playerId) + " -> " + sessionEndpoint);
         welcome.sessionEndpoint = sessionEndpoint;
-        Net::send(handshake, encodeTransportReply(welcome, format));
+        resetDelivery(state->delivery, envelope.snapshotStrategy, welcome.snapshot);
+        BinaryReplyEnvelope outgoing;
+        outgoing.reply = welcome;
+        if (envelope.snapshotStrategy == Net::SnapshotStrategy::PropertyDelta)
+            outgoing.kind = BinaryReplyKind::DeltaWelcome;
+        Net::send(handshake, encodeTransportReply(outgoing, format));
     }
 
     // HostMode::Dedicated: the public socket accepts JOIN (which hands the
@@ -382,14 +527,14 @@ struct NetworkServerHost::Impl {
                 continue;
             }
 
-            Request request;
+            BinaryRequestEnvelope request;
             std::string error;
             const Net::DataFormat format = detectFormat(requestMessage);
             if (!decodeTransportRequest(requestMessage, format, request, error)) {
                 Net::send(handshake, encodeTransportReply(errorReply(std::move(error)), format));
-            } else if (request.type == RequestType::GetWorld) {
-                Net::send(handshake, encodeTransportReply(server.handle(request), format));
-            } else if (request.type != RequestType::Join) {
+            } else if (request.request.type == RequestType::GetWorld) {
+                Net::send(handshake, encodeTransportReply(server.handle(request.request), format));
+            } else if (request.request.type != RequestType::Join) {
                 Net::send(handshake, encodeTransportReply(errorReply("handshake accepts JOIN only"), format));
             } else {
                 join(handshake, request, format);
@@ -425,6 +570,8 @@ struct NetworkServerHost::Impl {
 
     std::mutex endpointsMutex;
     std::unordered_map<SessionToken, Session> endpointsByToken;
+    std::mutex listenDeliveriesMutex;
+    std::unordered_map<SessionToken, std::shared_ptr<DeliveryState>> listenDeliveries;
 };
 
 NetworkServerHost::NetworkServerHost(ServerConfig serverConfig, HostConfig hostConfig)

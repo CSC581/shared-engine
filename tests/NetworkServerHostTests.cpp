@@ -1,3 +1,4 @@
+#include "BinaryNetworkProtocol.hpp"
 #include "NetworkClient.hpp"
 #include "NetworkProtocol.hpp"
 #include "NetworkServerHost.hpp"
@@ -72,6 +73,21 @@ bool call(zmq::context_t& context, const std::string& endpoint, const Network::M
     const Network::Message raw = Net::receive(socket, received);
     std::string error;
     return received && Network::decodeReply(raw, reply, error);
+}
+
+bool binaryCall(zmq::context_t& context, const std::string& endpoint,
+                const Network::BinaryRequestEnvelope& request,
+                Network::BinaryReplyEnvelope& reply)
+{
+    zmq::socket_t socket(context, zmq::socket_type::req);
+    socket.set(zmq::sockopt::linger, 0);
+    socket.set(zmq::sockopt::rcvtimeo, 2000);
+    socket.connect(endpoint);
+    if (!Net::send(socket, {Network::encodeBinaryRequest(request)})) return false;
+    bool received = false;
+    const Network::Message raw = Net::receive(socket, received);
+    std::string error;
+    return received && raw.size() == 1 && Network::decodeBinaryReply(raw.front(), reply, error);
 }
 
 bool waitFor(const std::function<bool()>& condition, std::chrono::milliseconds limit)
@@ -203,9 +219,48 @@ bool binaryNetworkClientUsesRealHost()
     return passed;
 }
 
+bool deltaBaselineMismatchResynchronizes()
+{
+    Network::NetworkServerHost host(testServerConfig(), testHostConfig(Network::HostMode::Dedicated));
+    host.start();
+    zmq::context_t context(1);
+
+    Network::BinaryRequestEnvelope join;
+    join.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
+    join.request.type = Network::RequestType::Join;
+    join.request.sessionToken = token('7');
+    Network::BinaryReplyEnvelope welcome;
+    bool passed = expect(binaryCall(context, host.boundEndpoint(), join, welcome) &&
+                             welcome.kind == Network::BinaryReplyKind::DeltaWelcome,
+                         "delta JOIN should establish a complete baseline");
+    if (!passed) return false;
+
+    Network::BinaryRequestEnvelope position;
+    position.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
+    position.request.type = Network::RequestType::Position;
+    position.request.playerId = welcome.reply.playerId;
+    position.request.sessionToken = token('7');
+    position.request.position = {12.0F, 34.0F, 1, {}};
+    position.acknowledgedServerTick = welcome.reply.snapshot.serverTick + 999;
+    Network::BinaryReplyEnvelope resync;
+    passed &= expect(binaryCall(context, welcome.reply.sessionEndpoint, position, resync) &&
+                         resync.kind == Network::BinaryReplyKind::Standard &&
+                         resync.reply.type == Network::ReplyType::Snapshot,
+                     "a stale delta baseline should receive a full snapshot");
+
+    position.request.position.sequence = 2;
+    position.acknowledgedServerTick = resync.reply.snapshot.serverTick;
+    Network::BinaryReplyEnvelope delta;
+    passed &= expect(binaryCall(context, welcome.reply.sessionEndpoint, position, delta) &&
+                         delta.kind == Network::BinaryReplyKind::SnapshotDelta &&
+                         delta.delta.baseTick == resync.reply.snapshot.serverTick,
+                     "the full resync should become the next valid delta baseline");
+    return passed;
+}
+
 // Milestone 3 Part 1B end to end: four real NetworkClients move through the
-// real host in both formats, see the shared scene, and keep running after one
-// leaves. Alternating formats proves one host can serve both simultaneously.
+// real host with text/full, binary/full and binary/delta delivery, see the
+// shared scene, and keep running after one leaves.
 bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
 {
     Network::NetworkServerHost host(testServerConfig(), testHostConfig(Network::HostMode::Dedicated));
@@ -217,12 +272,19 @@ bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
     const Net::DataFormat formats[clientCount] = {
         Net::DataFormat::TextMultipart,
         Net::DataFormat::Binary,
-        Net::DataFormat::TextMultipart,
         Net::DataFormat::Binary,
+        Net::DataFormat::Binary,
+    };
+    const Net::SnapshotStrategy strategies[clientCount] = {
+        Net::SnapshotStrategy::FullSnapshot,
+        Net::SnapshotStrategy::FullSnapshot,
+        Net::SnapshotStrategy::PropertyDelta,
+        Net::SnapshotStrategy::PropertyDelta,
     };
     std::vector<std::unique_ptr<Network::NetworkClient>> clients;
     for (std::size_t i = 0; i < clientCount; ++i) {
-        clients.push_back(std::make_unique<Network::NetworkClient>(clock, host.boundEndpoint(), formats[i]));
+        clients.push_back(std::make_unique<Network::NetworkClient>(
+            clock, host.boundEndpoint(), formats[i], strategies[i]));
         clients.back()->start();
     }
 
@@ -249,7 +311,8 @@ bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
                     }
                 }
                 return true;
-            });
+            }) && clients[2]->snapshotTelemetry().deltaSnapshotsReceived > 0 &&
+                   clients[3]->snapshotTelemetry().deltaSnapshotsReceived > 0;
         },
         std::chrono::milliseconds(3000));
 
@@ -275,6 +338,20 @@ bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
             passed &= expect(traffic.framesSent > traffic.messagesSent &&
                                  traffic.framesReceived > traffic.messagesReceived,
                              "multipart text transport should report multiple frames per message");
+        }
+        const Network::SnapshotTelemetry snapshots = clients[index]->snapshotTelemetry();
+        if (strategies[index] == Net::SnapshotStrategy::PropertyDelta) {
+            passed &= expect(snapshots.fullSnapshotsReceived >= 1 &&
+                                 snapshots.deltaSnapshotsReceived >= 1 &&
+                                 snapshots.baselineMismatches == 0,
+                             "delta client should establish a baseline then apply deltas (full=" +
+                                 std::to_string(snapshots.fullSnapshotsReceived) + ", delta=" +
+                                 std::to_string(snapshots.deltaSnapshotsReceived) + ", mismatch=" +
+                                 std::to_string(snapshots.baselineMismatches) + ", error=" +
+                                 clients[index]->error() + ")");
+        } else {
+            passed &= expect(snapshots.deltaSnapshotsReceived == 0,
+                             "full-snapshot clients should never receive a delta");
         }
     }
 
@@ -661,6 +738,27 @@ bool listenModeServesEverythingOnOneSocket()
                           snapshot) &&
                          hasPlayerAt(snapshot.snapshot, welcome.playerId, 9.0F),
                      "listen host should accept POSITION on the same socket");
+
+    Network::BinaryRequestEnvelope deltaJoin;
+    deltaJoin.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
+    deltaJoin.request.type = Network::RequestType::Join;
+    deltaJoin.request.sessionToken = token('b');
+    Network::BinaryReplyEnvelope deltaWelcome;
+    passed &= expect(binaryCall(context, endpoint, deltaJoin, deltaWelcome) &&
+                         deltaWelcome.kind == Network::BinaryReplyKind::DeltaWelcome &&
+                         deltaWelcome.reply.sessionEndpoint.empty(),
+                     "listen host should establish a delta baseline on its single socket");
+    Network::BinaryRequestEnvelope deltaPosition;
+    deltaPosition.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
+    deltaPosition.request.type = Network::RequestType::Position;
+    deltaPosition.request.playerId = deltaWelcome.reply.playerId;
+    deltaPosition.request.sessionToken = token('b');
+    deltaPosition.request.position = {19.0F, 29.0F, 1, {}};
+    deltaPosition.acknowledgedServerTick = deltaWelcome.reply.snapshot.serverTick;
+    Network::BinaryReplyEnvelope deltaSnapshot;
+    passed &= expect(binaryCall(context, endpoint, deltaPosition, deltaSnapshot) &&
+                         deltaSnapshot.kind == Network::BinaryReplyKind::SnapshotDelta,
+                     "listen host should return property deltas on its single socket");
     passed &= expect(host.activeWorkers() == 0, "listen host should never start workers");
 
     // Server-owned platforms keep moving on the host's tick thread. One request
@@ -683,6 +781,7 @@ int main()
         passed &= rejectsBadConfig();
         passed &= joinsGetPrivateWorkers();
         passed &= binaryNetworkClientUsesRealHost();
+        passed &= deltaBaselineMismatchResynchronizes();
         passed &= fourNetworkClientsShareTheSceneAndSurviveDisconnect();
         passed &= concurrentClientsAreServedOnTheirOwnWorkers();
         passed &= getWorldOnHandshakeDoesNotJoin();

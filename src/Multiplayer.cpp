@@ -69,7 +69,8 @@ class ClientServerSession final : public Session {
 public:
     ClientServerSession(Config config, const TimeSource& realTime, const TimeSource* gameTime)
         : config_(std::move(config)),
-          client_(realTime, config_.serverEndpoint, config_.clientServerDataFormat),
+          client_(realTime, config_.serverEndpoint, config_.clientServerDataFormat,
+                  config_.clientServerSnapshotStrategy),
           pacer_(gameTime, config_.sendIntervalGameTics, realTime, config_.heartbeatIntervalRealTics)
     {
         // Sent with JOIN, so it must be set before starting.
@@ -453,6 +454,9 @@ std::unique_ptr<Session> Session::open(Config config, const TimeSource& realTime
     if (config.mode == Mode::PeerToPeer) {
         if (config.clientServerDataFormat != Net::DataFormat::TextMultipart) {
             throw std::invalid_argument("binary data format is available only in client-server mode");
+        }
+        if (config.clientServerSnapshotStrategy != Net::SnapshotStrategy::FullSnapshot) {
+            throw std::invalid_argument("property deltas are available only in client-server mode");
         }
         return std::make_unique<PeerToPeerSession>(std::move(config), realTime, gameTime);
     }

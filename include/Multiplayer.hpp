@@ -1,6 +1,7 @@
 #pragma once
 
 #include "NetworkDataFormat.hpp"
+#include "NetworkSnapshotStrategy.hpp"
 #include "TimeSource.hpp"
 
 #include <cstdint>
@@ -112,6 +113,7 @@ struct Config {
     // Milestone 2 wire representation and remains the default. Binary is not
     // a peer-mesh format and is rejected with Mode::PeerToPeer.
     Net::DataFormat clientServerDataFormat = Net::DataFormat::TextMultipart;
+    Net::SnapshotStrategy clientServerSnapshotStrategy = Net::SnapshotStrategy::FullSnapshot;
 
     // ClientServer: the server to join; it assigns this player's id.
     // PeerToPeer: the shared-world authority that owns the platforms. Leave it

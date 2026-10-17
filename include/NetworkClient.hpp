@@ -2,6 +2,7 @@
 
 #include "NetworkDataFormat.hpp"
 #include "NetworkProtocol.hpp"
+#include "NetworkSnapshotStrategy.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -22,6 +23,19 @@ struct TransportTelemetry {
     std::uint64_t payloadBytesReceived = 0;
 };
 
+struct SnapshotTelemetry {
+    std::uint64_t fullSnapshotsReceived = 0;
+    std::uint64_t deltaSnapshotsReceived = 0;
+    std::uint64_t resyncRequestsSent = 0;
+    std::uint64_t baselineMismatches = 0;
+    std::uint64_t playerAdds = 0;
+    std::uint64_t playerRemoves = 0;
+    std::uint64_t playerPatches = 0;
+    std::uint64_t platformAdds = 0;
+    std::uint64_t platformRemoves = 0;
+    std::uint64_t platformPatches = 0;
+};
+
 // Non-blocking REQ client. Games simulate their own character and submit its
 // position; snapshots contain the latest positions stored by the server.
 //
@@ -32,11 +46,13 @@ struct TransportTelemetry {
 class NetworkClient {
 public:
     explicit NetworkClient(std::string endpoint = "tcp://127.0.0.1:5555",
-                           Net::DataFormat format = Net::DataFormat::TextMultipart);
+                           Net::DataFormat format = Net::DataFormat::TextMultipart,
+                           Net::SnapshotStrategy strategy = Net::SnapshotStrategy::FullSnapshot);
     // The clock must count monotonic nanoseconds and outlive this client.
     // Use unpaused real time in games so connection recovery keeps running.
     NetworkClient(const TimeSource& clock, std::string endpoint = "tcp://127.0.0.1:5555",
-                  Net::DataFormat format = Net::DataFormat::TextMultipart);
+                  Net::DataFormat format = Net::DataFormat::TextMultipart,
+                  Net::SnapshotStrategy strategy = Net::SnapshotStrategy::FullSnapshot);
     ~NetworkClient();
 
     NetworkClient(const NetworkClient&) = delete;
@@ -72,6 +88,7 @@ public:
     // Cumulative successful sends and completed receives over this client's
     // lifetime, including JOIN/LEAVE and reconnect traffic.
     TransportTelemetry telemetry() const;
+    SnapshotTelemetry snapshotTelemetry() const;
 
 private:
     struct Impl;

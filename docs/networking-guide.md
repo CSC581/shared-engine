@@ -273,10 +273,15 @@ For a binary client-server session, select it explicitly before `open()`:
 ```cpp
 config.mode = Multiplayer::Mode::ClientServer;
 config.clientServerDataFormat = Net::DataFormat::Binary;
+config.clientServerSnapshotStrategy = Net::SnapshotStrategy::PropertyDelta; // optional
 ```
 
-Multipart text remains the default. Binary is rejected in peer-to-peer mode
-because it is a client-server wire format, not a peer-mesh format.
+Multipart text and full snapshots remain the defaults. Property deltas require
+binary client-server mode. A complete welcome snapshot establishes the
+baseline; subsequent replies contain changed fields and membership. The client
+still exposes a complete `WorldSnapshot`, and requests a complete resync when
+its acknowledged baseline does not match the host. Binary and property deltas
+are rejected in peer-to-peer mode.
 
 Pass `engine.realTime()`, never `engine.gameTime()`. A session running on a
 pausable clock could never reconnect, and could never report the unpause.
