@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700">
+<rect width="100%" height="100%" fill="white"/>
+<text x="640.0" y="36" text-anchor="middle" font-family="sans-serif" font-size="24" font-weight="bold">Mean aggregate throughput</text>
+<text x="24" y="315.0" text-anchor="middle" transform="rotate(-90 24 315.0)" font-family="sans-serif" font-size="15">round trips / second</text>
+<line x1="100" y1="550.00" x2="1240" y2="550.00" stroke="#dddddd"/>
+<text x="90" y="555.00" text-anchor="end" font-family="sans-serif" font-size="12">0</text>
+<line x1="100" y1="456.00" x2="1240" y2="456.00" stroke="#dddddd"/>
+<text x="90" y="461.00" text-anchor="end" font-family="sans-serif" font-size="12">1.61e+04</text>
+<line x1="100" y1="362.00" x2="1240" y2="362.00" stroke="#dddddd"/>
+<text x="90" y="367.00" text-anchor="end" font-family="sans-serif" font-size="12">3.21e+04</text>
+<line x1="100" y1="268.00" x2="1240" y2="268.00" stroke="#dddddd"/>
+<text x="90" y="273.00" text-anchor="end" font-family="sans-serif" font-size="12">4.82e+04</text>
+<line x1="100" y1="174.00" x2="1240" y2="174.00" stroke="#dddddd"/>
+<text x="90" y="179.00" text-anchor="end" font-family="sans-serif" font-size="12">6.43e+04</text>
+<line x1="100" y1="80.00" x2="1240" y2="80.00" stroke="#dddddd"/>
+<text x="90" y="85.00" text-anchor="end" font-family="sans-serif" font-size="12">8.03e+04</text>
+<rect x="120.27" y="503.42" width="37.90" height="46.58" fill="#4C78A8"/>
+<rect x="163.33" y="415.33" width="37.90" height="134.67" fill="#F58518"/>
+<text x="163.33" y="574" text-anchor="end" transform="rotate(-42 163.33 574)" font-family="sans-serif" font-size="13">1 client, 10 platforms</text>
+<rect x="246.93" y="542.85" width="37.90" height="7.15" fill="#4C78A8"/>
+<rect x="290.00" y="435.68" width="37.90" height="114.32" fill="#F58518"/>
+<text x="290.00" y="574" text-anchor="end" transform="rotate(-42 290.00 574)" font-family="sans-serif" font-size="13">1 client, 100 platforms</text>
+<rect x="373.60" y="548.30" width="37.90" height="1.70" fill="#4C78A8"/>
+<rect x="416.67" y="479.69" width="37.90" height="70.31" fill="#F58518"/>
+<text x="416.67" y="574" text-anchor="end" transform="rotate(-42 416.67 574)" font-family="sans-serif" font-size="13">1 client, 500 platforms</text>
+<rect x="500.27" y="461.08" width="37.90" height="88.92" fill="#4C78A8"/>
+<rect x="543.33" y="292.80" width="37.90" height="257.20" fill="#F58518"/>
+<text x="543.33" y="574" text-anchor="end" transform="rotate(-42 543.33 574)" font-family="sans-serif" font-size="13">2 clients, 10 platforms</text>
+<rect x="626.93" y="534.98" width="37.90" height="15.02" fill="#4C78A8"/>
+<rect x="670.00" y="335.14" width="37.90" height="214.86" fill="#F58518"/>
+<text x="670.00" y="574" text-anchor="end" transform="rotate(-42 670.00 574)" font-family="sans-serif" font-size="13">2 clients, 100 platforms</text>
+<rect x="753.60" y="546.58" width="37.90" height="3.42" fill="#4C78A8"/>
+<rect x="796.67" y="426.67" width="37.90" height="123.33" fill="#F58518"/>
+<text x="796.67" y="574" text-anchor="end" transform="rotate(-42 796.67 574)" font-family="sans-serif" font-size="13">2 clients, 500 platforms</text>
+<rect x="880.27" y="401.85" width="37.90" height="148.15" fill="#4C78A8"/>
+<rect x="923.33" y="130.36" width="37.90" height="419.64" fill="#F58518"/>
+<text x="923.33" y="574" text-anchor="end" transform="rotate(-42 923.33 574)" font-family="sans-serif" font-size="13">4 clients, 10 platforms</text>
+<rect x="1006.93" y="520.77" width="37.90" height="29.23" fill="#4C78A8"/>
+<rect x="1050.00" y="190.16" width="37.90" height="359.84" fill="#F58518"/>
+<text x="1050.00" y="574" text-anchor="end" transform="rotate(-42 1050.00 574)" font-family="sans-serif" font-size="13">4 clients, 100 platforms</text>
+<rect x="1133.60" y="543.25" width="37.90" height="6.75" fill="#4C78A8"/>
+<rect x="1176.67" y="344.30" width="37.90" height="205.70" fill="#F58518"/>
+<text x="1176.67" y="574" text-anchor="end" transform="rotate(-42 1176.67 574)" font-family="sans-serif" font-size="13">4 clients, 500 platforms</text>
+<rect x="100" y="666" width="18" height="18" fill="#4C78A8"/>
+<text x="125" y="680" font-family="sans-serif" font-size="14">text</text>
+<rect x="250" y="666" width="18" height="18" fill="#F58518"/>
+<text x="275" y="680" font-family="sans-serif" font-size="14">binary</text>
+</svg>

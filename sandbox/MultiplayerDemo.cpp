@@ -392,6 +392,8 @@ void printUsage()
         R"(multiplayer-demo — the same game over either network architecture
 
   --mode MODE       client-server (default) or peer-to-peer.
+  --format FORMAT   client-server encoding: text (default) or binary.
+  --snapshot MODE   client-server delivery: full (default) or delta.
   --name TEXT       Display name.
   --server ENDPOINT client-server: the server to join.
                     peer-to-peer: the authority owning the moving platforms.
@@ -458,6 +460,34 @@ bool parseOptions(int argc, char* argv[], Multiplayer::Config& config, double& s
         }
         if (arg == "--name") {
             if (!value(index, "--name", config.playerName)) {
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--format") {
+            if (!value(index, "--format", text)) {
+                return false;
+            }
+            if (text == "text") {
+                config.clientServerDataFormat = Net::DataFormat::TextMultipart;
+            } else if (text == "binary") {
+                config.clientServerDataFormat = Net::DataFormat::Binary;
+            } else {
+                std::cerr << "multiplayer-demo: --format must be text or binary\n";
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--snapshot") {
+            if (!value(index, "--snapshot", text)) {
+                return false;
+            }
+            if (text == "full") {
+                config.clientServerSnapshotStrategy = Net::SnapshotStrategy::FullSnapshot;
+            } else if (text == "delta") {
+                config.clientServerSnapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
+            } else {
+                std::cerr << "multiplayer-demo: --snapshot must be full or delta\n";
                 return false;
             }
             continue;
@@ -531,6 +561,17 @@ bool parseOptions(int argc, char* argv[], Multiplayer::Config& config, double& s
 
     if (config.playerName.empty()) {
         config.playerName = "player-" + std::to_string(config.peerId);
+    }
+    if (config.mode == Multiplayer::Mode::PeerToPeer &&
+        config.clientServerDataFormat == Net::DataFormat::Binary) {
+        std::cerr << "multiplayer-demo: --format binary requires --mode client-server\n";
+        return false;
+    }
+    if (config.clientServerSnapshotStrategy == Net::SnapshotStrategy::PropertyDelta &&
+        (config.mode != Multiplayer::Mode::ClientServer ||
+         config.clientServerDataFormat != Net::DataFormat::Binary)) {
+        std::cerr << "multiplayer-demo: --snapshot delta requires client-server binary format\n";
+        return false;
     }
     return true;
 }

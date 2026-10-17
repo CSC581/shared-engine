@@ -7,10 +7,10 @@ This is our C++17 game engine. It uses SDL3 for the window, input and drawing, a
 ```bash
 git submodule update --init --recursive
 cmake -S . -B build && cmake --build build -j 4 -- -k   # -k: keep going past the unported games
-ctest --test-dir build --output-on-failure -E starfall
+ctest --test-dir build --output-on-failure -E 'starfall|multiplayer-tests'
 ```
 
-> The individual games and two sandbox tools (`timeline-sandbox`, `thread-loop-sandbox`) still use Milestone 2's `Entity` class and are being ported, so a full build currently reports errors for those targets only. Every engine library, the demo programs and all 13 engine test suites build and pass.
+> The timeline and persistent-thread sandboxes use the component model. The individual games still contain Milestone 2 `Entity`/`Physics` code and are being ported separately, so build focused engine targets while that work remains out of scope.
 
 ## Milestone 3 progress
 
@@ -18,7 +18,7 @@ ctest --test-dir build --output-on-failure -E starfall
 | ---- | ------------------- | ------ | ------------- |
 | 1A | A component-, property- or custom-based object model (no monolithic hierarchy) that new object types can be built from | Done | A `GameObject` is an id, a tag and the components it owns. A new kind of object is a new mix of components, not a new class. `World` owns all objects and runs each frame |
 | 1B | The object model on every network endpoint; up to 4 clients; movement and platforms synced; disconnects handled | Done | The server keeps players and platforms as `GameObject`s. `NetworkWorldSync` mirrors each client's session into its `World`, removing a player's object when they leave or time out. Every endpoint is multithreaded and there is no player cap. Measured keyboard-to-other-screen latency: ~20 ms with 4 clients |
-| 1C | A second network data format and performance experiments | Not started | |
+| 1C | A second network data format and performance experiments | Done | Multipart text and compact one-frame binary carry identical snapshots through the real client-server stack. The tracked Release evidence covers 1/2/4 clients, 10/100/500 platforms and five repetitions |
 | 2 | Individual games built on the engine | In progress | Games are being ported to the object model |
 
 ### Components
@@ -64,13 +64,17 @@ Move with WASD. Each window shows the measured latency. Close one window and its
 ├── include/NetworkServer.hpp                   src/NetworkServer.cpp  server scene kept in a World
 ├── include/NetworkWorldSync.hpp                src/NetworkWorldSync.cpp  mirrors a session into a client's World
 └── include/Multiplayer.hpp                     src/Multiplayer.cpp    client-server session on its own network thread
+1C Network formats and experiments
+├── include/BinaryNetworkProtocol.hpp          src/BinaryNetworkProtocol.cpp  compact binary codec
+├── benchmarks/NetworkPerformanceBenchmark.cpp                       real-stack comparison
+└── benchmarks/analyze_network_performance.py                         validation and graphs
 ```
 
 ### Design decisions
 
 - **Composition, not inheritance.** Components declare what they need with `require<T>()` (e.g. `Gravity` pulls in `Motion` and `Transform`). Lookups are one array read per type.
 - **Fixed update order.** Components run by priority (`Behavior` → `PathMover` → `Gravity` → `Motion`), so input, then velocity, then position, every frame. The sorted order is cached and rebuilt only when objects or components change.
-- **The network protocol did not change.** Both ends now keep the scene in a `World`. Network threads never touch a `World`: the server works on it under its lock, and clients hand data over through `Session::update()` on the main thread.
+- **The legacy text protocol remains compatible.** Client-server sessions may instead select the binary representation; both carry the same typed requests, replies and full snapshots. Network threads never touch a game's `World`.
 - **Platforms move on the server's tick** (60 Hz), not once per client request, so the server's work does not grow with the number of clients.
 - **Threads:** `World::destroy()` is safe from any thread. Creating objects is main-thread only.
 
@@ -102,6 +106,8 @@ Network failures show up in `status()` instead of crashing.
 | `Config` setting            | Default                | Meaning                                                                                                                           |
 | --------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `mode`                      | `ClientServer`         | `ClientServer` (everyone talks to a server) or `PeerToPeer` (players talk directly)                                               |
+| `clientServerDataFormat`    | `TextMultipart`        | Client-server encoding: existing multipart text or one-frame binary. Binary is rejected in peer-to-peer mode                     |
+| `clientServerSnapshotStrategy` | `FullSnapshot`      | Client-server delivery: complete snapshots or binary property deltas. Deltas require binary and are rejected in peer-to-peer mode |
 | `serverEndpoint`            | `tcp://127.0.0.1:5555` | Server address. In peer-to-peer, where platforms come from (empty = no platforms)                                                 |
 | `playerName`                | empty                  | Name other players see                                                                                                            |
 | `sendIntervalGameTics`      | `0`                    | Game time between position sends (µs). `0` = send every call. Set it (Apex uses 1/30 s) and 0.5× halves, 2× doubles the send rate |
@@ -147,10 +153,36 @@ Create `NetworkServerHost(serverConfig, hostConfig)`, then call `start()` and la
 A game that needs to change replies can skip the host and drive `NetworkServer(clock, serverConfig)`
 itself. It calls `handle(message)` for each request and `update()` on a timer, and uses the
 `encode…`/`decode…` functions in `NetworkProtocol.hpp` to read or rewrite messages. On the client
-side, `NetworkClient(clock, endpoint)` offers `start()`, `poll()`, `submitPosition(x, y, data)`,
-`state()` and `snapshot()` for a direct connection outside a `Session`.
+side, `NetworkClient(clock, endpoint, format, snapshotStrategy)` offers `start()`, `poll()`,
+`submitPosition(x, y, data)`, `requestFullSnapshot()`, `state()` and `snapshot()` for a direct connection outside a
+`Session`. The format defaults to `Net::DataFormat::TextMultipart`; `telemetry()` returns
+cumulative message, frame and encoded-payload-byte counts for performance measurements;
+`snapshotTelemetry()` reports full, delta and resynchronization counts.
+
+The real-stack performance harness has a separate equal-load delivery experiment:
+
+```bash
+./build/network-performance-benchmark --quick --snapshot-delivery \
+  --runs /tmp/snapshot-runs.csv --latency /tmp/snapshot-latency.csv
+./benchmarks/collect_snapshot_delivery.sh
+```
+
+It compares binary-full and binary-delta at 60 requests per client per second,
+with 1/2/4 clients, 10/100/500 platforms and 0/512-byte player data. Quick mode
+is validation only; the collector creates Release evidence and a separate
+forced-resynchronization experiment.
+
+The selected 2026-10-17 Release evidence found 26.4%–73.7% lower encoded
+payload and sustained 60 Hz in every cell, with 1.04×–2.15× mean RTT. Full
+snapshots therefore remain the default while property deltas remain opt-in.
 
 ### Client-server messages (`NetworkProtocol.hpp`), one reply per request
+
+Text and binary-full carry the same complete snapshots. Binary clients may instead opt into
+property deltas: `WELCOME` establishes a complete baseline, then replies carry membership and
+changed fields. A stale baseline receives a complete resynchronization snapshot. Binary uses one
+frame with the `SENG` marker, format and semantic versions, fixed-width network-byte-order values,
+and length-prefixed strings.
 
 | Client sends        | With                                 | Server replies | With                                               |
 | ------------------- | ------------------------------------ | -------------- | -------------------------------------------------- |

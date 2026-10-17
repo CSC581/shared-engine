@@ -53,7 +53,9 @@ target_link_libraries(engine-threads PUBLIC Threads::Threads)
 # non-blocking ZeroMQ client adapter. A headless server can link this without
 # the window engine.
 add_library(network-core STATIC
+    src/BinaryNetworkProtocol.cpp
     src/NetworkProtocol.cpp
+    src/SnapshotDelta.cpp
     src/NetworkServer.cpp
     src/NetworkServerHost.cpp
     src/NetworkClient.cpp
@@ -172,6 +174,21 @@ target_link_libraries(network-tests PRIVATE network-core engine-geometry)
 
 add_test(NAME network-tests COMMAND network-tests)
 
+add_executable(binary-network-protocol-tests tests/BinaryNetworkProtocolTests.cpp)
+target_link_libraries(binary-network-protocol-tests PRIVATE network-core)
+
+add_test(NAME binary-network-protocol-tests COMMAND binary-network-protocol-tests)
+
+add_executable(snapshot-delta-tests tests/SnapshotDeltaTests.cpp)
+target_link_libraries(snapshot-delta-tests PRIVATE network-core)
+
+add_test(NAME snapshot-delta-tests COMMAND snapshot-delta-tests)
+
+add_executable(snapshot-delta-codec-tests tests/SnapshotDeltaCodecTests.cpp)
+target_link_libraries(snapshot-delta-codec-tests PRIVATE network-core)
+
+add_test(NAME snapshot-delta-codec-tests COMMAND snapshot-delta-codec-tests)
+
 # The real NetworkServerHost on loopback: handshake -> private worker, rejoin,
 # LEAVE reaping, GET_WORLD without joining, listen mode, and clean shutdown.
 add_executable(network-server-host-tests tests/NetworkServerHostTests.cpp)
@@ -270,6 +287,67 @@ target_link_libraries(network-client PRIVATE engine network-core)
 # directly, which is the point being made.
 add_executable(multiplayer-demo sandbox/MultiplayerDemo.cpp)
 target_link_libraries(multiplayer-demo PRIVATE engine multiplayer)
+
+# Headless Part 1C comparison. It uses the production client, host, ZeroMQ
+# transport and moving-platform world; no SDL or synthetic codec loop stands
+# in for the real stack.
+add_executable(network-performance-benchmark benchmarks/NetworkPerformanceBenchmark.cpp)
+target_link_libraries(network-performance-benchmark PRIVATE network-core Threads::Threads)
+
+add_test(
+    NAME network-performance-benchmark-quick
+    COMMAND network-performance-benchmark --quick
+            --runs ${CMAKE_CURRENT_BINARY_DIR}/performance-quick-runs.csv
+            --latency ${CMAKE_CURRENT_BINARY_DIR}/performance-quick-latency.csv
+)
+set_tests_properties(network-performance-benchmark-quick PROPERTIES TIMEOUT 60)
+
+add_test(
+    NAME network-performance-benchmark-mixed-quick
+    COMMAND network-performance-benchmark --quick --mixed
+            --runs ${CMAKE_CURRENT_BINARY_DIR}/performance-mixed-quick-runs.csv
+            --latency ${CMAKE_CURRENT_BINARY_DIR}/performance-mixed-quick-latency.csv
+)
+set_tests_properties(network-performance-benchmark-mixed-quick PROPERTIES TIMEOUT 60)
+
+add_test(
+    NAME network-performance-benchmark-snapshot-delivery-quick
+    COMMAND network-performance-benchmark --quick --snapshot-delivery
+            --runs ${CMAKE_CURRENT_BINARY_DIR}/performance-snapshot-delivery-quick-runs.csv
+            --latency ${CMAKE_CURRENT_BINARY_DIR}/performance-snapshot-delivery-quick-latency.csv
+)
+set_tests_properties(network-performance-benchmark-snapshot-delivery-quick PROPERTIES TIMEOUT 60)
+
+# Optional headless diagnostics for the object model, worker scheduler, codecs
+# and public multiplayer interface. They are not substitutes for the required
+# network-format experiment. Quick mode is only a correctness/smoke check.
+add_executable(collision-benchmark benchmarks/CollisionBenchmark.cpp)
+target_link_libraries(collision-benchmark PRIVATE engine-geometry)
+
+add_executable(component-update-benchmark benchmarks/ComponentUpdateBenchmark.cpp)
+target_link_libraries(component-update-benchmark PRIVATE engine-geometry)
+
+add_executable(frame-workers-benchmark benchmarks/FrameWorkersBenchmark.cpp)
+target_link_libraries(frame-workers-benchmark PRIVATE engine-geometry engine-threads)
+
+add_executable(codec-benchmark benchmarks/CodecBenchmark.cpp)
+target_link_libraries(codec-benchmark PRIVATE network-core)
+
+add_executable(multiplayer-mode-benchmark benchmarks/MultiplayerModeBenchmark.cpp)
+target_link_libraries(multiplayer-mode-benchmark PRIVATE multiplayer)
+
+add_executable(snapshot-strategy-benchmark benchmarks/SnapshotStrategyBenchmark.cpp)
+target_link_libraries(snapshot-strategy-benchmark PRIVATE network-core)
+
+foreach(benchmark_name IN ITEMS collision component-update frame-workers codec multiplayer-mode snapshot-strategy)
+    add_test(
+        NAME ${benchmark_name}-benchmark-quick
+        COMMAND ${benchmark_name}-benchmark --quick
+                --runs ${CMAKE_CURRENT_BINARY_DIR}/${benchmark_name}-quick-runs.csv
+                --summary ${CMAKE_CURRENT_BINARY_DIR}/${benchmark_name}-quick-summary.csv
+    )
+    set_tests_properties(${benchmark_name}-benchmark-quick PROPERTIES TIMEOUT 60)
+endforeach()
 
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent

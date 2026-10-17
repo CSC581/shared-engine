@@ -1,4 +1,5 @@
 build/
+/build-release/
 
 individual-games/harsha/experiment.cpp
 # Built by individual-games/skim253/build.sh, which drops the binary next to
@@ -6,3 +7,4 @@ individual-games/harsha/experiment.cpp
 individual-games/skim253/golf-game
 
 .ds_store
+__pycache__/

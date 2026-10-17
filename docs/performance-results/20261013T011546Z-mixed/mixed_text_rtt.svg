@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700">
+<rect width="100%" height="100%" fill="white"/>
+<text x="640.0" y="36" text-anchor="middle" font-family="sans-serif" font-size="24" font-weight="bold">Text client RTT, alone vs mixed</text>
+<text x="24" y="315.0" text-anchor="middle" transform="rotate(-90 24 315.0)" font-family="sans-serif" font-size="15">mean RTT (ms)</text>
+<line x1="100" y1="550.00" x2="1240" y2="550.00" stroke="#dddddd"/>
+<text x="90" y="555.00" text-anchor="end" font-family="sans-serif" font-size="12">0</text>
+<line x1="100" y1="456.00" x2="1240" y2="456.00" stroke="#dddddd"/>
+<text x="90" y="461.00" text-anchor="end" font-family="sans-serif" font-size="12">0.666</text>
+<line x1="100" y1="362.00" x2="1240" y2="362.00" stroke="#dddddd"/>
+<text x="90" y="367.00" text-anchor="end" font-family="sans-serif" font-size="12">1.33</text>
+<line x1="100" y1="268.00" x2="1240" y2="268.00" stroke="#dddddd"/>
+<text x="90" y="273.00" text-anchor="end" font-family="sans-serif" font-size="12">2</text>
+<line x1="100" y1="174.00" x2="1240" y2="174.00" stroke="#dddddd"/>
+<text x="90" y="179.00" text-anchor="end" font-family="sans-serif" font-size="12">2.67</text>
+<line x1="100" y1="80.00" x2="1240" y2="80.00" stroke="#dddddd"/>
+<text x="90" y="85.00" text-anchor="end" font-family="sans-serif" font-size="12">3.33</text>
+<rect x="130.40" y="521.26" width="56.85" height="28.74" fill="#4C78A8"/>
+<rect x="195.00" y="522.26" width="56.85" height="27.74" fill="#F58518"/>
+<text x="195.00" y="574" text-anchor="end" transform="rotate(-42 195.00 574)" font-family="sans-serif" font-size="13">2 clients, 10 platforms</text>
+<rect x="320.40" y="442.44" width="56.85" height="107.56" fill="#4C78A8"/>
+<rect x="385.00" y="457.12" width="56.85" height="92.88" fill="#F58518"/>
+<text x="385.00" y="574" text-anchor="end" transform="rotate(-42 385.00 574)" font-family="sans-serif" font-size="13">2 clients, 100 platforms</text>
+<rect x="510.40" y="156.04" width="56.85" height="393.96" fill="#4C78A8"/>
+<rect x="575.00" y="179.02" width="56.85" height="370.98" fill="#F58518"/>
+<text x="575.00" y="574" text-anchor="end" transform="rotate(-42 575.00 574)" font-family="sans-serif" font-size="13">2 clients, 500 platforms</text>
+<rect x="700.40" y="514.78" width="56.85" height="35.22" fill="#4C78A8"/>
+<rect x="765.00" y="516.51" width="56.85" height="33.49" fill="#F58518"/>
+<text x="765.00" y="574" text-anchor="end" transform="rotate(-42 765.00 574)" font-family="sans-serif" font-size="13">4 clients, 10 platforms</text>
+<rect x="890.40" y="444.56" width="56.85" height="105.44" fill="#4C78A8"/>
+<rect x="955.00" y="451.41" width="56.85" height="98.59" fill="#F58518"/>
+<text x="955.00" y="574" text-anchor="end" transform="rotate(-42 955.00 574)" font-family="sans-serif" font-size="13">4 clients, 100 platforms</text>
+<rect x="1080.40" y="130.36" width="56.85" height="419.64" fill="#4C78A8"/>
+<rect x="1145.00" y="164.95" width="56.85" height="385.05" fill="#F58518"/>
+<text x="1145.00" y="574" text-anchor="end" transform="rotate(-42 1145.00 574)" font-family="sans-serif" font-size="13">4 clients, 500 platforms</text>
+<rect x="100" y="666" width="18" height="18" fill="#4C78A8"/>
+<text x="125" y="680" font-family="sans-serif" font-size="14">text alone</text>
+<rect x="250" y="666" width="18" height="18" fill="#F58518"/>
+<text x="275" y="680" font-family="sans-serif" font-size="14">text mixed</text>
+</svg>

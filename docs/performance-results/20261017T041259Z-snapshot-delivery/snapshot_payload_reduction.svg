@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700">
+<rect width="100%" height="100%" fill="white"/>
+<text x="640.0" y="36" text-anchor="middle" font-family="sans-serif" font-size="24" font-weight="bold">Property-delta payload reduction</text>
+<text x="24" y="315.0" text-anchor="middle" transform="rotate(-90 24 315.0)" font-family="sans-serif" font-size="15">reduction (%)</text>
+<line x1="100" y1="550.00" x2="1240" y2="550.00" stroke="#dddddd"/>
+<text x="90" y="555.00" text-anchor="end" font-family="sans-serif" font-size="12">0</text>
+<line x1="100" y1="456.00" x2="1240" y2="456.00" stroke="#dddddd"/>
+<text x="90" y="461.00" text-anchor="end" font-family="sans-serif" font-size="12">16.5</text>
+<line x1="100" y1="362.00" x2="1240" y2="362.00" stroke="#dddddd"/>
+<text x="90" y="367.00" text-anchor="end" font-family="sans-serif" font-size="12">33</text>
+<line x1="100" y1="268.00" x2="1240" y2="268.00" stroke="#dddddd"/>
+<text x="90" y="273.00" text-anchor="end" font-family="sans-serif" font-size="12">49.5</text>
+<line x1="100" y1="174.00" x2="1240" y2="174.00" stroke="#dddddd"/>
+<text x="90" y="179.00" text-anchor="end" font-family="sans-serif" font-size="12">66</text>
+<line x1="100" y1="80.00" x2="1240" y2="80.00" stroke="#dddddd"/>
+<text x="90" y="85.00" text-anchor="end" font-family="sans-serif" font-size="12">82.6</text>
+<rect x="110.13" y="399.83" width="37.90" height="150.17" fill="#54A24B"/>
+<text x="131.67" y="574" text-anchor="end" transform="rotate(-42 131.67 574)" font-family="sans-serif" font-size="13">1c 10p 0B</text>
+<rect x="173.47" y="297.20" width="37.90" height="252.80" fill="#54A24B"/>
+<text x="195.00" y="574" text-anchor="end" transform="rotate(-42 195.00 574)" font-family="sans-serif" font-size="13">1c 10p 512B</text>
+<rect x="236.80" y="260.94" width="37.90" height="289.06" fill="#54A24B"/>
+<text x="258.33" y="574" text-anchor="end" transform="rotate(-42 258.33 574)" font-family="sans-serif" font-size="13">1c 100p 0B</text>
+<rect x="300.13" y="262.47" width="37.90" height="287.53" fill="#54A24B"/>
+<text x="321.67" y="574" text-anchor="end" transform="rotate(-42 321.67 574)" font-family="sans-serif" font-size="13">1c 100p 512B</text>
+<rect x="363.47" y="241.71" width="37.90" height="308.29" fill="#54A24B"/>
+<text x="385.00" y="574" text-anchor="end" transform="rotate(-42 385.00 574)" font-family="sans-serif" font-size="13">1c 500p 0B</text>
+<rect x="426.80" y="243.96" width="37.90" height="306.04" fill="#54A24B"/>
+<text x="448.33" y="574" text-anchor="end" transform="rotate(-42 448.33 574)" font-family="sans-serif" font-size="13">1c 500p 512B</text>
+<rect x="490.13" y="384.44" width="37.90" height="165.56" fill="#54A24B"/>
+<text x="511.67" y="574" text-anchor="end" transform="rotate(-42 511.67 574)" font-family="sans-serif" font-size="13">2c 10p 0B</text>
+<rect x="553.47" y="209.80" width="37.90" height="340.20" fill="#54A24B"/>
+<text x="575.00" y="574" text-anchor="end" transform="rotate(-42 575.00 574)" font-family="sans-serif" font-size="13">2c 10p 512B</text>
+<rect x="616.80" y="260.36" width="37.90" height="289.64" fill="#54A24B"/>
+<text x="638.33" y="574" text-anchor="end" transform="rotate(-42 638.33 574)" font-family="sans-serif" font-size="13">2c 100p 0B</text>
+<rect x="680.13" y="222.96" width="37.90" height="327.04" fill="#54A24B"/>
+<text x="701.67" y="574" text-anchor="end" transform="rotate(-42 701.67 574)" font-family="sans-serif" font-size="13">2c 100p 512B</text>
+<rect x="743.47" y="241.77" width="37.90" height="308.23" fill="#54A24B"/>
+<text x="765.00" y="574" text-anchor="end" transform="rotate(-42 765.00 574)" font-family="sans-serif" font-size="13">2c 500p 0B</text>
+<rect x="806.80" y="232.38" width="37.90" height="317.62" fill="#54A24B"/>
+<text x="828.33" y="574" text-anchor="end" transform="rotate(-42 828.33 574)" font-family="sans-serif" font-size="13">2c 500p 512B</text>
+<rect x="870.13" y="359.12" width="37.90" height="190.88" fill="#54A24B"/>
+<text x="891.67" y="574" text-anchor="end" transform="rotate(-42 891.67 574)" font-family="sans-serif" font-size="13">4c 10p 0B</text>
+<rect x="933.47" y="130.36" width="37.90" height="419.64" fill="#54A24B"/>
+<text x="955.00" y="574" text-anchor="end" transform="rotate(-42 955.00 574)" font-family="sans-serif" font-size="13">4c 10p 512B</text>
+<rect x="996.80" y="258.65" width="37.90" height="291.35" fill="#54A24B"/>
+<text x="1018.33" y="574" text-anchor="end" transform="rotate(-42 1018.33 574)" font-family="sans-serif" font-size="13">4c 100p 0B</text>
+<rect x="1060.13" y="170.62" width="37.90" height="379.38" fill="#54A24B"/>
+<text x="1081.67" y="574" text-anchor="end" transform="rotate(-42 1081.67 574)" font-family="sans-serif" font-size="13">4c 100p 512B</text>
+<rect x="1123.47" y="241.55" width="37.90" height="308.45" fill="#54A24B"/>
+<text x="1145.00" y="574" text-anchor="end" transform="rotate(-42 1145.00 574)" font-family="sans-serif" font-size="13">4c 500p 0B</text>
+<rect x="1186.80" y="212.13" width="37.90" height="337.87" fill="#54A24B"/>
+<text x="1208.33" y="574" text-anchor="end" transform="rotate(-42 1208.33 574)" font-family="sans-serif" font-size="13">4c 500p 512B</text>
+<rect x="100" y="666" width="18" height="18" fill="#54A24B"/>
+<text x="125" y="680" font-family="sans-serif" font-size="14">delta reduction</text>
+</svg>

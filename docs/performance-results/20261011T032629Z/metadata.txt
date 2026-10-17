@@ -1,0 +1,20 @@
+collected_utc=20261011T032629Z
+git_commit=a5e924bf93b3e20719e6e418bd806b67e8be73e7
+git_status_begin
+?? benchmarks/analyze_network_performance.py
+?? benchmarks/collect_network_performance.sh
+?? build-release/
+git_status_end
+build_type=Release
+benchmark=/home/harsha/Documents/ncsu/sem 3/581/shared-engine/build-release/network-performance-benchmark
+matrix=formats(text,binary);clients(1,2,4);platforms(10,100,500);repetitions(5)
+warmup_iterations_per_client=100
+measured_iterations_per_client=1000
+os=Linux 7.1.1-76070101-generic x86_64 GNU/Linux
+cpu_count=16
+architecture=x86_64
+cpu_model=12th Gen Intel(R) Core(TM) i7-12650H
+cmake=cmake version 3.22.1
+compiler=c++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+load_before=3.89 2.56 2.16 1/2291 341893
+load_after=5.15 3.27 2.45 3/2290 343703

@@ -1,13 +1,40 @@
 #pragma once
 
+#include "NetworkDataFormat.hpp"
 #include "NetworkProtocol.hpp"
+#include "NetworkSnapshotStrategy.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
 class TimeSource;
 
 namespace Network {
+
+struct TransportTelemetry {
+    std::uint64_t messagesSent = 0;
+    std::uint64_t messagesReceived = 0;
+    std::uint64_t framesSent = 0;
+    std::uint64_t framesReceived = 0;
+    // Sum of application payload bytes in the ZeroMQ frames. Transport
+    // framing and TCP/IP overhead are deliberately not estimated here.
+    std::uint64_t payloadBytesSent = 0;
+    std::uint64_t payloadBytesReceived = 0;
+};
+
+struct SnapshotTelemetry {
+    std::uint64_t fullSnapshotsReceived = 0;
+    std::uint64_t deltaSnapshotsReceived = 0;
+    std::uint64_t resyncRequestsSent = 0;
+    std::uint64_t baselineMismatches = 0;
+    std::uint64_t playerAdds = 0;
+    std::uint64_t playerRemoves = 0;
+    std::uint64_t playerPatches = 0;
+    std::uint64_t platformAdds = 0;
+    std::uint64_t platformRemoves = 0;
+    std::uint64_t platformPatches = 0;
+};
 
 // Non-blocking REQ client. Games simulate their own character and submit its
 // position; snapshots contain the latest positions stored by the server.
@@ -18,10 +45,14 @@ namespace Network {
 // handshake socket is also the session socket (single-REP tests / demos).
 class NetworkClient {
 public:
-    explicit NetworkClient(std::string endpoint = "tcp://127.0.0.1:5555");
+    explicit NetworkClient(std::string endpoint = "tcp://127.0.0.1:5555",
+                           Net::DataFormat format = Net::DataFormat::TextMultipart,
+                           Net::SnapshotStrategy strategy = Net::SnapshotStrategy::FullSnapshot);
     // The clock must count monotonic nanoseconds and outlive this client.
     // Use unpaused real time in games so connection recovery keeps running.
-    NetworkClient(const TimeSource& clock, std::string endpoint = "tcp://127.0.0.1:5555");
+    NetworkClient(const TimeSource& clock, std::string endpoint = "tcp://127.0.0.1:5555",
+                  Net::DataFormat format = Net::DataFormat::TextMultipart,
+                  Net::SnapshotStrategy strategy = Net::SnapshotStrategy::FullSnapshot);
     ~NetworkClient();
 
     NetworkClient(const NetworkClient&) = delete;
@@ -44,6 +75,11 @@ public:
     // server stores it, and every other client reads it back in
     // WorldSnapshot::players. Format and meaning belong to the game.
     void submitPosition(float x, float y, const std::string& data = {});
+
+    // Ask the next property-delta POSITION request to request a complete
+    // snapshot. This is useful after an application-level reset and for
+    // explicitly exercising recovery; it has no effect in full-snapshot mode.
+    void requestFullSnapshot();
     void leave();
 
     ConnectionState state() const;
@@ -54,6 +90,10 @@ public:
     PlayerId playerId() const;
     const WorldSnapshot& snapshot() const;
     const std::string& error() const;
+    // Cumulative successful sends and completed receives over this client's
+    // lifetime, including JOIN/LEAVE and reconnect traffic.
+    TransportTelemetry telemetry() const;
+    SnapshotTelemetry snapshotTelemetry() const;
 
 private:
     struct Impl;

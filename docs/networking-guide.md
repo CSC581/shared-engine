@@ -268,6 +268,21 @@ config.serverEndpoint = "tcp://127.0.0.1:5555";
 auto session = Multiplayer::Session::open(config, engine.realTime());
 ```
 
+For a binary client-server session, select it explicitly before `open()`:
+
+```cpp
+config.mode = Multiplayer::Mode::ClientServer;
+config.clientServerDataFormat = Net::DataFormat::Binary;
+config.clientServerSnapshotStrategy = Net::SnapshotStrategy::PropertyDelta; // optional
+```
+
+Multipart text and full snapshots remain the defaults. Property deltas require
+binary client-server mode. A complete welcome snapshot establishes the
+baseline; subsequent replies contain changed fields and membership. The client
+still exposes a complete `WorldSnapshot`, and requests a complete resync when
+its acknowledged baseline does not match the host. Binary and property deltas
+are rejected in peer-to-peer mode.
+
 Pass `engine.realTime()`, never `engine.gameTime()`. A session running on a
 pausable clock could never reconnect, and could never report the unpause.
 
@@ -440,3 +455,176 @@ Then start two peer-to-peer players in separate terminals:
 Both windows should show the other player and the same moving platforms. To
 test a listen-server instead, stop `network-server`, add `--host` to the first
 peer command, and run the second peer command unchanged.
+
+---
+
+## Performance benchmark methodology
+
+`network-performance-benchmark` compares multipart text with one-frame binary
+through the production stack: `NetworkClient`, `NetworkServerHost`, ZeroMQ,
+the normal codecs, one host worker per client, and server-owned `PathMover`
+platforms. It is headless and does not link SDL.
+
+The default command runs 90 experiments: both formats, 1/2/4 concurrent
+clients, 10/100/500 moving platforms, five repetitions, 100 warm-up round
+trips and 1,000 measured round trips per client. Text and binary trials for a
+cell run next to each other within each repetition so format is not
+systematically confounded with machine drift or thermal state.
+
+```bash
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target network-performance-benchmark -j 4
+./build-release/network-performance-benchmark \
+  --runs build-release/runs.csv \
+  --latency build-release/latency_samples.csv
+```
+
+Each client has its own thread. Before timing, every client connects, waits for
+the complete player/platform scene and finishes its warm-up. The main thread
+then captures server traffic counters and releases every client through one
+measurement gate. The interval ends when the last measured reply arrives;
+JOIN, startup, scene stabilization, warm-up, LEAVE and shutdown are excluded.
+Throughput is aggregate completed round trips divided by that wall time. RTT
+is sampled around every individual position request and snapshot reply.
+
+A run fails on a timeout or disconnect, a missing reply, a wrong player or
+platform count, a client message-count mismatch, binary traffic with other
+than one frame per message, or a per-player server traffic delta other than
+the measured iteration count. Payload-byte counters sum ZeroMQ frame contents
+and do not estimate transport framing or TCP/IP overhead.
+
+Quick mode keeps the complete 18-cell matrix but uses one repetition, five
+warm-up iterations and twenty measured iterations:
+
+```bash
+./build/network-performance-benchmark --quick \
+  --runs /tmp/network-performance-quick-runs.csv \
+  --latency /tmp/network-performance-quick-latency.csv
+```
+
+CTest registers this as `network-performance-benchmark-quick`. It validates
+the harness, not performance. Canonical evidence must come from the default
+matrix in a Release build on an otherwise idle machine.
+
+`--snapshot-delivery` is a separate, fixed-rate experiment. It compares
+binary-full and binary property-delta delivery while holding the offered load
+at 60 requests per second per client. Its matrix adds 0- and 512-byte player
+data to the same 1/2/4-client and 10/100/500-platform sizes. Every reply checks
+the reconstructed roster, platform count and submitting player's exact pose
+and opaque data. Snapshot telemetry proves which response kind was applied.
+
+```bash
+./build/network-performance-benchmark --quick --snapshot-delivery \
+  --runs /tmp/snapshot-runs.csv --latency /tmp/snapshot-latency.csv
+./benchmarks/collect_snapshot_delivery.sh
+```
+
+The collector runs the five-repetition Release matrix, validates it with
+`analyze_snapshot_delivery.py`, and then runs a shorter, separate recovery
+matrix using `--resync-every 30`. Stale-ack and rejoin recovery remain covered
+by deterministic host integration tests instead of being mixed into timing.
+`baseline_bytes` is the encoded full-snapshot size per client, an explicit
+proxy rather than allocator-resident memory. Payload bytes continue to exclude
+ZeroMQ and TCP/IP framing.
+
+The 2026-10-17 Release collection validated all 180 steady-state runs and
+420,000 RTT samples. Property deltas reduced encoded payload by 26.4% to 73.7%
+and every cell sustained approximately 60 updates per client per second. Mean
+RTT was 1.04x to 2.15x the corresponding full-snapshot RTT. The worst relative
+case remained 1.729 ms in absolute terms. The separate recovery run completed
+36 cells with 126 requested full resynchronizations and zero baseline
+mismatches. The decision and selected evidence are under
+`docs/performance-results/20261017T041259Z-snapshot-delivery/`: deltas remain
+opt-in and full snapshots remain the default.
+
+`runs.csv` contains one aggregate row per repetition. `latency_samples.csv`
+contains one nanosecond RTT per client iteration, keyed by run, format, cell,
+repetition, client and iteration, plus the format that client used
+(`client_format`). Phase 5 creates the timestamped result
+directory, validates these files, records metadata and generates summaries and
+graphs.
+
+### Canonical results
+
+The canonical Release collection from 2026-10-11 completed all 90 runs with
+no correctness failures and validated 210,000 RTT samples. Its reviewable
+summary, machine metadata and four SVG graphs are in
+`docs/performance-results/20261011T032629Z/`; the much larger raw run and RTT
+files remain under `build/performance-results/20261011T032629Z/`.
+
+On the recorded i7-12650H loopback run, binary reduced mean elapsed time in
+every matrix cell. The speedup ranged from 2.83x with four clients and ten
+platforms to 41.11x with one client and 500 platforms. Encoded payload per
+round trip improved as snapshots grew: the 500-platform cells were 23.4% to
+23.8% smaller. With four clients and only ten platforms, binary was 3.2%
+larger, showing that its large speed improvement in small scenes comes from
+using two frames per round trip instead of the text protocol's many multipart
+frames, rather than from guaranteed byte reduction.
+
+These values are a single-machine loopback baseline, not universal network
+performance claims. Payload counters measure ZeroMQ frame contents and omit
+transport framing and TCP/IP overhead; both formats still send identical full
+snapshots.
+
+### Mixed-format experiment
+
+The default matrix runs each format alone, so the two formats never share a
+server. `--mixed` asks whether they slow each other down when they do. It runs
+2 and 4 clients, 10/100/500 platforms and five repetitions, in three
+compositions per cell. These are all-text, all-binary, and mixed, where even
+client indexes use text and odd ones use binary. The three runs of a cell are
+adjacent within each repetition.
+
+```bash
+./build-release/network-performance-benchmark --mixed \
+  --runs build/performance-results/<ts>-mixed/runs.csv \
+  --latency build/performance-results/<ts>-mixed/latency_samples.csv
+python3 benchmarks/analyze_mixed_format.py build/performance-results/<ts>-mixed
+```
+
+For each format the analyzer compares the RTT of its clients in the mixed run
+("mixed") with the all-same-format run of the same total client count
+("alone"). It reports the mean of the per-run mean RTTs, their sample variance
+and the mixed/alone ratio, and writes `mixed_summary.csv` plus one SVG per
+format. CTest registers `network-performance-benchmark-mixed-quick` for the
+harness only.
+
+The 2026-10-13 Release collection on an i9-9880H MacBook loopback completed
+all 90 runs and is in `docs/performance-results/20261013T011546Z-mixed/`.
+Binary clients were not slowed by text clients. Their mixed/alone RTT ratio
+was 0.89 to 0.95 in five of six cells. The one ratio above 1.0 (1.05 with two
+clients and 500 platforms) is within one run-to-run standard deviation. Text
+clients were also slightly faster when mixed (0.86 to 0.97).
+
+Ratios below 1.0 do not mean mixing helps. A text client completes fewer
+requests per second than a binary client (1.4 to 12 times fewer here), so replacing binary
+neighbors with text neighbors lowers the total request rate the server
+sees. In a mixed run the binary clients also finish their iterations first,
+and the text clients then run with fewer competitors. The conclusion is only
+that a text client puts no extra burden on binary clients sharing its server.
+These absolute RTTs come from a different machine than the canonical results
+above and must not be compared with them.
+
+### Optional engine diagnostics
+
+The focused collision, component-update, frame-worker, codec, multiplayer-mode
+and snapshot-strategy benchmarks are diagnostic tools, not additional
+production network-format evidence.
+Their quick CTest entries verify that each harness runs; they do not enforce a
+performance threshold. Full Release matrices can be collected with:
+
+```bash
+./benchmarks/collect_engine_performance.sh
+```
+
+The collector checks the expected row counts, five repetitions per summary
+cell and finite summary values. These results are not canonical until they are
+collected on an idle machine, reviewed and deliberately selected as evidence.
+
+`snapshot-strategy-benchmark` is a feasibility test for the proposed
+full-state-versus-property-delta comparison. Full-state measurements use the
+production binary codec. The delta side models a specified packet size and
+times typed diff/replay work; it does not serialize packets or use ZeroMQ, so
+its CPU timings must not be presented as an end-to-end speedup. It starts from
+a full baseline, verifies every reconstructed state and reports steady-update
+payload savings for player-only, platform-only and all-moving traces.
