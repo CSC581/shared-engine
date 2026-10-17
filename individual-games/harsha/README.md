@@ -9,15 +9,16 @@ mode.
 
 | Input | Action |
 | --- | --- |
-| A / D or Left / Right | Walk (on the ground only) or aim while charging |
+| A / D or Left / Right | Walk on the ground, aim while charging, steer in the air |
 | Space (hold / release) | Charge jump / leap |
 | P | Pause / unpause this client's game time (movement and jumps are ignored while paused) |
 | 1 / 2 / 3 | 0.5× / 1× / 2× game time |
 | F1 | Toggle `Proportional` / `Constant` scale |
 | Esc | Quit |
 
-There is no air control: once a jump is released, only gravity, collisions,
-wind and a slingshot rail's throw change its path.
+Holding A / D in the air sets your sideways speed to walking speed; letting go
+keeps whatever speed the jump had. Steering can change direction but never
+adds height.
 
 ## The tower
 
@@ -28,7 +29,7 @@ Six rooms, one screen each. The camera snaps to whichever room you are in.
 | 0 Tutorial | Stone ledges for short, medium and sideways charges; an amber mover for timing |
 | 1 Lift | Wide sandstone landing; the elevator is the only way up to the narrow moss ledges |
 | 2 Ice | Slippery ice ledges; land short of the top one, or slide off it, and the spike shelf below sends you back |
-| 3 Slingshot | The goal is high above the fast magenta rail and only a little to the left. Charge fully, aim nowhere, and release while the rail moves left: the rail throws you there. A normal jump cannot |
+| 3 Slingshot | The goal is high above the fast magenta rail and only a little to the left. Charge fully, aim nowhere, and release while the rail moves left: the rail throws you there. A straight-up jump steered left in mid-air also works, but the throw is the intended route |
 | 4 Orbit | Three violet wheels at 3:2:1 speeds, repeating every 8 s; land on a moving target |
 | 5 Summit | Narrow ledges in gusty wind (watch the streaks and the HUD arrow) up to the gold summit |
 
@@ -81,8 +82,8 @@ Online: other climbers are tinted animated ghost sprites, and all six moving
 platforms (mover, elevator, slingshot rail, three orbit wheels) are
 server-authored. Every client mirrors them into its own `World` through
 `NetworkWorldSync`, so carry and the slingshot throw work exactly as
-offline. Ice, wind and the throw are applied by each client to its own
-climber. Pause and scale only affect your local climb.
+offline. Ice, wind, air steering and the throw are applied by each client
+to its own climber. Pause and scale only affect your local climb.
 
 `./build/apex-network-server --rates` logs each climber's accepted
 POSITION/s once a second, so a client at 2x shows up at the server at twice

@@ -114,10 +114,14 @@ void ApexGame::handleInput(Engine& engine)
         isCharging_ = true;
         aimDirection_ = aim;
     } else if (!isCharging_ && isOnGround_) {
-        // Walking needs ground underfoot: no air control once a jump is
-        // released (design §3). The player worker turns this into speed,
-        // because how fast you get going depends on the surface.
+        // On the ground the player worker turns this into speed, because how
+        // fast you get going depends on the surface (ice).
         walkIntent_ = aim;
+    } else if (!isCharging_ && aim != 0.0F) {
+        // Air control (the user's choice over design §3's "none"): holding a
+        // direction mid-air sets sideways speed to walk speed. It cannot add
+        // height, which is what room 3's vertical slingshot relies on.
+        playerMotion_->velocityX = aim * walkSpeed;
     }
 
     // "Not held" rather than "just released": a release during a pause is
