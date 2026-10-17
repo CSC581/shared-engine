@@ -141,20 +141,22 @@ inline float startY()
     return worldHeight() - groundThickness - playerHeight;
 }
 
+// The four room-0 starting slots, on the ground. Shared with the server
+// (its spawn hints) so both sides agree; a client takes slot (id - 1) % 4.
+inline std::vector<Network::SpawnPoint> spawnSlots()
+{
+    std::vector<Network::SpawnPoint> slots;
+    for (int slot = 0; slot < 4; ++slot) {
+        // Clear of the low ledge on the left, so a straight jump never bonks.
+        slots.push_back({400.0F + 70.0F * static_cast<float>(slot), startY()});
+    }
+    return slots;
+}
+
 inline Network::ServerConfig makeServerConfig()
 {
     Network::ServerConfig config;
-    // Room-0 ground spawns (not the arena demo pads).
-    config.spawnPoints = {
-        {startX(), startY()},
-        {startX() + 40.0F, startY()},
-        {startX() - 40.0F, startY()},
-        {startX() + 80.0F, startY()},
-        {startX() - 80.0F, startY()},
-        {startX() + 120.0F, startY()},
-        {startX() - 120.0F, startY()},
-        {startX() + 160.0F, startY()},
-    };
+    config.spawnPoints = spawnSlots();
     for (const MoverSpec& spec : movers()) {
         config.platforms.push_back(spec.path);
     }

@@ -1,5 +1,7 @@
 #include "ApexLevel.hpp"
 
+#include <vector>
+
 namespace ApexLevel {
 
 Color colorFor(ApexPlatform::Kind kind)
@@ -78,6 +80,16 @@ GameObject& makeMover(World& world, const ApexNetwork::MoverSpec& spec)
     return platform;
 }
 
+GameObject& makeSpawnMarker(World& world, float x, float y, int room, int slot)
+{
+    GameObject& marker = world.create("trigger");
+    marker.add<Transform>(x, y, ApexNetwork::playerWidth, ApexNetwork::playerHeight);
+    marker.add<Collider>(Collider::Kind::Trigger, triggerLayer);
+    marker.add<SpawnMarker>(room, slot);
+    marker.setActive(true);
+    return marker;
+}
+
 GameObject& makeWindZone(World& world, float x, float y, float width, float height, float amplitude,
                          float period)
 {
@@ -145,6 +157,13 @@ struct Room {
     float width;
 };
 
+// The checkpoint for a room: a spawn marker centred on top of its first ledge.
+void checkpointOn(const Room& room, int index, float ledgeX, float ledgeTop, float ledgeWidth)
+{
+    const float x = ledgeX + (ledgeWidth - ApexNetwork::playerWidth) * 0.5F;
+    makeSpawnMarker(room.world, x, ledgeTop - ApexNetwork::playerHeight, index, 0);
+}
+
 // Room 0, the tutorial: three stone ledges that teach a short, a medium and a
 // sideways charge. The horizontal mover above them (movers(), id 1) teaches
 // timing.
@@ -153,6 +172,12 @@ void buildRoom0(const Room& room)
     makeStatic(room.world, 160.0F, room.top + 620.0F, 220.0F, platformThickness, Kind::Stone);
     makeStatic(room.world, 560.0F, room.top + 460.0F, 220.0F, platformThickness, Kind::Stone);
     makeStatic(room.world, 220.0F, room.top + 280.0F, 220.0F, platformThickness, Kind::Stone);
+
+    // The four starting slots on the ground.
+    const std::vector<Network::SpawnPoint> slots = ApexNetwork::spawnSlots();
+    for (int slot = 0; slot < static_cast<int>(slots.size()); ++slot) {
+        makeSpawnMarker(room.world, slots[slot].x, slots[slot].y, 0, slot);
+    }
 }
 
 // Room 1, the lift. The moss ledges sit too high above the sandstone to jump
@@ -166,6 +191,7 @@ void buildRoom1(const Room& room)
 
     // Landing from room 0's mover; wide and forgiving.
     makeStatic(room.world, 520.0F, room.top + 800.0F, 340.0F, platformThickness, Kind::Sandstone);
+    checkpointOn(room, 1, 520.0F, room.top + 800.0F, 340.0F);
 
     // Off the top of the lift, then up to the ledge below room 2.
     makeStatic(room.world, 380.0F, room.top + 260.0F, mossWidth, platformThickness, Kind::Moss);
@@ -178,6 +204,7 @@ void buildRoom1(const Room& room)
 void buildRoom2(const Room& room)
 {
     makeStatic(room.world, 260.0F, room.top + 760.0F, 260.0F, platformThickness, Kind::Ice);
+    checkpointOn(room, 2, 260.0F, room.top + 760.0F, 260.0F);
     makeStatic(room.world, 560.0F, room.top + 480.0F, 260.0F, platformThickness, Kind::Ice);
     makeStatic(room.world, 60.0F, room.top + 180.0F, 220.0F, platformThickness, Kind::Ice);
 
@@ -196,6 +223,7 @@ void buildRoom2(const Room& room)
 void buildRoom3(const Room& room)
 {
     makeStatic(room.world, 110.0F, room.top + 200.0F, 170.0F, platformThickness, Kind::Stone);
+    checkpointOn(room, 3, 110.0F, room.top + 200.0F, 170.0F);
 }
 
 // Room 4, the orbit. A stone hub, then three violet wheels (movers(), ids
@@ -205,6 +233,7 @@ void buildRoom3(const Room& room)
 void buildRoom4(const Room& room)
 {
     makeStatic(room.world, 300.0F, room.top + 880.0F, 180.0F, platformThickness, Kind::Stone);
+    checkpointOn(room, 4, 300.0F, room.top + 880.0F, 180.0F);
 }
 
 // Room 5, the summit. Narrow stone ledges zig-zag up to the gold summit at
@@ -217,6 +246,7 @@ void buildRoom5(const Room& room)
     // First ledge far left, clear of wheel 6's path: a ledge above the wheel
     // can only be hit from underneath.
     makeStatic(room.world, 100.0F, room.top + 780.0F, 160.0F, platformThickness, Kind::Stone);
+    checkpointOn(room, 5, 100.0F, room.top + 780.0F, 160.0F);
     makeStatic(room.world, 560.0F, room.top + 520.0F, ledgeWidth, platformThickness, Kind::Stone);
     makeStatic(room.world, 140.0F, room.top + 290.0F, ledgeWidth, platformThickness, Kind::Stone);
 

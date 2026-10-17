@@ -16,8 +16,6 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
       viewHeight_(static_cast<float>(engine.getHeight())),
       worldWidth_(viewWidth_),
       worldHeight_(viewHeight_ * static_cast<float>(roomCount)),
-      startX_(worldWidth_ * 0.5F - playerWidth * 0.5F),
-      startY_(worldHeight_ - 140.0F - playerHeight),
       currentScaleMode_(engine.getScaleMode()),
       // Disjoint tags, so the two workers never touch the same object.
       workers_({
@@ -27,7 +25,7 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
 {
     ApexLevel::buildLevel(world_, worldWidth_, worldHeight_, viewHeight_, session_ != nullptr);
 
-    player_ = &ApexLevel::makePlayer(world_, startX_, startY_, playerWidth, playerHeight, gravity);
+    player_ = &ApexLevel::makePlayer(world_, 0.0F, 0.0F, playerWidth, playerHeight, gravity);
     playerTransform_ = player_->get<Transform>();
     playerMotion_ = player_->get<Motion>();
     playerGravity_ = player_->get<Gravity>();
@@ -38,7 +36,11 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
     playerCollider.onCollide = [this](GameObject&, GameObject& other) { onPlayerCollide(other); };
     playerCollider.onEnter = [this](GameObject&, GameObject& other) { onPlayerEnter(other); };
     playerCollider.onExit = [this](GameObject&, GameObject& other) { onPlayerExit(other); };
-    previousPlayerBottom_ = startY_ + playerHeight;
+
+    // Start on room 0's first slot (online, the real slot follows once the
+    // server assigns an id).
+    checkpoint_ = findSpawnMarker(0, 0);
+    placeAt(*checkpoint_);
 
     // Online: other climbers and server-owned platforms become objects in the
     // same World, created, moved and removed from session snapshots.
@@ -52,8 +54,6 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
                 return ApexLevel::makeServerPlatform(world, platform.id);
             });
     }
-
-    camera_ = worldHeight_ - viewHeight_;
 
     if (!playerAnim_.load(engine.getRenderer())) {
         std::cerr << "Apex Ascent: player sprite load failed; falling back to rect draw "
@@ -200,6 +200,19 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
             sync_->apply(*session_);
         }
 
+        // Take this climber's own starting slot once the server has numbered
+        // it, unless it has already started climbing.
+        const Multiplayer::PlayerId id = session_->localPlayerId();
+        if (!onlineSlotPlaced_ && id != 0) {
+            onlineSlotPlaced_ = true;
+            if (checkpointRoom_ == 0 && highestRoomReached_ == 0 && isOnGround_ && !isCharging_) {
+                if (const Transform* slot = findSpawnMarker(0, static_cast<int>((id - 1) % 4))) {
+                    checkpoint_ = slot;
+                    placeAt(*slot);
+                }
+            }
+        }
+
         char title[128];
         if (gameTimePaused_) {
             std::snprintf(title, sizeof(title), "Apex Ascent (online) | PAUSED | #%u",
@@ -325,6 +338,15 @@ void ApexGame::handleCollisions()
 // pushed it up onto it (the old "pushY < 0" landing case).
 void ApexGame::onPlayerCollide(GameObject& other)
 {
+    // Standing in a higher room's checkpoint marker makes it the respawn
+    // point. Grounded only: jumping through one on the way past does not count.
+    if (const SpawnMarker* marker = other.get<SpawnMarker>()) {
+        if (isOnGround_ && marker->room > checkpointRoom_) {
+            checkpointRoom_ = marker->room;
+            checkpoint_ = other.get<Transform>();
+        }
+        return;
+    }
     if (other.tag() != "platform") {
         return;
     }
@@ -334,6 +356,33 @@ void ApexGame::onPlayerCollide(GameObject& other)
         isOnGround_ = true;
         groundedPlatformId_ = other.id();
     }
+}
+
+void ApexGame::placeAt(const Transform& marker)
+{
+    playerTransform_->x = marker.x;
+    playerTransform_->y = marker.y;
+    playerMotion_->velocityX = 0.0F;
+    playerMotion_->velocityY = 0.0F;
+    previousPlayerBottom_ = marker.y + playerHeight;
+    isCharging_ = false;
+    chargePower_ = 0.0F;
+    // The landing pass grounds the climber on the next frame: its feet are on
+    // the ledge top and previousPlayerBottom_ says it came from there.
+    isOnGround_ = false;
+    groundedPlatformId_ = 0;
+    snapCamera();
+}
+
+const Transform* ApexGame::findSpawnMarker(int room, int slot)
+{
+    for (GameObject* object : world_.findAllWith<SpawnMarker>()) {
+        const SpawnMarker& marker = *object->get<SpawnMarker>();
+        if (marker.room == room && marker.slot == slot) {
+            return object->get<Transform>();
+        }
+    }
+    return nullptr;
 }
 
 // Player's onEnter / onExit: hidden trigger zones the climber moves through.
@@ -351,18 +400,21 @@ void ApexGame::onPlayerExit(GameObject& other)
     }
 }
 
+float ApexGame::cameraTarget() const
+{
+    const float target = playerTransform_->y + playerHeight * 0.5F - viewHeight_ * 0.5F;
+    return std::fmin(std::fmax(target, 0.0F), worldHeight_ - viewHeight_);
+}
+
+void ApexGame::snapCamera()
+{
+    camera_ = cameraTarget();
+}
+
 // Smooth vertical follow, clamped to the world.
 void ApexGame::updateCamera(float deltaTime)
 {
-    const float target = playerTransform_->y + playerHeight * 0.5F - viewHeight_ * 0.5F;
-    camera_ += (target - camera_) * (1.0F - std::pow(0.001F, deltaTime));
-
-    if (camera_ < 0.0F) {
-        camera_ = 0.0F;
-    }
-    if (camera_ > worldHeight_ - viewHeight_) {
-        camera_ = worldHeight_ - viewHeight_;
-    }
+    camera_ += (cameraTarget() - camera_) * (1.0F - std::pow(0.001F, deltaTime));
 }
 
 // Player worker thread: touches only the player and its charge, never a

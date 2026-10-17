@@ -40,6 +40,20 @@ public:
     float friction;
 };
 
+// A hidden spawn point. Room 0 holds the four starting slots (slot 0-3); each
+// higher room holds one checkpoint (slot 0) on its first ledge. Its Transform
+// is where a climber stands when spawned there.
+class SpawnMarker : public Component {
+public:
+    SpawnMarker(int room, int slot)
+        : room(room), slot(slot)
+    {
+    }
+
+    int room;
+    int slot;
+};
+
 // A hidden gusty region (a trigger with no Renderable). While a climber is
 // airborne inside it, sideways speed gains amplitude * sin(2*pi*t / period)
 // per second, t being game time: gusts swing left and right, freeze on pause

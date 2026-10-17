@@ -150,9 +150,9 @@ void ApexGame::render(SDL_Renderer* renderer) const
     }
 
     char hud[128];
-    std::snprintf(hud, sizeof(hud), "Room: %d / %d   (highest: %d)",
+    std::snprintf(hud, sizeof(hud), "Room: %d / %d   (highest: %d)   Checkpoint: room %d",
                   static_cast<int>((worldHeight_ - playerTransform_->y) / viewHeight_) + 1,
-                  roomCount, highestRoomReached_ + 1);
+                  roomCount, highestRoomReached_ + 1, checkpointRoom_ + 1);
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     SDL_RenderDebugText(renderer, 20.0F, 20.0F, hud);
 

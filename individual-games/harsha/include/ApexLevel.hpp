@@ -31,6 +31,10 @@ ApexPlatform::Kind kindFor(ApexNetwork::MoverStyle style);
 // owns movers). Carrier lets a climber standing on it be carried.
 GameObject& makeMover(World& world, const ApexNetwork::MoverSpec& spec);
 
+// A hidden spawn point: a trigger the size of a climber, standing where a
+// climber spawns. Standing in it (grounded) activates a checkpoint.
+GameObject& makeSpawnMarker(World& world, float x, float y, int room, int slot);
+
 // A hidden wind region: trigger collider, no Renderable.
 GameObject& makeWindZone(World& world, float x, float y, float width, float height, float amplitude,
                          float period);

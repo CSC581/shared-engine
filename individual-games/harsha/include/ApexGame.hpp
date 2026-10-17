@@ -51,9 +51,14 @@ private:
     void handleCollisions();
     void onPlayerCollide(GameObject& other);
     void applySlingshotFling();
+    // Puts the climber standing at a spawn marker, at rest, camera snapped.
+    void placeAt(const Transform& marker);
+    const Transform* findSpawnMarker(int room, int slot);
     void onPlayerEnter(GameObject& other);
     void onPlayerExit(GameObject& other);
     void updateCamera(float deltaTime);
+    float cameraTarget() const;
+    void snapCamera();
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
 
@@ -99,8 +104,13 @@ private:
     float worldWidth_;
     float worldHeight_;
 
-    float startX_;
-    float startY_;
+    // Where a death sends the climber: the marker of the highest room whose
+    // checkpoint ledge it has stood on (room 0: its starting slot). Markers
+    // are never destroyed, so the pointer stays valid.
+    const Transform* checkpoint_ = nullptr;
+    int checkpointRoom_ = 0;
+    // Online: moved to slot (id - 1) % 4 once, when the server assigns an id.
+    bool onlineSlotPlaced_ = false;
 
     // Vertical scroll: world Y minus camera_ is screen Y.
     float camera_ = 0.0F;
