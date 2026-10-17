@@ -3,9 +3,10 @@
 #include "NetworkServer.hpp"
 
 #include <cstdint>
+#include <vector>
 
 // Shared Apex tower coordinates for the headless server and the game client.
-// Keep the moving-platform path here so online poses cannot drift from offline.
+// Moving platforms live in movers() so online poses cannot drift from offline.
 namespace ApexNetwork {
 
 constexpr int designWidth = 900;
@@ -17,14 +18,6 @@ constexpr float platformThickness = 60.0F;
 constexpr float playerWidth = 50.0F;
 constexpr float playerHeight = 70.0F;
 
-constexpr float movingPlatformWidth = 150.0F;
-constexpr float movingPlatformSpeed = 150.0F;
-constexpr float movingPointAX = 300.0F;
-constexpr float movingPointBX = 550.0F;
-// Offset from room-0 top (same as buildLevel in apexAscent.cpp).
-constexpr float movingPlatformRoomOffsetY = 150.0F;
-constexpr std::uint32_t movingPlatformId = 1;
-
 inline float worldHeight()
 {
     return static_cast<float>(designHeight * roomCount);
@@ -35,9 +28,51 @@ inline float room0Top()
     return worldHeight() - static_cast<float>(designHeight);
 }
 
-inline float movingPlatformY()
+// How a mover behaves beyond following its path. ApexLevel maps it to an
+// ApexPlatform::Kind; kept separate so the headless server, which has no
+// client object model, can include this header.
+enum class MoverStyle { Plain, Slingshot, Orbit };
+
+struct MoverSpec {
+    MoverStyle style;
+    // The engine's own path type: the server runs exactly this, and the
+    // offline level builds its PathMover from it.
+    Network::PlatformPath path;
+};
+
+// Every moving platform in the tower. The single list read by the offline
+// level, the server config and the online platform factory.
+inline const std::vector<MoverSpec>& movers()
 {
-    return room0Top() + movingPlatformRoomOffsetY;
+    static const std::vector<MoverSpec> list = [] {
+        std::vector<MoverSpec> specs;
+
+        // Room 0: amber horizontal mover above the hand-placed ledges.
+        Network::PlatformPath horizontal;
+        horizontal.id = 1;
+        horizontal.startX = 300.0F;
+        horizontal.startY = room0Top() + 150.0F;
+        horizontal.endX = 550.0F;
+        horizontal.endY = horizontal.startY;
+        horizontal.speed = 150.0F;
+        horizontal.width = 150.0F;
+        horizontal.height = platformThickness;
+        specs.push_back({MoverStyle::Plain, horizontal});
+
+        return specs;
+    }();
+    return list;
+}
+
+// The mover with this network id, or nullptr.
+inline const MoverSpec* findMover(std::uint32_t id)
+{
+    for (const MoverSpec& spec : movers()) {
+        if (spec.path.id == id) {
+            return &spec;
+        }
+    }
+    return nullptr;
 }
 
 inline float startX()
@@ -64,10 +99,9 @@ inline Network::ServerConfig makeServerConfig()
         {startX() - 120.0F, startY()},
         {startX() + 160.0F, startY()},
     };
-    config.platforms = {
-        {movingPlatformId, movingPointAX, movingPlatformY(), movingPointBX, movingPlatformY(),
-         movingPlatformSpeed, movingPlatformWidth, platformThickness},
-    };
+    for (const MoverSpec& spec : movers()) {
+        config.platforms.push_back(spec.path);
+    }
     return config;
 }
 

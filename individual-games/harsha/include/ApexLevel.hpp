@@ -4,6 +4,7 @@
 #pragma once
 
 #include "ApexComponents.hpp"
+#include "ApexNetworkConfig.hpp"
 #include "Color.hpp"
 #include "Components.hpp"
 #include "World.hpp"
@@ -23,10 +24,12 @@ Color colorFor(ApexPlatform::Kind kind);
 GameObject& makeStatic(World& world, float x, float y, float width, float height,
                        ApexPlatform::Kind kind);
 
-// A platform that rides a ping-pong path on its own (offline only; online the
-// server owns movers). Carrier lets a climber standing on it be carried.
-GameObject& makeMover(World& world, PathMover::Linear path, float speed, float width,
-                      float height);
+// The platform kind a mover style stands for.
+ApexPlatform::Kind kindFor(ApexNetwork::MoverStyle style);
+
+// A platform that rides its path on its own (offline only; online the server
+// owns movers). Carrier lets a climber standing on it be carried.
+GameObject& makeMover(World& world, const ApexNetwork::MoverSpec& spec);
 
 // The local climber. No Renderable: ApexGame draws the animated sprite itself.
 GameObject& makePlayer(World& world, float x, float y, float width, float height, float gravity);
@@ -39,7 +42,7 @@ GameObject& makePlayer(World& world, float x, float y, float width, float height
 GameObject& makeRemotePlayer(World& world, float width, float height);
 // A server-owned mover. No Motion: its position belongs to the network, and
 // without Motion the local collision pass never pushes it.
-GameObject& makeServerPlatform(World& world);
+GameObject& makeServerPlatform(World& world, std::uint32_t id);
 
 // The whole tower. Online, movers are left out: NetworkWorldSync creates them
 // from server snapshots instead.

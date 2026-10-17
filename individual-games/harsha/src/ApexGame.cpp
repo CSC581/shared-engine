@@ -44,8 +44,8 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
             [](World& world, const Multiplayer::Player&) -> GameObject& {
                 return ApexLevel::makeRemotePlayer(world, playerWidth, playerHeight);
             },
-            [](World& world, const Multiplayer::Platform&) -> GameObject& {
-                return ApexLevel::makeServerPlatform(world);
+            [](World& world, const Multiplayer::Platform& platform) -> GameObject& {
+                return ApexLevel::makeServerPlatform(world, platform.id);
             });
     }
 

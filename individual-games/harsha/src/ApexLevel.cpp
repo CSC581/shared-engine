@@ -1,7 +1,5 @@
 #include "ApexLevel.hpp"
 
-#include "ApexNetworkConfig.hpp"
-
 namespace ApexLevel {
 
 Color colorFor(ApexPlatform::Kind kind)
@@ -29,20 +27,39 @@ GameObject& makeStatic(World& world, float x, float y, float width, float height
     return platform;
 }
 
-GameObject& makeMover(World& world, PathMover::Linear path, float speed, float width,
-                      float height)
+ApexPlatform::Kind kindFor(ApexNetwork::MoverStyle style)
 {
-    constexpr auto kind = ApexPlatform::Kind::Mover;
+    switch (style) {
+    case ApexNetwork::MoverStyle::Slingshot:
+        return ApexPlatform::Kind::Slingshot;
+    case ApexNetwork::MoverStyle::Orbit:
+        return ApexPlatform::Kind::Orbit;
+    case ApexNetwork::MoverStyle::Plain:
+    default:
+        return ApexPlatform::Kind::Mover;
+    }
+}
+
+GameObject& makeMover(World& world, const ApexNetwork::MoverSpec& spec)
+{
+    const Network::PlatformPath& path = spec.path;
+    const ApexPlatform::Kind kind = kindFor(spec.style);
 
     GameObject& platform = world.create("platform");
-    platform.add<Transform>(path.startX, path.startY, width, height);
+    platform.add<Transform>(0.0F, 0.0F, path.width, path.height);
     platform.add<Collider>(Collider::Kind::Solid, platformLayer);
     platform.add<Renderable>(colorFor(kind));
     platform.add<ApexPlatform>(kind);
     platform.add<Surface>();
     // PathMover pulls in Motion, makes it kinematic and snaps onto the path
-    // start, so Carrier (added after) measures from the right place.
-    platform.add<PathMover>(path, speed);
+    // start, so Carrier (added after) measures from the right place. Same
+    // construction as NetworkServer, so offline and online paths match.
+    if (path.shape == Network::PlatformPath::Shape::Circular) {
+        platform.add<PathMover>(PathMover::Circular{path.centerX, path.centerY, path.radius}, path.speed);
+    } else {
+        platform.add<PathMover>(PathMover::Linear{path.startX, path.startY, path.endX, path.endY},
+                                path.speed);
+    }
     platform.add<Carrier>();
     platform.setActive(true);
     return platform;
@@ -66,9 +83,12 @@ GameObject& makeRemotePlayer(World& world, float width, float height)
     return remote;
 }
 
-GameObject& makeServerPlatform(World& world)
+GameObject& makeServerPlatform(World& world, std::uint32_t id)
 {
-    constexpr auto kind = ApexPlatform::Kind::Mover;
+    // Kind from the shared mover table; an id the table does not know is
+    // still a plain mover.
+    const ApexNetwork::MoverSpec* spec = ApexNetwork::findMover(id);
+    const ApexPlatform::Kind kind = spec != nullptr ? kindFor(spec->style) : ApexPlatform::Kind::Mover;
 
     GameObject& platform = world.create("platform");
     platform.add<Transform>();
@@ -102,12 +122,11 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
     makeStatic(world, 560.0F, room0Top + 460.0F, 220.0F, platformThickness, Kind::Stone);
     makeStatic(world, 220.0F, room0Top + 280.0F, 220.0F, platformThickness, Kind::Stone);
 
-    // Auto-moving platform (matches ApexNetwork::makeServerConfig for online).
+    // Moving platforms, from the table the server also runs.
     if (!online) {
-        const float y = ApexNetwork::movingPlatformY();
-        makeMover(world, {ApexNetwork::movingPointAX, y, ApexNetwork::movingPointBX, y},
-                  ApexNetwork::movingPlatformSpeed, ApexNetwork::movingPlatformWidth,
-                  platformThickness);
+        for (const ApexNetwork::MoverSpec& spec : ApexNetwork::movers()) {
+            makeMover(world, spec);
+        }
     }
 
     // TODO: replace generated staircase with hand-designed rooms later.
