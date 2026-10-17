@@ -101,13 +101,52 @@ GameObject& makeServerPlatform(World& world, std::uint32_t id)
     return platform;
 }
 
+namespace {
+
+using Kind = ApexPlatform::Kind;
+
+constexpr float wallThickness = 40.0F;
+constexpr float platformThickness = ApexNetwork::platformThickness;
+
+// One room's frame of reference: y offsets inside a room are measured from
+// its top, so a room can be laid out (and moved) on its own.
+struct Room {
+    World& world;
+    float top;
+    float width;
+};
+
+// Room 0, the tutorial: three stone ledges that teach a short, a medium and a
+// sideways charge. The horizontal mover above them (movers(), id 1) teaches
+// timing.
+void buildRoom0(const Room& room)
+{
+    makeStatic(room.world, 160.0F, room.top + 620.0F, 220.0F, platformThickness, Kind::Stone);
+    makeStatic(room.world, 560.0F, room.top + 460.0F, 220.0F, platformThickness, Kind::Stone);
+    makeStatic(room.world, 220.0F, room.top + 280.0F, 220.0F, platformThickness, Kind::Stone);
+}
+
+// Placeholder zig-zag for rooms not designed yet; each is replaced by its own
+// buildRoomN as the rooms land.
+void buildStaircaseRoom(const Room& room, int index)
+{
+    const bool startLeft = index % 2 == 0;
+    const float leftX = 120.0F;
+    const float rightX = room.width - 120.0F - 220.0F;
+
+    makeStatic(room.world, startLeft ? leftX : rightX, room.top + 700.0F, 220.0F, platformThickness,
+               Kind::Stone);
+    makeStatic(room.world, startLeft ? rightX : leftX, room.top + 460.0F, 220.0F, platformThickness,
+               Kind::Stone);
+    makeStatic(room.world, room.width * 0.5F - 110.0F, room.top + 220.0F, 220.0F, platformThickness,
+               Kind::Stone);
+}
+
+} // namespace
+
 void buildLevel(World& world, float worldWidth, float worldHeight, float viewHeight, bool online)
 {
-    using Kind = ApexPlatform::Kind;
-
     constexpr float groundThickness = ApexNetwork::groundThickness;
-    constexpr float wallThickness = 40.0F;
-    constexpr float platformThickness = ApexNetwork::platformThickness;
 
     // Ground at the bottom of the world.
     makeStatic(world, 0.0F, worldHeight - groundThickness, worldWidth, groundThickness, Kind::Stone);
@@ -116,33 +155,20 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
     makeStatic(world, -wallThickness, 0.0F, wallThickness, worldHeight, Kind::Stone);
     makeStatic(world, worldWidth, 0.0F, wallThickness, worldHeight, Kind::Stone);
 
-    // Hand-placed first room (easy jumps to learn charging).
-    const float room0Top = worldHeight - viewHeight;
-    makeStatic(world, 160.0F, room0Top + 620.0F, 220.0F, platformThickness, Kind::Stone);
-    makeStatic(world, 560.0F, room0Top + 460.0F, 220.0F, platformThickness, Kind::Stone);
-    makeStatic(world, 220.0F, room0Top + 280.0F, 220.0F, platformThickness, Kind::Stone);
+    // Rooms bottom to top; room N's top is N+1 screens above the world floor.
+    const auto room = [&](int index) {
+        return Room{world, worldHeight - viewHeight * static_cast<float>(index + 1), worldWidth};
+    };
+    buildRoom0(room(0));
+    for (int index = 1; index < ApexNetwork::roomCount; ++index) {
+        buildStaircaseRoom(room(index), index);
+    }
 
     // Moving platforms, from the table the server also runs.
     if (!online) {
         for (const ApexNetwork::MoverSpec& spec : ApexNetwork::movers()) {
             makeMover(world, spec);
         }
-    }
-
-    // TODO: replace generated staircase with hand-designed rooms later.
-    for (int room = 1; room < ApexNetwork::roomCount; ++room) {
-        const float roomTop = worldHeight - viewHeight * static_cast<float>(room + 1);
-        const bool startLeft = room % 2 == 0;
-
-        const float leftX = 120.0F;
-        const float rightX = worldWidth - 120.0F - 220.0F;
-
-        makeStatic(world, startLeft ? leftX : rightX, roomTop + 700.0F, 220.0F, platformThickness,
-                   Kind::Stone);
-        makeStatic(world, startLeft ? rightX : leftX, roomTop + 460.0F, 220.0F, platformThickness,
-                   Kind::Stone);
-        makeStatic(world, worldWidth * 0.5F - 110.0F, roomTop + 220.0F, 220.0F, platformThickness,
-                   Kind::Stone);
     }
 }
 
