@@ -59,6 +59,28 @@ GameObject& makePlayer(World& world, float x, float y, float width, float height
     return player;
 }
 
+GameObject& makeRemotePlayer(World& world, float width, float height)
+{
+    GameObject& remote = world.create("remote");
+    remote.add<Transform>(0.0F, 0.0F, width, height);
+    return remote;
+}
+
+GameObject& makeServerPlatform(World& world)
+{
+    constexpr auto kind = ApexPlatform::Kind::Mover;
+
+    GameObject& platform = world.create("platform");
+    platform.add<Transform>();
+    platform.add<Collider>(Collider::Kind::Solid, platformLayer);
+    platform.add<Renderable>(colorFor(kind));
+    platform.add<ApexPlatform>(kind);
+    platform.add<Surface>();
+    // Measures each snapshot's move, so carry works exactly as offline.
+    platform.add<Carrier>();
+    return platform;
+}
+
 void buildLevel(World& world, float worldWidth, float worldHeight, float viewHeight, bool online)
 {
     using Kind = ApexPlatform::Kind;

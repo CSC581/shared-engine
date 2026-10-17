@@ -19,6 +19,7 @@ Network options:
   --mode MODE       client-server or peer-to-peer
   --name TEXT       Display name
   --server ENDPOINT Dedicated/listen authority for shared platforms
+  --format FORMAT   Client-server encoding: text (default) or binary
 
 Peer-to-peer options:
   --id N            Unique peer id, 1..4294967295
@@ -41,6 +42,8 @@ bool parseOptions(int argc, char* argv[], ApexOptions& options)
         out = argv[++index];
         return true;
     };
+
+    bool formatGiven = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string arg = argv[index];
@@ -78,6 +81,22 @@ bool parseOptions(int argc, char* argv[], ApexOptions& options)
             if (!value(index, "--server", options.network.serverEndpoint)) {
                 return false;
             }
+            options.online = true;
+            continue;
+        }
+        if (arg == "--format") {
+            if (!value(index, "--format", text)) {
+                return false;
+            }
+            if (text == "text") {
+                options.network.clientServerDataFormat = Net::DataFormat::TextMultipart;
+            } else if (text == "binary") {
+                options.network.clientServerDataFormat = Net::DataFormat::Binary;
+            } else {
+                std::cerr << "apex-ascent: --format must be text or binary\n";
+                return false;
+            }
+            formatGiven = true;
             options.online = true;
             continue;
         }
@@ -140,6 +159,12 @@ bool parseOptions(int argc, char* argv[], ApexOptions& options)
 
         std::cerr << "apex-ascent: unknown option " << arg << "\n\n";
         printUsage();
+        return false;
+    }
+
+    // Binary is a client-server encoding only; the peer mesh is always text.
+    if (formatGiven && options.network.mode == Multiplayer::Mode::PeerToPeer) {
+        std::cerr << "apex-ascent: --format applies to client-server mode only\n";
         return false;
     }
 

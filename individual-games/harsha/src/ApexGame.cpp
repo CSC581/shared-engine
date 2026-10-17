@@ -36,6 +36,19 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
     };
     previousPlayerBottom_ = startY_ + playerHeight;
 
+    // Online: other climbers and server-owned platforms become objects in the
+    // same World, created, moved and removed from session snapshots.
+    if (session_) {
+        sync_ = std::make_unique<NetworkWorldSync>(
+            world_,
+            [](World& world, const Multiplayer::Player&) -> GameObject& {
+                return ApexLevel::makeRemotePlayer(world, playerWidth, playerHeight);
+            },
+            [](World& world, const Multiplayer::Platform&) -> GameObject& {
+                return ApexLevel::makeServerPlatform(world);
+            });
+    }
+
     camera_ = worldHeight_ - viewHeight_;
 
     if (!playerAnim_.load(engine.getRenderer())) {

@@ -31,6 +31,16 @@ GameObject& makeMover(World& world, PathMover::Linear path, float speed, float w
 // The local climber. No Renderable: ApexGame draws the animated sprite itself.
 GameObject& makePlayer(World& world, float x, float y, float width, float height, float gravity);
 
+// Online factories for NetworkWorldSync. They only attach components:
+// apply() sets the pose, adds NetworkIdentity and activates the object.
+//
+// Another climber: a Transform to draw the ghost sprite at, nothing else. No
+// Collider, so climbers pass through each other (see design §10).
+GameObject& makeRemotePlayer(World& world, float width, float height);
+// A server-owned mover. No Motion: its position belongs to the network, and
+// without Motion the local collision pass never pushes it.
+GameObject& makeServerPlatform(World& world);
+
 // The whole tower. Online, movers are left out: NetworkWorldSync creates them
 // from server snapshots instead.
 void buildLevel(World& world, float worldWidth, float worldHeight, float viewHeight, bool online);

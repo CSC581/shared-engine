@@ -20,40 +20,49 @@ void ApexGame::render(SDL_Renderer* renderer) const
     // ApexLevel). The player has none; its sprite is drawn below.
     renderWorld(renderer, world_, 0.0F, camera_);
 
-    // Remote climbers: tinted sprites when on-screen; HUD cue when above/below.
-    if (session_ && session_->state() == Multiplayer::State::Ready) {
-        for (const Multiplayer::Player& remote : session_->remotePlayers()) {
-            Uint8 red = 0;
-            Uint8 green = 0;
-            Uint8 blue = 0;
-            ApexPresence::ghostColor(remote.id, red, green, blue);
+    // Remote climbers: the "remote" objects NetworkWorldSync keeps in the
+    // World. Tinted sprites when on-screen; HUD cue when above/below.
+    for (const auto& object : world_.objects()) {
+        if (!object->isActive() || object->tag() != "remote") {
+            continue;
+        }
+        const Transform& transform = *object->get<Transform>();
+        const auto id = static_cast<Multiplayer::PlayerId>(object->get<NetworkIdentity>()->id);
 
-            const float screenTop = remote.y - camera_;
-            const float screenBottom = screenTop + playerHeight;
-            if (screenBottom > 0.0F && screenTop < viewHeight_) {
-                if (playerAnim_.isLoaded()) {
-                    ApexPresence::RemoteAnimation animation;
-                    ApexPresence::decodeAnimation(remote.data, animation);
-                    playerAnim_.drawGhost(renderer, remote.x, remote.y, camera_, playerWidth,
-                                          playerHeight, animation.clip, animation.frame,
-                                          animation.facingRight, red, green, blue);
-                } else {
-                    drawRect({remote.x, remote.y, playerWidth, playerHeight}, red, green, blue);
+        Uint8 red = 0;
+        Uint8 green = 0;
+        Uint8 blue = 0;
+        ApexPresence::ghostColor(id, red, green, blue);
+
+        const float screenTop = transform.y - camera_;
+        const float screenBottom = screenTop + playerHeight;
+        if (screenBottom > 0.0F && screenTop < viewHeight_) {
+            if (playerAnim_.isLoaded()) {
+                // The animation hint travels in the session's opaque data.
+                ApexPresence::RemoteAnimation animation;
+                for (const Multiplayer::Player& remote : session_->remotePlayers()) {
+                    if (remote.id == id) {
+                        ApexPresence::decodeAnimation(remote.data, animation);
+                        break;
+                    }
                 }
+                playerAnim_.drawGhost(renderer, transform.x, transform.y, camera_, playerWidth,
+                                      playerHeight, animation.clip, animation.frame,
+                                      animation.facingRight, red, green, blue);
             } else {
-                char cue[48];
-                const float cueX = std::fmax(20.0F, std::fmin(remote.x, viewWidth_ - 120.0F));
-                if (screenBottom <= 0.0F) {
-                    std::snprintf(cue, sizeof(cue), "^ #%u above",
-                                  static_cast<unsigned>(remote.id));
-                    SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
-                    SDL_RenderDebugText(renderer, cueX, 8.0F, cue);
-                } else {
-                    std::snprintf(cue, sizeof(cue), "v #%u below",
-                                  static_cast<unsigned>(remote.id));
-                    SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
-                    SDL_RenderDebugText(renderer, cueX, viewHeight_ - 24.0F, cue);
-                }
+                drawRect(transform.bounds(), red, green, blue);
+            }
+        } else {
+            char cue[48];
+            const float cueX = std::fmax(20.0F, std::fmin(transform.x, viewWidth_ - 120.0F));
+            if (screenBottom <= 0.0F) {
+                std::snprintf(cue, sizeof(cue), "^ #%u above", static_cast<unsigned>(id));
+                SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+                SDL_RenderDebugText(renderer, cueX, 8.0F, cue);
+            } else {
+                std::snprintf(cue, sizeof(cue), "v #%u below", static_cast<unsigned>(id));
+                SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+                SDL_RenderDebugText(renderer, cueX, viewHeight_ - 24.0F, cue);
             }
         }
     }
