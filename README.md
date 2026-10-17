@@ -172,6 +172,10 @@ with 1/2/4 clients, 10/100/500 platforms and 0/512-byte player data. Quick mode
 is validation only; the collector creates Release evidence and a separate
 forced-resynchronization experiment.
 
+The selected 2026-10-17 Release evidence found 26.4%–73.7% lower encoded
+payload and sustained 60 Hz in every cell, with 1.04×–2.15× mean RTT. Full
+snapshots therefore remain the default while property deltas remain opt-in.
+
 ### Client-server messages (`NetworkProtocol.hpp`), one reply per request
 
 Text and binary-full carry the same complete snapshots. Binary clients may instead opt into

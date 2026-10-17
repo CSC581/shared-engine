@@ -204,7 +204,7 @@ def summarize(runs: dict[int, dict[str, str]], samples: dict[int, list[float]],
 
 def write_outputs(result_dir: Path, rows: list[dict[str, float | int | str]]) -> None:
     with (result_dir / "summary.csv").open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 

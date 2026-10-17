@@ -527,6 +527,16 @@ by deterministic host integration tests instead of being mixed into timing.
 proxy rather than allocator-resident memory. Payload bytes continue to exclude
 ZeroMQ and TCP/IP framing.
 
+The 2026-10-17 Release collection validated all 180 steady-state runs and
+420,000 RTT samples. Property deltas reduced encoded payload by 26.4% to 73.7%
+and every cell sustained approximately 60 updates per client per second. Mean
+RTT was 1.04x to 2.15x the corresponding full-snapshot RTT. The worst relative
+case remained 1.729 ms in absolute terms. The separate recovery run completed
+36 cells with 126 requested full resynchronizations and zero baseline
+mismatches. The decision and selected evidence are under
+`docs/performance-results/20261017T041259Z-snapshot-delivery/`: deltas remain
+opt-in and full snapshots remain the default.
+
 `runs.csv` contains one aggregate row per repetition. `latency_samples.csv`
 contains one nanosecond RTT per client iteration, keyed by run, format, cell,
 repetition, client and iteration, plus the format that client used

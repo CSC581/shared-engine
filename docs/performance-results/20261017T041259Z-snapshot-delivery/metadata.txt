@@ -1,0 +1,20 @@
+collected_utc=20261017T041259Z
+git_commit=8fc3caa06e21a6858057e6f6e9dca80f24468a49
+git_status_begin
+git_status_end
+build_type=Release
+experiment=binary-full_vs_binary-property-delta
+matrix=strategies(full,delta);clients(1,2,4);platforms(10,100,500);player_data_bytes(0,512);repetitions(5)
+offered_hz_per_client=60
+warmup_iterations_per_client=100
+measured_iterations_per_client=1000
+payload_scope=ZeroMQ frame contents; excludes ZeroMQ/TCP/IP framing
+baseline_memory_scope=encoded full-snapshot byte proxy per client; not allocator-resident bytes
+os=Linux 7.1.1-76070101-generic x86_64 GNU/Linux
+cpu_count=16
+architecture=x86_64
+cpu_model=12th Gen Intel(R) Core(TM) i7-12650H
+cmake=cmake version 3.22.1
+compiler=c++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+load_before=0.48 0.93 1.23 3/1390 290235
+load_after=1.12 0.85 0.81 1/1366 312598
