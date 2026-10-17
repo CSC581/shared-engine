@@ -111,6 +111,9 @@ private:
     int checkpointRoom_ = 0;
     // Online: moved to slot (id - 1) % 4 once, when the server assigns an id.
     bool onlineSlotPlaced_ = false;
+    // Set by a death zone's onEnter, acted on once the collision pass ends.
+    bool pendingRespawn_ = false;
+    int deaths_ = 0;
 
     // Vertical scroll: world Y minus camera_ is screen Y.
     float camera_ = 0.0F;

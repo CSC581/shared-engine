@@ -80,14 +80,24 @@ GameObject& makeMover(World& world, const ApexNetwork::MoverSpec& spec)
     return platform;
 }
 
-GameObject& makeSpawnMarker(World& world, float x, float y, int room, int slot)
+GameObject& makeSpawnMarker(World& world, float x, float y, float width, int room, int slot)
 {
     GameObject& marker = world.create("trigger");
-    marker.add<Transform>(x, y, ApexNetwork::playerWidth, ApexNetwork::playerHeight);
+    marker.add<Transform>(x, y, width, ApexNetwork::playerHeight);
     marker.add<Collider>(Collider::Kind::Trigger, triggerLayer);
     marker.add<SpawnMarker>(room, slot);
     marker.setActive(true);
     return marker;
+}
+
+GameObject& makeDeathZone(World& world, float x, float y, float width, float height, bool spikes)
+{
+    GameObject& zone = world.create("trigger");
+    zone.add<Transform>(x, y, width, height);
+    zone.add<Collider>(Collider::Kind::Trigger, triggerLayer);
+    zone.add<DeathZone>(spikes);
+    zone.setActive(true);
+    return zone;
 }
 
 GameObject& makeWindZone(World& world, float x, float y, float width, float height, float amplitude,
@@ -157,11 +167,11 @@ struct Room {
     float width;
 };
 
-// The checkpoint for a room: a spawn marker centred on top of its first ledge.
+// The checkpoint for a room: a spawn marker covering the top of its first
+// ledge, so landing anywhere on it counts.
 void checkpointOn(const Room& room, int index, float ledgeX, float ledgeTop, float ledgeWidth)
 {
-    const float x = ledgeX + (ledgeWidth - ApexNetwork::playerWidth) * 0.5F;
-    makeSpawnMarker(room.world, x, ledgeTop - ApexNetwork::playerHeight, index, 0);
+    makeSpawnMarker(room.world, ledgeX, ledgeTop - ApexNetwork::playerHeight, ledgeWidth, index, 0);
 }
 
 // Room 0, the tutorial: three stone ledges that teach a short, a medium and a
@@ -176,7 +186,7 @@ void buildRoom0(const Room& room)
     // The four starting slots on the ground.
     const std::vector<Network::SpawnPoint> slots = ApexNetwork::spawnSlots();
     for (int slot = 0; slot < static_cast<int>(slots.size()); ++slot) {
-        makeSpawnMarker(room.world, slots[slot].x, slots[slot].y, 0, slot);
+        makeSpawnMarker(room.world, slots[slot].x, slots[slot].y, ApexNetwork::playerWidth, 0, slot);
     }
 }
 
@@ -208,9 +218,11 @@ void buildRoom2(const Room& room)
     makeStatic(room.world, 560.0F, room.top + 480.0F, 260.0F, platformThickness, Kind::Ice);
     makeStatic(room.world, 60.0F, room.top + 180.0F, 220.0F, platformThickness, Kind::Ice);
 
-    // Spike shelf under the top ledge, wide enough to catch a slide off
-    // either edge.
+    // Spike shelf under the top ledge: it catches a short jump at ice C and a
+    // slow slide off either edge (a full-speed walk off the right edge sails
+    // past it, down to ice A). The death zone is a strip on its top.
     makeStatic(room.world, 20.0F, room.top + 500.0F, 340.0F, platformThickness, Kind::Stone);
+    makeDeathZone(room.world, 20.0F, room.top + 470.0F, 340.0F, 30.0F, true);
 }
 
 // Room 3, the slingshot. The fast magenta rail (movers(), id 3) runs low in
@@ -279,6 +291,10 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
     buildRoom3(room(3));
     buildRoom4(room(4));
     buildRoom5(room(5));
+
+    // Failsafe under the floor: if anything ever drops a climber out of the
+    // world, it comes back instead of falling forever.
+    makeDeathZone(world, -wallThickness, worldHeight, worldWidth + 2.0F * wallThickness, 400.0F, false);
 
     // Moving platforms, from the table the server also runs.
     if (!online) {

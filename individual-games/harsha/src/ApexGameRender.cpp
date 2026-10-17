@@ -65,6 +65,28 @@ void ApexGame::render(SDL_Renderer* renderer) const
     // ApexLevel). The player has none; its sprite is drawn below.
     renderWorld(renderer, world_, 0.0F, camera_);
 
+    // Spikes: the visible side of hidden death zones, a row of pale teeth
+    // standing on the zone's bottom edge.
+    for (const auto& object : world_.objects()) {
+        const DeathZone* death = object->get<DeathZone>();
+        if (death == nullptr || !death->spikes) {
+            continue;
+        }
+        const Transform& zone = *object->get<Transform>();
+        const float base = zone.y + zone.height - camera_;
+        constexpr float toothWidth = 20.0F;
+        const SDL_FColor pale{0.85F, 0.85F, 0.9F, 1.0F};
+        const SDL_FColor tip{0.85F, 0.25F, 0.25F, 1.0F};
+        for (float x = zone.x; x + toothWidth <= zone.x + zone.width + 0.5F; x += toothWidth) {
+            const SDL_Vertex tooth[3] = {
+                {{x, base}, pale, {0.0F, 0.0F}},
+                {{x + toothWidth, base}, pale, {0.0F, 0.0F}},
+                {{x + toothWidth * 0.5F, base - zone.height * 0.8F}, tip, {0.0F, 0.0F}},
+            };
+            SDL_RenderGeometry(renderer, nullptr, tooth, 3, nullptr, 0);
+        }
+    }
+
     // Remote climbers: the "remote" objects NetworkWorldSync keeps in the
     // World. Tinted sprites when on-screen; HUD cue when above/below.
     for (const auto& object : world_.objects()) {
@@ -150,9 +172,9 @@ void ApexGame::render(SDL_Renderer* renderer) const
     }
 
     char hud[128];
-    std::snprintf(hud, sizeof(hud), "Room: %d / %d   (highest: %d)   Checkpoint: room %d",
+    std::snprintf(hud, sizeof(hud), "Room: %d / %d   (highest: %d)   Checkpoint: room %d   Deaths: %d",
                   static_cast<int>((worldHeight_ - playerTransform_->y) / viewHeight_) + 1,
-                  roomCount, highestRoomReached_ + 1, checkpointRoom_ + 1);
+                  roomCount, highestRoomReached_ + 1, checkpointRoom_ + 1, deaths_);
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     SDL_RenderDebugText(renderer, 20.0F, 20.0F, hud);
 

@@ -54,6 +54,20 @@ public:
     int slot;
 };
 
+// A hidden death zone: touching it sends the climber back to its checkpoint.
+// `spikes` asks the game to draw spikes along the zone's bottom edge, the
+// visible warning for what is otherwise an invisible trigger (a failsafe
+// below the world draws nothing).
+class DeathZone : public Component {
+public:
+    explicit DeathZone(bool spikes)
+        : spikes(spikes)
+    {
+    }
+
+    bool spikes;
+};
+
 // A hidden gusty region (a trigger with no Renderable). While a climber is
 // airborne inside it, sideways speed gains amplitude * sin(2*pi*t / period)
 // per second, t being game time: gusts swing left and right, freeze on pause

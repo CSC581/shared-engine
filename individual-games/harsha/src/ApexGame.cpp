@@ -331,6 +331,15 @@ void ApexGame::handleCollisions()
     // (MTV), and calls collider callbacks. A push that leaves the player on
     // top of a platform counts as a landing; see onPlayerCollide.
     world_.resolveCollisions();
+
+    // A death zone was touched: back to the checkpoint. Done here, after the
+    // pass, rather than inside the callback, so every other callback this
+    // frame saw the same climber position.
+    if (pendingRespawn_) {
+        pendingRespawn_ = false;
+        ++deaths_;
+        placeAt(*checkpoint_);
+    }
 }
 
 // Player's onCollide. World calls it after all pushes, so the player's
@@ -360,7 +369,7 @@ void ApexGame::onPlayerCollide(GameObject& other)
 
 void ApexGame::placeAt(const Transform& marker)
 {
-    playerTransform_->x = marker.x;
+    playerTransform_->x = marker.x + (marker.width - playerWidth) * 0.5F;
     playerTransform_->y = marker.y;
     playerMotion_->velocityX = 0.0F;
     playerMotion_->velocityY = 0.0F;
@@ -388,6 +397,9 @@ const Transform* ApexGame::findSpawnMarker(int room, int slot)
 // Player's onEnter / onExit: hidden trigger zones the climber moves through.
 void ApexGame::onPlayerEnter(GameObject& other)
 {
+    if (other.has<DeathZone>()) {
+        pendingRespawn_ = true;
+    }
     if (const WindZone* zone = other.get<WindZone>()) {
         wind_ = zone;
     }
