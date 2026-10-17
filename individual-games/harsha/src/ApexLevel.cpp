@@ -198,11 +198,13 @@ void buildRoom5(const Room& room)
 {
     constexpr float ledgeWidth = 110.0F;
 
-    makeStatic(room.world, 580.0F, room.top + 700.0F, 160.0F, platformThickness, Kind::Stone);
-    makeStatic(room.world, 160.0F, room.top + 480.0F, ledgeWidth, platformThickness, Kind::Stone);
-    makeStatic(room.world, 640.0F, room.top + 270.0F, ledgeWidth, platformThickness, Kind::Stone);
+    // First ledge far left, clear of wheel 6's path: a ledge above the wheel
+    // can only be hit from underneath.
+    makeStatic(room.world, 100.0F, room.top + 780.0F, 160.0F, platformThickness, Kind::Stone);
+    makeStatic(room.world, 560.0F, room.top + 520.0F, ledgeWidth, platformThickness, Kind::Stone);
+    makeStatic(room.world, 140.0F, room.top + 290.0F, ledgeWidth, platformThickness, Kind::Stone);
 
-    makeStatic(room.world, 100.0F, room.top + 100.0F, 260.0F, platformThickness, Kind::Summit);
+    makeStatic(room.world, 560.0F, room.top + 100.0F, 260.0F, platformThickness, Kind::Summit);
 }
 
 } // namespace
