@@ -352,8 +352,10 @@ endforeach()
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent
     individual-games/harsha/src/apexAscent.cpp
+    individual-games/harsha/src/ApexComponents.cpp
     individual-games/harsha/src/ApexGame.cpp
     individual-games/harsha/src/ApexGameRender.cpp
+    individual-games/harsha/src/ApexLevel.cpp
     individual-games/harsha/src/ApexOptions.cpp
     individual-games/harsha/src/ApexPresence.cpp
     individual-games/harsha/src/animation/PlayerAnimation.cpp
