@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 void ApexGame::render(SDL_Renderer* renderer) const
@@ -108,6 +109,17 @@ void ApexGame::render(SDL_Renderer* renderer) const
     SDL_SetRenderDrawColor(renderer, 250, 210, 80, 255);
     const SDL_FRect meterFill{20.0F, viewHeight_ - 40.0F, filled, 16.0F};
     SDL_RenderFillRect(renderer, &meterFill);
+
+    // Standing on the summit: the climb is done.
+    const GameObject* grounded = groundedPlatformId_ != 0 ? world_.find(groundedPlatformId_) : nullptr;
+    const ApexPlatform* groundKind = grounded != nullptr ? grounded->get<ApexPlatform>() : nullptr;
+    if (isOnGround_ && groundKind != nullptr && groundKind->kind == ApexPlatform::Kind::Summit) {
+        const char* banner = "You reached the Apex!";
+        // SDL's debug font is 8 px per character.
+        const float bannerX = (viewWidth_ - 8.0F * static_cast<float>(std::strlen(banner))) * 0.5F;
+        SDL_SetRenderDrawColor(renderer, 240, 200, 70, 255);
+        SDL_RenderDebugText(renderer, bannerX, viewHeight_ * 0.5F, banner);
+    }
 
     char hud[128];
     std::snprintf(hud, sizeof(hud), "Room: %d / %d   (highest: %d)",

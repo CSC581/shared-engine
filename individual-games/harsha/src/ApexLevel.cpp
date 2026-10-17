@@ -19,6 +19,8 @@ Color colorFor(ApexPlatform::Kind kind)
         return {220, 60, 200};
     case ApexPlatform::Kind::Orbit:
         return {150, 110, 230};
+    case ApexPlatform::Kind::Summit:
+        return {240, 200, 70};
     case ApexPlatform::Kind::Stone:
     default:
         return {90, 100, 130};
@@ -193,20 +195,18 @@ void buildRoom4(const Room& room)
     makeStatic(room.world, 300.0F, room.top + 880.0F, 180.0F, platformThickness, Kind::Stone);
 }
 
-// Placeholder zig-zag for rooms not designed yet; each is replaced by its own
-// buildRoomN as the rooms land.
-void buildStaircaseRoom(const Room& room, int index)
+// Room 5, the summit. Narrow stone ledges zig-zag up to the gold summit at
+// the top of the tower. Step 3 adds wind here, which is why the ledges come
+// last: they are the precision test.
+void buildRoom5(const Room& room)
 {
-    const bool startLeft = index % 2 == 0;
-    const float leftX = 120.0F;
-    const float rightX = room.width - 120.0F - 220.0F;
+    constexpr float ledgeWidth = 110.0F;
 
-    makeStatic(room.world, startLeft ? leftX : rightX, room.top + 700.0F, 220.0F, platformThickness,
-               Kind::Stone);
-    makeStatic(room.world, startLeft ? rightX : leftX, room.top + 460.0F, 220.0F, platformThickness,
-               Kind::Stone);
-    makeStatic(room.world, room.width * 0.5F - 110.0F, room.top + 220.0F, 220.0F, platformThickness,
-               Kind::Stone);
+    makeStatic(room.world, 580.0F, room.top + 700.0F, 160.0F, platformThickness, Kind::Stone);
+    makeStatic(room.world, 160.0F, room.top + 480.0F, ledgeWidth, platformThickness, Kind::Stone);
+    makeStatic(room.world, 640.0F, room.top + 270.0F, ledgeWidth, platformThickness, Kind::Stone);
+
+    makeStatic(room.world, 100.0F, room.top + 100.0F, 260.0F, platformThickness, Kind::Summit);
 }
 
 } // namespace
@@ -231,9 +231,7 @@ void buildLevel(World& world, float worldWidth, float worldHeight, float viewHei
     buildRoom2(room(2));
     buildRoom3(room(3));
     buildRoom4(room(4));
-    for (int index = 5; index < ApexNetwork::roomCount; ++index) {
-        buildStaircaseRoom(room(index), index);
-    }
+    buildRoom5(room(5));
 
     // Moving platforms, from the table the server also runs.
     if (!online) {

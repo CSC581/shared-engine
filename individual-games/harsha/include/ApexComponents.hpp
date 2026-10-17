@@ -7,11 +7,11 @@
 #include "Component.hpp"
 #include "Components.hpp"
 
-// What a platform is. Drives its colour and, later, the per-kind rules
-// (slingshot fling, orbit hops).
+// What a platform is. Drives its colour and the per-kind rules (slingshot
+// fling, the summit banner).
 class ApexPlatform : public Component {
 public:
-    enum class Kind { Stone, Moss, Sandstone, Ice, Mover, Slingshot, Orbit };
+    enum class Kind { Stone, Moss, Sandstone, Ice, Mover, Slingshot, Orbit, Summit };
 
     explicit ApexPlatform(Kind kind)
         : kind(kind)
