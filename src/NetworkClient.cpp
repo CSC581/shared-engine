@@ -111,6 +111,7 @@ struct NetworkClient::Impl {
         sessionEndpoint.clear();
         waitingForReply = false;
         forceFullSnapshot = false;
+        explicitFullSnapshotRequested = false;
         state = ConnectionState::Connecting;
         error.clear();
         sendJoin();
@@ -144,6 +145,7 @@ struct NetworkClient::Impl {
         snapshot = {};
         sessionEndpoint.clear();
         forceFullSnapshot = false;
+        explicitFullSnapshotRequested = false;
     }
 
     void sendJoin()
@@ -181,6 +183,7 @@ struct NetworkClient::Impl {
         playerId = 0;
         snapshot = {};
         forceFullSnapshot = false;
+        explicitFullSnapshotRequested = false;
         sessionEndpoint.clear();
         nextRetryAt = clock.now() + retryDelayNs;
     }
@@ -220,6 +223,7 @@ struct NetworkClient::Impl {
     std::int64_t nextRetryAt = 0;
     bool waitingForReply = false;
     bool forceFullSnapshot = false;
+    bool explicitFullSnapshotRequested = false;
     TransportTelemetry transport;
     SnapshotTelemetry snapshotStats;
 };
@@ -357,6 +361,7 @@ void NetworkClient::poll()
     }
     impl_->snapshot = std::move(reply.snapshot);
     impl_->forceFullSnapshot = false;
+    impl_->explicitFullSnapshotRequested = false;
     ++impl_->snapshotStats.fullSnapshotsReceived;
     impl_->error.clear();
 }
@@ -384,10 +389,11 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
     request.sessionToken = impl_->sessionToken;
     request.position = position;
     Message message;
+    const bool requestFull = impl_->forceFullSnapshot || impl_->explicitFullSnapshotRequested;
     try {
         message = encodeTransportRequest(request, impl_->format, impl_->strategy,
                                          impl_->snapshot.serverTick,
-                                         impl_->forceFullSnapshot);
+                                         requestFull);
     } catch (const std::invalid_argument& exception) {
         impl_->error = exception.what();
         return;
@@ -398,10 +404,17 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
     }
 
     impl_->recordSent(message);
-    if (impl_->forceFullSnapshot) ++impl_->snapshotStats.resyncRequestsSent;
+    if (requestFull) ++impl_->snapshotStats.resyncRequestsSent;
     impl_->error.clear();
     impl_->waitingForReply = true;
     impl_->requestSentAt = impl_->clock.now();
+}
+
+void NetworkClient::requestFullSnapshot()
+{
+    if (impl_->strategy == Net::SnapshotStrategy::PropertyDelta) {
+        impl_->explicitFullSnapshotRequested = true;
+    }
 }
 
 void NetworkClient::leave()

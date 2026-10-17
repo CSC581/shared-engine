@@ -1,5 +1,6 @@
 #include "NetworkClient.hpp"
 #include "NetworkServerHost.hpp"
+#include "BinaryNetworkProtocol.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -29,6 +30,9 @@ struct Options {
     int warmupIterations = 100;
     int measuredIterations = 1000;
     bool mixed = false;
+    bool snapshotDelivery = false;
+    int offeredHz = 60;
+    int resyncEvery = 0;
     std::string runsPath = "runs.csv";
     std::string latencyPath = "latency_samples.csv";
 };
@@ -43,8 +47,10 @@ enum class Composition {
 
 struct Cell {
     Composition composition;
+    Net::SnapshotStrategy snapshotStrategy = Net::SnapshotStrategy::FullSnapshot;
     int clients;
     int platforms;
+    int playerDataBytes = 0;
     int repetition;
 };
 
@@ -53,11 +59,14 @@ struct ClientResult {
     Network::PlayerId playerId = 0;
     Network::TransportTelemetry before;
     Network::TransportTelemetry after;
+    Network::SnapshotTelemetry snapshotsBefore;
+    Network::SnapshotTelemetry snapshotsAfter;
     std::vector<std::int64_t> rttNs;
     std::uint64_t completed = 0;
     std::uint64_t objectChecks = 0;
     std::uint64_t objectFailures = 0;
     std::uint64_t disconnects = 0;
+    std::uint64_t baselineBytes = 0;
 };
 
 struct RunResult {
@@ -71,6 +80,8 @@ struct RunResult {
     std::uint64_t serverUpdates = 0;
     bool trafficMatch = false;
     Network::TransportTelemetry traffic;
+    Network::SnapshotTelemetry snapshots;
+    std::uint64_t baselineBytes = 0;
     std::vector<ClientResult> clients;
 };
 
@@ -163,6 +174,11 @@ const char* compositionName(Composition composition)
     return "unknown";
 }
 
+const char* strategyName(Net::SnapshotStrategy strategy)
+{
+    return strategy == Net::SnapshotStrategy::PropertyDelta ? "delta" : "full";
+}
+
 Net::DataFormat clientFormat(const Cell& cell, std::size_t clientIndex)
 {
     switch (cell.composition) {
@@ -214,6 +230,38 @@ void add(Network::TransportTelemetry& total, const Network::TransportTelemetry& 
     total.framesReceived += value.framesReceived;
     total.payloadBytesSent += value.payloadBytesSent;
     total.payloadBytesReceived += value.payloadBytesReceived;
+}
+
+Network::SnapshotTelemetry difference(const Network::SnapshotTelemetry& after,
+                                      const Network::SnapshotTelemetry& before)
+{
+    const auto subtract = [](std::uint64_t newer, std::uint64_t older) {
+        return newer >= older ? newer - older : 0;
+    };
+    return {subtract(after.fullSnapshotsReceived, before.fullSnapshotsReceived),
+            subtract(after.deltaSnapshotsReceived, before.deltaSnapshotsReceived),
+            subtract(after.resyncRequestsSent, before.resyncRequestsSent),
+            subtract(after.baselineMismatches, before.baselineMismatches),
+            subtract(after.playerAdds, before.playerAdds),
+            subtract(after.playerRemoves, before.playerRemoves),
+            subtract(after.playerPatches, before.playerPatches),
+            subtract(after.platformAdds, before.platformAdds),
+            subtract(after.platformRemoves, before.platformRemoves),
+            subtract(after.platformPatches, before.platformPatches)};
+}
+
+void add(Network::SnapshotTelemetry& total, const Network::SnapshotTelemetry& value)
+{
+    total.fullSnapshotsReceived += value.fullSnapshotsReceived;
+    total.deltaSnapshotsReceived += value.deltaSnapshotsReceived;
+    total.resyncRequestsSent += value.resyncRequestsSent;
+    total.baselineMismatches += value.baselineMismatches;
+    total.playerAdds += value.playerAdds;
+    total.playerRemoves += value.playerRemoves;
+    total.playerPatches += value.playerPatches;
+    total.platformAdds += value.platformAdds;
+    total.platformRemoves += value.platformRemoves;
+    total.platformPatches += value.platformPatches;
 }
 
 Network::ServerConfig serverConfig(int platformCount)
@@ -285,7 +333,7 @@ void runClient(std::size_t clientIndex, const Cell& cell, const Options& options
                const std::string& endpoint, RunControl& control, ClientResult& result)
 {
     RealTimeClock clock;
-    Network::NetworkClient client(clock, endpoint, result.format);
+    Network::NetworkClient client(clock, endpoint, result.format, cell.snapshotStrategy);
     client.setPlayerName("benchmark-" + std::to_string(clientIndex));
     client.start();
 
@@ -339,6 +387,7 @@ void runClient(std::size_t clientIndex, const Cell& cell, const Options& options
     }
 
     result.before = client.telemetry();
+    result.snapshotsBefore = client.snapshotTelemetry();
     {
         std::unique_lock<std::mutex> lock(control.mutex);
         ++control.readyToMeasure;
@@ -350,11 +399,25 @@ void runClient(std::size_t clientIndex, const Cell& cell, const Options& options
     }
 
     result.rttNs.reserve(static_cast<std::size_t>(options.measuredIterations));
+    const std::string measuredData = options.snapshotDelivery
+                                         ? std::string(static_cast<std::size_t>(cell.playerDataBytes), 'x')
+                                         : "measured-payload";
+    const auto period = options.snapshotDelivery
+                            ? std::chrono::nanoseconds(1000000000LL / options.offeredHz)
+                            : std::chrono::nanoseconds(0);
+    Clock::time_point nextRequest = Clock::now();
     for (int iteration = 0; iteration < options.measuredIterations; ++iteration) {
+        if (options.snapshotDelivery) {
+            std::this_thread::sleep_until(nextRequest);
+            nextRequest += period;
+        }
+        if (options.resyncEvery > 0 && iteration > 0 && iteration % options.resyncEvery == 0) {
+            client.requestFullSnapshot();
+        }
         std::int64_t elapsed = 0;
         if (!completeRoundTrip(client,
                                static_cast<float>(clientIndex * options.measuredIterations + iteration),
-                               static_cast<float>(iteration), "measured-payload", &elapsed,
+                               static_cast<float>(iteration), measuredData, &elapsed,
                                transactionError)) {
             ++result.disconnects;
             control.fail("client " + std::to_string(clientIndex) + " failed during measurement: " +
@@ -367,9 +430,24 @@ void runClient(std::size_t clientIndex, const Cell& cell, const Options& options
         if (client.snapshot().players.size() != static_cast<std::size_t>(cell.clients) ||
             client.snapshot().platforms.size() != static_cast<std::size_t>(cell.platforms)) {
             ++result.objectFailures;
+        } else {
+            const auto own = std::find_if(client.snapshot().players.begin(), client.snapshot().players.end(),
+                                          [&](const Network::PlayerState& player) {
+                                              return player.id == result.playerId;
+                                          });
+            if (own == client.snapshot().players.end() ||
+                own->x != static_cast<float>(clientIndex * options.measuredIterations + iteration) ||
+                own->y != static_cast<float>(iteration) || own->data != measuredData) {
+                ++result.objectFailures;
+            }
         }
     }
     result.after = client.telemetry();
+    result.snapshotsAfter = client.snapshotTelemetry();
+    Network::Reply baseline;
+    baseline.type = Network::ReplyType::Snapshot;
+    baseline.snapshot = client.snapshot();
+    result.baselineBytes = Network::encodeBinaryReply(baseline).size();
 
     {
         std::unique_lock<std::mutex> lock(control.mutex);
@@ -474,6 +552,8 @@ RunResult runCell(const Cell& cell, const Options& options)
         result.disconnects += client.disconnects;
         const Network::TransportTelemetry delta = difference(client.after, client.before);
         add(result.traffic, delta);
+        add(result.snapshots, difference(client.snapshotsAfter, client.snapshotsBefore));
+        result.baselineBytes += client.baselineBytes;
         // Checked per client so a mixed run still proves its binary clients
         // used one frame per message.
         if (client.format == Net::DataFormat::Binary &&
@@ -496,10 +576,17 @@ RunResult runCell(const Cell& cell, const Options& options)
 
     const bool transportCountsMatch = result.traffic.messagesSent == expected &&
                                       result.traffic.messagesReceived == expected;
+    const bool snapshotCountsMatch = !options.snapshotDelivery ||
+        (result.snapshots.fullSnapshotsReceived + result.snapshots.deltaSnapshotsReceived == expected &&
+         result.snapshots.baselineMismatches == 0 &&
+         (cell.snapshotStrategy == Net::SnapshotStrategy::FullSnapshot
+              ? result.snapshots.fullSnapshotsReceived == expected
+              : result.snapshots.deltaSnapshotsReceived + result.snapshots.resyncRequestsSent == expected));
     result.success = !control.failed && result.completed == expected &&
                      result.objectChecks == expected && result.objectFailures == 0 &&
                      result.disconnects == 0 && result.serverUpdates == expected &&
-                     result.trafficMatch && transportCountsMatch && binaryFramesMatch;
+                     result.trafficMatch && transportCountsMatch && binaryFramesMatch &&
+                     snapshotCountsMatch;
     if (!result.success && result.error.empty()) {
         result.error = "correctness or traffic counters did not match expectations";
     }
@@ -528,6 +615,10 @@ void usage()
         "  --quick              1 repetition, 5 warm-up and 20 measured iterations\n"
         "  --mixed              run the mixed-format experiment instead: text, binary and\n"
         "                       half-text/half-binary clients sharing one server, 2/4 clients\n"
+        "  --snapshot-delivery  compare binary full snapshots with property deltas at a\n"
+        "                       fixed offered rate and 0/512-byte player data\n"
+        "  --offered-hz N       requests per second per client in snapshot mode (default 60)\n"
+        "  --resync-every N     request a full recovery every N measured updates (default 0)\n"
         "  --repetitions N      repetitions per matrix cell (default 5)\n"
         "  --warmup N           warm-up iterations per client (default 100)\n"
         "  --iterations N       measured iterations per client (default 1000)\n"
@@ -553,6 +644,10 @@ bool parseOptions(int argc, char* argv[], Options& options)
             options.mixed = true;
             continue;
         }
+        if (argument == "--snapshot-delivery") {
+            options.snapshotDelivery = true;
+            continue;
+        }
         if (index + 1 >= argc) {
             std::cerr << argument << " requires a value\n";
             return false;
@@ -570,6 +665,14 @@ bool parseOptions(int argc, char* argv[], Options& options)
             if (!parsePositive(value, options.measuredIterations)) {
                 return false;
             }
+        } else if (argument == "--offered-hz") {
+            if (!parsePositive(value, options.offeredHz)) {
+                return false;
+            }
+        } else if (argument == "--resync-every") {
+            if (!parsePositive(value, options.resyncEvery)) {
+                return false;
+            }
         } else if (argument == "--runs") {
             options.runsPath = value;
         } else if (argument == "--latency") {
@@ -578,6 +681,10 @@ bool parseOptions(int argc, char* argv[], Options& options)
             std::cerr << "unknown option: " << argument << '\n';
             return false;
         }
+    }
+    if (options.mixed && options.snapshotDelivery) {
+        std::cerr << "--mixed and --snapshot-delivery are separate experiments\n";
+        return false;
     }
     return true;
 }
@@ -601,19 +708,30 @@ int main(int argc, char* argv[])
             "elapsed_seconds,completed_round_trips,throughput_round_trips_per_second,rtt_sample_count,"
             "messages_sent,messages_received,frames_sent,frames_received,payload_bytes_sent,"
             "payload_bytes_received,object_count_checks,object_count_failures,disconnects,"
-            "server_position_updates,expected_position_updates,traffic_match,success,error\n";
+            "server_position_updates,expected_position_updates,traffic_match,success,error,"
+            "snapshot_strategy,player_data_bytes,offered_hz,full_snapshots,delta_snapshots,"
+            "resync_requests,baseline_mismatches,player_adds,player_removes,player_patches,"
+            "platform_adds,platform_removes,platform_patches,baseline_bytes\n";
     // `format` is the run's composition; `client_format` is what this client
     // used, which differs from it only in mixed runs.
-    latency << "run_id,format,clients,platforms,repetition,client_index,iteration,rtt_ns,client_format\n";
+    latency << "run_id,format,clients,platforms,repetition,client_index,iteration,rtt_ns,client_format,"
+               "snapshot_strategy,player_data_bytes\n";
     runs << std::setprecision(12);
 
     // The mixed experiment keeps all-text and all-binary runs as same-machine
     // baselines. A mixed run needs at least one client of each format.
     std::vector<Composition> compositions = {Composition::Text, Composition::Binary};
     std::vector<int> clientCounts = {1, 2, 4};
+    std::vector<Net::SnapshotStrategy> strategies = {Net::SnapshotStrategy::FullSnapshot};
+    std::vector<int> playerDataSizes = {0};
     if (options.mixed) {
         compositions.push_back(Composition::Mixed);
         clientCounts = {2, 4};
+    } else if (options.snapshotDelivery) {
+        compositions = {Composition::Binary};
+        strategies = {Net::SnapshotStrategy::FullSnapshot,
+                      Net::SnapshotStrategy::PropertyDelta};
+        playerDataSizes = {0, 512};
     }
     const std::vector<int> platformCounts = {10, 100, 500};
     int runId = 0;
@@ -624,12 +742,25 @@ int main(int argc, char* argv[])
     for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
         for (int clients : clientCounts) {
             for (int platforms : platformCounts) {
-                for (Composition composition : compositions) {
-                    const Cell cell{composition, clients, platforms, repetition};
+                for (int playerDataBytes : playerDataSizes) {
+                    for (Net::SnapshotStrategy strategy : strategies) {
+                      for (Composition composition : compositions) {
+                    Cell cell;
+                    cell.composition = composition;
+                    cell.snapshotStrategy = strategy;
+                    cell.clients = clients;
+                    cell.platforms = platforms;
+                    cell.playerDataBytes = playerDataBytes;
+                    cell.repetition = repetition;
                     ++runId;
                     std::cout << "run " << runId << ": " << compositionName(composition) << ", " << clients
                               << " client(s), " << platforms << " platform(s), repetition " << repetition
-                              << '/' << options.repetitions << std::endl;
+                              << '/' << options.repetitions;
+                    if (options.snapshotDelivery) {
+                        std::cout << ", " << strategyName(strategy) << ", data="
+                                  << playerDataBytes;
+                    }
+                    std::cout << std::endl;
                     const RunResult result = runCell(cell, options);
                     const std::uint64_t expected = static_cast<std::uint64_t>(clients) *
                                                    static_cast<std::uint64_t>(options.measuredIterations);
@@ -649,13 +780,24 @@ int main(int argc, char* argv[])
                          << result.traffic.payloadBytesReceived << ',' << result.objectChecks << ','
                          << result.objectFailures << ',' << result.disconnects << ',' << result.serverUpdates
                          << ',' << expected << ',' << (result.trafficMatch ? 1 : 0) << ','
-                         << (result.success ? 1 : 0) << ',' << csv(result.error) << '\n';
+                         << (result.success ? 1 : 0) << ',' << csv(result.error) << ','
+                         << strategyName(strategy) << ',' << playerDataBytes << ','
+                         << (options.snapshotDelivery ? options.offeredHz : 0) << ','
+                         << result.snapshots.fullSnapshotsReceived << ','
+                         << result.snapshots.deltaSnapshotsReceived << ','
+                         << result.snapshots.resyncRequestsSent << ','
+                         << result.snapshots.baselineMismatches << ','
+                         << result.snapshots.playerAdds << ',' << result.snapshots.playerRemoves << ','
+                         << result.snapshots.playerPatches << ',' << result.snapshots.platformAdds << ','
+                         << result.snapshots.platformRemoves << ',' << result.snapshots.platformPatches << ','
+                         << result.baselineBytes << '\n';
                     for (std::size_t clientIndex = 0; clientIndex < result.clients.size(); ++clientIndex) {
                         const ClientResult& client = result.clients[clientIndex];
                         for (std::size_t iteration = 0; iteration < client.rttNs.size(); ++iteration) {
                             latency << runId << ',' << compositionName(composition) << ',' << clients << ','
                                     << platforms << ',' << repetition << ',' << clientIndex << ',' << iteration
-                                    << ',' << client.rttNs[iteration] << ',' << formatName(client.format) << '\n';
+                                    << ',' << client.rttNs[iteration] << ',' << formatName(client.format) << ','
+                                    << strategyName(strategy) << ',' << playerDataBytes << '\n';
                         }
                     }
                     runs.flush();
@@ -663,6 +805,8 @@ int main(int argc, char* argv[])
                     if (!result.success) {
                         ++failures;
                         std::cerr << "run " << runId << " failed: " << result.error << '\n';
+                    }
+                      }
                     }
                 }
             }

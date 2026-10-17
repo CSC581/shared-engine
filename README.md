@@ -154,10 +154,23 @@ A game that needs to change replies can skip the host and drive `NetworkServer(c
 itself. It calls `handle(message)` for each request and `update()` on a timer, and uses the
 `encode…`/`decode…` functions in `NetworkProtocol.hpp` to read or rewrite messages. On the client
 side, `NetworkClient(clock, endpoint, format, snapshotStrategy)` offers `start()`, `poll()`,
-`submitPosition(x, y, data)`, `state()` and `snapshot()` for a direct connection outside a
+`submitPosition(x, y, data)`, `requestFullSnapshot()`, `state()` and `snapshot()` for a direct connection outside a
 `Session`. The format defaults to `Net::DataFormat::TextMultipart`; `telemetry()` returns
 cumulative message, frame and encoded-payload-byte counts for performance measurements;
 `snapshotTelemetry()` reports full, delta and resynchronization counts.
+
+The real-stack performance harness has a separate equal-load delivery experiment:
+
+```bash
+./build/network-performance-benchmark --quick --snapshot-delivery \
+  --runs /tmp/snapshot-runs.csv --latency /tmp/snapshot-latency.csv
+./benchmarks/collect_snapshot_delivery.sh
+```
+
+It compares binary-full and binary-delta at 60 requests per client per second,
+with 1/2/4 clients, 10/100/500 platforms and 0/512-byte player data. Quick mode
+is validation only; the collector creates Release evidence and a separate
+forced-resynchronization experiment.
 
 ### Client-server messages (`NetworkProtocol.hpp`), one reply per request
 

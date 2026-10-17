@@ -355,6 +355,19 @@ bool fourNetworkClientsShareTheSceneAndSurviveDisconnect()
         }
     }
 
+    const Network::SnapshotTelemetry beforeResync = clients[2]->snapshotTelemetry();
+    clients[2]->requestFullSnapshot();
+    const bool explicitResyncCompleted = waitFor(
+        [&] {
+            pump();
+            const Network::SnapshotTelemetry after = clients[2]->snapshotTelemetry();
+            return after.resyncRequestsSent == beforeResync.resyncRequestsSent + 1 &&
+                   after.fullSnapshotsReceived == beforeResync.fullSnapshotsReceived + 1;
+        },
+        std::chrono::milliseconds(1000));
+    passed &= expect(explicitResyncCompleted,
+                     "a delta client should be able to request and apply a complete snapshot");
+
     const Network::PlayerId departedId = clients.back()->playerId();
     const bool departingClientIsIdle = waitFor(
         [&] {

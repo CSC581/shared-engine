@@ -506,6 +506,27 @@ CTest registers this as `network-performance-benchmark-quick`. It validates
 the harness, not performance. Canonical evidence must come from the default
 matrix in a Release build on an otherwise idle machine.
 
+`--snapshot-delivery` is a separate, fixed-rate experiment. It compares
+binary-full and binary property-delta delivery while holding the offered load
+at 60 requests per second per client. Its matrix adds 0- and 512-byte player
+data to the same 1/2/4-client and 10/100/500-platform sizes. Every reply checks
+the reconstructed roster, platform count and submitting player's exact pose
+and opaque data. Snapshot telemetry proves which response kind was applied.
+
+```bash
+./build/network-performance-benchmark --quick --snapshot-delivery \
+  --runs /tmp/snapshot-runs.csv --latency /tmp/snapshot-latency.csv
+./benchmarks/collect_snapshot_delivery.sh
+```
+
+The collector runs the five-repetition Release matrix, validates it with
+`analyze_snapshot_delivery.py`, and then runs a shorter, separate recovery
+matrix using `--resync-every 30`. Stale-ack and rejoin recovery remain covered
+by deterministic host integration tests instead of being mixed into timing.
+`baseline_bytes` is the encoded full-snapshot size per client, an explicit
+proxy rather than allocator-resident memory. Payload bytes continue to exclude
+ZeroMQ and TCP/IP framing.
+
 `runs.csv` contains one aggregate row per repetition. `latency_samples.csv`
 contains one nanosecond RTT per client iteration, keyed by run, format, cell,
 repetition, client and iteration, plus the format that client used

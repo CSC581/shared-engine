@@ -75,6 +75,11 @@ public:
     // server stores it, and every other client reads it back in
     // WorldSnapshot::players. Format and meaning belong to the game.
     void submitPosition(float x, float y, const std::string& data = {});
+
+    // Ask the next property-delta POSITION request to request a complete
+    // snapshot. This is useful after an application-level reset and for
+    // explicitly exercising recovery; it has no effect in full-snapshot mode.
+    void requestFullSnapshot();
     void leave();
 
     ConnectionState state() const;

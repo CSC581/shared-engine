@@ -310,6 +310,14 @@ add_test(
 )
 set_tests_properties(network-performance-benchmark-mixed-quick PROPERTIES TIMEOUT 60)
 
+add_test(
+    NAME network-performance-benchmark-snapshot-delivery-quick
+    COMMAND network-performance-benchmark --quick --snapshot-delivery
+            --runs ${CMAKE_CURRENT_BINARY_DIR}/performance-snapshot-delivery-quick-runs.csv
+            --latency ${CMAKE_CURRENT_BINARY_DIR}/performance-snapshot-delivery-quick-latency.csv
+)
+set_tests_properties(network-performance-benchmark-snapshot-delivery-quick PROPERTIES TIMEOUT 60)
+
 # Optional headless diagnostics for the object model, worker scheduler, codecs
 # and public multiplayer interface. They are not substitutes for the required
 # network-format experiment. Quick mode is only a correctness/smoke check.
