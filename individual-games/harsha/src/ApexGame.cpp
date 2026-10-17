@@ -1,10 +1,9 @@
 #include "ApexGame.hpp"
 
+#include "ApexLevel.hpp"
 #include "ApexNetworkConfig.hpp"
 #include "ApexPresence.hpp"
-#include "Collision.hpp"
 #include "Input.hpp"
-#include "Physics.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -12,8 +11,7 @@
 #include <utility>
 
 ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> session)
-    : player_(0.0F, 0.0F, playerWidth, playerHeight),
-      session_(std::move(session)),
+    : session_(std::move(session)),
       viewWidth_(static_cast<float>(engine.getWidth())),
       viewHeight_(static_cast<float>(engine.getHeight())),
       worldWidth_(viewWidth_),
@@ -21,17 +19,22 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
       startX_(worldWidth_ * 0.5F - playerWidth * 0.5F),
       startY_(worldHeight_ - 140.0F - playerHeight),
       currentScaleMode_(engine.getScaleMode()),
+      // Disjoint tags, so the two workers never touch the same object.
       workers_({
-          [this](float dt) { updateMovingPlatforms(dt); },
+          [this](float) { world_.updateComponents(frameTime_, "platform"); },
           [this](float dt) { updatePlayerPhysics(dt); },
       })
 {
-    player_.setPosition(startX_, startY_);
+    ApexLevel::buildLevel(world_, worldWidth_, worldHeight_, viewHeight_, session_ != nullptr);
+
+    player_ = &ApexLevel::makePlayer(world_, startX_, startY_, playerWidth, playerHeight, gravity);
+    playerTransform_ = player_->get<Transform>();
+    playerMotion_ = player_->get<Motion>();
+    playerGravity_ = player_->get<Gravity>();
+    player_->get<Collider>()->onCollide = [this](GameObject&, GameObject& other) {
+        onPlayerCollide(other);
+    };
     previousPlayerBottom_ = startY_ + playerHeight;
-
-    buildLevel();
-
-    Physics::setGravity(gravity);
 
     camera_ = worldHeight_ - viewHeight_;
 
@@ -49,51 +52,6 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
                      "release to leap. P pause, 1/2/3 = 0.5x/1x/2x game time. "
                      "F1 to toggle scaling, Esc to quit.\n"
                      "Optional: ./apex-ascent --join [tcp://host:port]\n";
-    }
-}
-
-void ApexGame::buildLevel()
-{
-    constexpr float groundThickness = 140.0F;
-    constexpr float wallThickness = 40.0F;
-    constexpr float platformThickness = 60.0F;
-
-    // Ground at the bottom of the world.
-    platforms_.emplace_back(0.0F, worldHeight_ - groundThickness, worldWidth_, groundThickness);
-
-    // Side walls for the whole climb.
-    platforms_.emplace_back(-wallThickness, 0.0F, wallThickness, worldHeight_);
-    platforms_.emplace_back(worldWidth_, 0.0F, wallThickness, worldHeight_);
-
-    // Hand-placed first room (easy jumps to learn charging).
-    const float room0Top = worldHeight_ - viewHeight_;
-    platforms_.emplace_back(160.0F, room0Top + 620.0F, 220.0F, platformThickness);
-    platforms_.emplace_back(560.0F, room0Top + 460.0F, 220.0F, platformThickness);
-    platforms_.emplace_back(220.0F, room0Top + 280.0F, 220.0F, platformThickness);
-
-    // Auto-moving platform (matches ApexNetwork::makeServerConfig for online).
-    {
-        const float movingPlatformY = ApexNetwork::movingPlatformY();
-        const std::size_t movingIndex = platforms_.size();
-        platforms_.emplace_back(ApexNetwork::movingPointAX, movingPlatformY,
-                                ApexNetwork::movingPlatformWidth, platformThickness);
-        movingPlatformPaths_.push_back({movingIndex, ApexNetwork::movingPointAX, movingPlatformY,
-                                         ApexNetwork::movingPointBX, movingPlatformY,
-                                         ApexNetwork::movingPlatformSpeed, true,
-                                         ApexNetwork::movingPlatformId, false});
-    }
-
-    // TODO: replace generated staircase with hand-designed rooms later.
-    for (int room = 1; room < roomCount; ++room) {
-        const float roomTop = worldHeight_ - viewHeight_ * static_cast<float>(room + 1);
-        const bool startLeft = room % 2 == 0;
-
-        const float leftX = 120.0F;
-        const float rightX = worldWidth_ - 120.0F - 220.0F;
-
-        platforms_.emplace_back(startLeft ? leftX : rightX, roomTop + 700.0F, 220.0F, platformThickness);
-        platforms_.emplace_back(startLeft ? rightX : leftX, roomTop + 460.0F, 220.0F, platformThickness);
-        platforms_.emplace_back(worldWidth_ * 0.5F - 110.0F, roomTop + 220.0F, 220.0F, platformThickness);
     }
 }
 
@@ -135,7 +93,7 @@ void ApexGame::handleInput(Engine& engine)
         isCharging_ = true;
         aimDirection_ = aim;
     } else if (isCharging_ == false && aim != 0.0F){
-        player_.setVelocityX(aim * walkSpeed);
+        playerMotion_->velocityX = aim * walkSpeed;
     }
 
     // "Not held" rather than "just released": a release during a pause is
@@ -144,7 +102,8 @@ void ApexGame::handleInput(Engine& engine)
         isCharging_ = false;
 
         const float power = baseJumpSpeed + chargePower_;
-        player_.setVelocity(aimDirection_ * power * horizontalJumpRatio, -power);
+        playerMotion_->velocityX = aimDirection_ * power * horizontalJumpRatio;
+        playerMotion_->velocityY = -power;
 
         chargePower_ = 0.0F;
         isOnGround_ = false;
@@ -165,23 +124,35 @@ void ApexGame::updateNetwork()
     if (session_->state() == Multiplayer::State::Ready) {
         // Local climb is authoritative; never rewind from snapshot (server spawn
         // is only a join hint — we keep room-0 placement from the client).
-        session_->publishLocalPlayer(player_.getX(), player_.getY(),
+        session_->publishLocalPlayer(playerTransform_->x, playerTransform_->y,
                                      ApexPresence::encodeAnimation(playerAnim_));
     }
 }
 
+// The engine only calls the FrameTime overload; this exists because Game
+// declares it pure virtual.
 void ApexGame::update(float deltaTime, Engine& engine)
 {
+    update(FrameTime{deltaTime, 0}, engine);
+}
+
+void ApexGame::update(const FrameTime& time, Engine& engine)
+{
+    const auto deltaTime = static_cast<float>(time.dtSeconds);
     currentScaleMode_ = engine.getScaleMode();
 
     const Timeline& gameTime = engine.gameTime();
     gameTimePaused_ = gameTime.isPaused();
     gameTimeScale_ = gameTime.scale();
 
-    // Refresh snapshots before moving-platform carry (server poses).
+    // Refresh snapshots, then mirror them into the World (server platform
+    // poses, remote players) before anything reads positions this frame.
     // NetworkClient uses realTime, so pause/scale never freezes the link.
     if (session_) {
         session_->update();
+        if (sync_) {
+            sync_->apply(*session_);
+        }
 
         char title[128];
         if (gameTimePaused_) {
@@ -195,20 +166,31 @@ void ApexGame::update(float deltaTime, Engine& engine)
     }
 
     // Capture before this frame's movement for the landing check.
-    previousPlayerBottom_ = player_.getY() + playerHeight;
+    previousPlayerBottom_ = playerTransform_->y + playerHeight;
+
+    // No gravity while standing: the landing pass holds the climber on the
+    // surface. Set here, before the workers start, so no thread races on it.
+    playerGravity_->acceleration = isOnGround_ ? 0.0F : gravity;
 
     // Platforms and player physics run in parallel, one worker each; this
     // returns once both are done, so everything below reads finished results.
+    // The workers read frameTime_, which nothing writes until runFrame returns.
+    frameTime_ = time;
     workers_.runFrame(deltaTime);
 
-    // Ride the platform last, on this thread: the platform worker only
-    // measured the carry. Movement adds up, so applying it after the player's
-    // own move lands in the same place as applying it before.
+    // Ride the platform last, on this thread: the platform's Carrier only
+    // measured how far it moved. Movement adds up, so applying it after the
+    // player's own move lands in the same place as applying it before.
     // Not while paused: online, the server keeps moving the platform on real
     // time, but a paused climber must stay where it is.
-    if (!gameTimePaused_ && (carryDx_ != 0.0F || carryDy_ != 0.0F)) {
-        player_.setPosition(player_.getX() + carryDx_, player_.getY() + carryDy_);
-        previousPlayerBottom_ += carryDy_;
+    if (!gameTimePaused_ && groundedPlatformId_ != 0) {
+        GameObject* platform = world_.find(groundedPlatformId_);
+        const Carrier* carrier = platform != nullptr ? platform->get<Carrier>() : nullptr;
+        if (carrier != nullptr) {
+            playerTransform_->x += carrier->dx;
+            playerTransform_->y += carrier->dy;
+            previousPlayerBottom_ += carrier->dy;
+        }
     }
 
     // Paused: the climber's grounded state and animation stay frozen too.
@@ -217,45 +199,40 @@ void ApexGame::update(float deltaTime, Engine& engine)
     if (!gameTimePaused_) {
         handleCollisions();
     }
+    // Online ghosts that disconnected were queued for removal by sync_.
+    world_.flushDestroyed();
+
     updateCamera(deltaTime);
 
     if (!gameTimePaused_) {
         PlayerAnimation::AnimInput animInput;
         animInput.onGround = isOnGround_;
         animInput.charging = isCharging_;
-        animInput.velocityX = player_.getVelocityX();
-        animInput.velocityY = player_.getVelocityY();
+        animInput.velocityX = playerMotion_->velocityX;
+        animInput.velocityY = playerMotion_->velocityY;
         // Prefer aim while charging; otherwise use horizontal velocity.
-        animInput.facingIntent = isCharging_ ? aimDirection_ : player_.getVelocityX();
+        animInput.facingIntent = isCharging_ ? aimDirection_ : playerMotion_->velocityX;
         playerAnim_.update(deltaTime, animInput);
     }
 
     updateNetwork();
 
-    const int room = static_cast<int>((worldHeight_ - player_.getY()) / viewHeight_);
+    const int room = static_cast<int>((worldHeight_ - playerTransform_->y) / viewHeight_);
     if (room > highestRoomReached_) {
         highestRoomReached_ = room;
     }
 }
 
-bool ApexGame::isMovingPlatform(const Entity& platform) const
-{
-    for (const MovingPlatformPath& path : movingPlatformPaths_) {
-        if (&platform == &platforms_[path.platformIndex]) {
-            return true;
-        }
-    }
-    return false;
-}
-
 void ApexGame::handleCollisions()
 {
     isOnGround_ = false;
-    groundedMovingPlatform_ = nullptr;
+    groundedPlatformId_ = 0;
 
-    for (Entity& platform : platforms_) {
-        const Rect playerBounds = player_.getBounds();
-        const Rect platformBounds = platform.getBounds();
+    // Landing pass first, over every platform: snap onto any top the feet
+    // crossed this frame.
+    for (GameObject* platform : world_.findAllByTag("platform")) {
+        const Rect playerBounds = playerTransform_->bounds();
+        const Rect platformBounds = platform->get<Transform>()->bounds();
 
         // Land when the foot crosses the top (avoids wrong-axis MTV near edges).
         const bool overlapsHorizontally =
@@ -265,41 +242,42 @@ void ApexGame::handleCollisions()
         // vy >= 0 (not only > 0): resting contact has vy == 0 and feet on the
         // surface with no AABB overlap, so MTV never fires; requiring a fall
         // made isOnGround_ flicker every other frame (anim Land/air twitch).
-        if (player_.getVelocityY() >= 0.0F && overlapsHorizontally &&
+        if (playerMotion_->velocityY >= 0.0F && overlapsHorizontally &&
             previousPlayerBottom_ <= platformBounds.y + landingTolerance &&
             playerBounds.y + playerBounds.height >= platformBounds.y) {
-            player_.setPosition(player_.getX(), platformBounds.y - playerHeight);
-            player_.setVelocityY(0.0F);
+            playerTransform_->y = platformBounds.y - playerHeight;
+            playerMotion_->velocityY = 0.0F;
             isOnGround_ = true;
-            if (isMovingPlatform(platform)) {
-                groundedMovingPlatform_ = &platform;
-            }
-            continue;
+            groundedPlatformId_ = platform->id();
         }
+    }
 
-        float pushX = 0.0F;
-        float pushY = 0.0F;
+    // Then the engine's pass: pushes the player out of walls and ceilings
+    // (MTV), and calls collider callbacks. A push that leaves the player on
+    // top of a platform counts as a landing; see onPlayerCollide.
+    world_.resolveCollisions();
+}
 
-        if (!Collision::getSeparation(player_, platform, pushX, pushY)) {
-            continue;
-        }
-
-        if (pushY < 0.0F) {
-            // Landed on top.
-            isOnGround_ = true;
-            if (isMovingPlatform(platform)) {
-                groundedMovingPlatform_ = &platform;
-            }
-        }
-
-        Collision::resolve(player_, platform);
+// Player's onCollide. World calls it after all pushes, so the player's
+// position is settled: if its feet now rest on this platform's top, the MTV
+// pushed it up onto it (the old "pushY < 0" landing case).
+void ApexGame::onPlayerCollide(GameObject& other)
+{
+    if (other.tag() != "platform") {
+        return;
+    }
+    const float playerBottom = playerTransform_->y + playerHeight;
+    const float platformTop = other.get<Transform>()->y;
+    if (playerMotion_->velocityY >= 0.0F && std::fabs(playerBottom - platformTop) <= landingTolerance) {
+        isOnGround_ = true;
+        groundedPlatformId_ = other.id();
     }
 }
 
 // Smooth vertical follow, clamped to the world.
 void ApexGame::updateCamera(float deltaTime)
 {
-    const float target = player_.getY() + playerHeight * 0.5F - viewHeight_ * 0.5F;
+    const float target = playerTransform_->y + playerHeight * 0.5F - viewHeight_ * 0.5F;
     camera_ += (target - camera_) * (1.0F - std::pow(0.001F, deltaTime));
 
     if (camera_ < 0.0F) {
@@ -311,7 +289,7 @@ void ApexGame::updateCamera(float deltaTime)
 }
 
 // Player worker thread: touches only the player and its charge, never a
-// platform.
+// platform. The other worker is updating the "platform" objects meanwhile.
 void ApexGame::updatePlayerPhysics(float deltaTime)
 {
     if (isCharging_) {
@@ -323,86 +301,9 @@ void ApexGame::updatePlayerPhysics(float deltaTime)
 
     // Kill leftover horizontal slide after landing.
     if (isOnGround_) {
-        player_.setVelocityX(player_.getVelocityX() * std::pow(groundFriction, deltaTime));
+        playerMotion_->velocityX *= std::pow(Surface::ground, deltaTime);
     }
 
-    if (!isOnGround_) {
-        Physics::applyGravity(player_, deltaTime);
-    }
-    player_.update(deltaTime);
-}
-
-// Platform worker thread: moves platforms and records the carry, but never
-// writes the player — the player worker is moving it at the same time.
-void ApexGame::updateMovingPlatforms(float deltaTime)
-{
-    carryDx_ = 0.0F;
-    carryDy_ = 0.0F;
-
-    // Online + connected: server owns networked movers (no local path advance).
-    if (session_ && session_->state() == Multiplayer::State::Ready) {
-        applyServerMovingPlatforms();
-        return;
-    }
-
-    for (MovingPlatformPath& path : movingPlatformPaths_) {
-        path.serverPoseInitialized = false;
-
-        Entity& platform = platforms_[path.platformIndex];
-        const float prevX = platform.getX();
-        const float prevY = platform.getY();
-
-        const float targetX = path.movingToB ? path.pointBX : path.pointAX;
-        const float targetY = path.movingToB ? path.pointBY : path.pointAY;
-        const float dx = targetX - prevX;
-        const float dy = targetY - prevY;
-        const float distance = std::sqrt(dx * dx + dy * dy);
-        const float step = path.speed * deltaTime;
-
-        if (distance <= step || distance <= 0.0001F) {
-            platform.setPosition(targetX, targetY);
-            path.movingToB = !path.movingToB;
-        } else {
-            platform.setPosition(prevX + dx / distance * step, prevY + dy / distance * step);
-        }
-
-        // Carry the player with the platform they were standing on.
-        if (&platform == groundedMovingPlatform_) {
-            carryDx_ += platform.getX() - prevX;
-            carryDy_ += platform.getY() - prevY;
-        }
-    }
-}
-
-void ApexGame::applyServerMovingPlatforms()
-{
-    for (MovingPlatformPath& path : movingPlatformPaths_) {
-        if (path.networkId == 0) {
-            continue;
-        }
-
-        const Multiplayer::Platform* match = nullptr;
-        for (const Multiplayer::Platform& platform : session_->platforms()) {
-            if (platform.id == path.networkId) {
-                match = &platform;
-                break;
-            }
-        }
-        if (match == nullptr) {
-            continue;
-        }
-
-        Entity& platform = platforms_[path.platformIndex];
-        const float prevX = platform.getX();
-        const float prevY = platform.getY();
-        platform.setPosition(match->x, match->y);
-        platform.setSize(match->width, match->height);
-
-        // First snapshot after connect only snaps pose; later frames carry by delta.
-        if (path.serverPoseInitialized && &platform == groundedMovingPlatform_) {
-            carryDx_ += platform.getX() - prevX;
-            carryDy_ += platform.getY() - prevY;
-        }
-        path.serverPoseInitialized = true;
-    }
+    // Gravity, then Motion (their priority order) move the player.
+    world_.updateComponents(frameTime_, "player");
 }

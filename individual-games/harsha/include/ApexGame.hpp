@@ -3,25 +3,29 @@
 
 #pragma once
 
+#include "ApexComponents.hpp"
 #include "Engine.hpp"
-#include "Entity.hpp"
+#include "FrameTime.hpp"
 #include "FrameWorkers.hpp"
 #include "Game.hpp"
+#include "GameObject.hpp"
 #include "Multiplayer.hpp"
+#include "NetworkWorldSync.hpp"
+#include "World.hpp"
 #include "animation/PlayerAnimation.hpp"
 
 #include <SDL3/SDL.h>
 
-#include <cstddef>
-#include <cstdint>
 #include <memory>
-#include <vector>
 
 class ApexGame : public Game {
 public:
     ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> session = {});
 
     void handleInput(Engine& engine) override;
+    // The engine calls the FrameTime overload; World needs the FrameTime.
+    // The float one is pure virtual in Game, so it stays as a forwarder.
+    void update(const FrameTime& time, Engine& engine) override;
     void update(float deltaTime, Engine& engine) override;
     void render(SDL_Renderer* renderer) const override;
 
@@ -34,8 +38,6 @@ private:
     static constexpr float horizontalJumpRatio = 0.55F;
 
     static constexpr float walkSpeed = 300.0F;
-    // Multiplicative per-second decay of horizontal speed while grounded.
-    static constexpr float groundFriction = 0.00002F;
     // Slop for the direction-aware landing check (float drift on the surface).
     static constexpr float landingTolerance = 4.0F;
 
@@ -44,34 +46,29 @@ private:
 
     static constexpr int roomCount = 6;
 
-    // Straight-line ping-pong path for one entry in platforms_.
-    // networkId != 0: online mode applies server snapshot poses (APX-M2).
-    struct MovingPlatformPath {
-        std::size_t platformIndex;
-        float pointAX;
-        float pointAY;
-        float pointBX;
-        float pointBY;
-        float speed;
-        bool movingToB = true;
-        std::uint32_t networkId = 0;
-        bool serverPoseInitialized = false;
-    };
-
-    void buildLevel();
     void handleCollisions();
+    void onPlayerCollide(GameObject& other);
     void updateCamera(float deltaTime);
-    void updateMovingPlatforms(float deltaTime);
-    void applyServerMovingPlatforms();
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
-    bool isMovingPlatform(const Entity& platform) const;
 
-    Entity player_;
-    std::vector<Entity> platforms_;
-    std::vector<MovingPlatformPath> movingPlatformPaths_;
-    // Last platform stood on; used to carry the player next frame.
-    Entity* groundedMovingPlatform_ = nullptr;
+    // Every object in the scene: platforms, the local player and, online,
+    // the remote players and server-owned platforms NetworkWorldSync mirrors.
+    World world_;
+    // Owned by world_ and never destroyed, so the pointer stays valid.
+    GameObject* player_ = nullptr;
+    // The player's components, cached once like a component's onAttach does.
+    Transform* playerTransform_ = nullptr;
+    Motion* playerMotion_ = nullptr;
+    Gravity* playerGravity_ = nullptr;
+    // Online only. Declared after world_, which it refers to, so it is
+    // destroyed first.
+    std::unique_ptr<NetworkWorldSync> sync_;
+    // Platform stood on last frame, for carrying; 0 = none (World ids start
+    // at 1). An id, not a pointer: online platforms can be destroyed.
+    ObjectId groundedPlatformId_ = 0;
+    // This frame's time, stashed for the worker threads.
+    FrameTime frameTime_{};
 
     // Milestone 4: climb-loop clips + facing driven by gameplay.
     PlayerAnimation playerAnim_;
@@ -107,12 +104,6 @@ private:
     // Online timeline proof (APX-M4); unused offline.
     bool gameTimePaused_ = false;
     double gameTimeScale_ = 1.0;
-
-    // How far the platform the player stands on moved this frame. The platform
-    // worker records it; the main thread applies it after both workers finish,
-    // so the two threads never write the player at the same time.
-    float carryDx_ = 0.0F;
-    float carryDy_ = 0.0F;
 
     // Section 3: platforms and player physics each run on their own thread
     // every frame. Declared last so its threads are joined before any member

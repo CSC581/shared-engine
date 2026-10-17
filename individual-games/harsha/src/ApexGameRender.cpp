@@ -16,14 +16,9 @@ void ApexGame::render(SDL_Renderer* renderer) const
         SDL_RenderFillRect(renderer, &rect);
     };
 
-    for (const Entity& platform : platforms_) {
-        // Amber tint so moving platforms read as intentional.
-        if (isMovingPlatform(platform)) {
-            drawRect(platform.getBounds(), 200, 150, 60);
-        } else {
-            drawRect(platform.getBounds(), 90, 100, 130);
-        }
-    }
+    // Platforms: every object with a Renderable (colour set per kind by
+    // ApexLevel). The player has none; its sprite is drawn below.
+    renderWorld(renderer, world_, 0.0F, camera_);
 
     // Remote climbers: tinted sprites when on-screen; HUD cue when above/below.
     if (session_ && session_->state() == Multiplayer::State::Ready) {
@@ -64,10 +59,10 @@ void ApexGame::render(SDL_Renderer* renderer) const
     }
 
     if (playerAnim_.isLoaded()) {
-        playerAnim_.draw(renderer, player_.getX(), player_.getY(), camera_, playerWidth,
+        playerAnim_.draw(renderer, playerTransform_->x, playerTransform_->y, camera_, playerWidth,
                          playerHeight);
     } else {
-        drawRect(player_.getBounds(), 240, 240, 255);
+        drawRect(playerTransform_->bounds(), 240, 240, 255);
     }
 
     // Charge meter in screen space (not world space).
@@ -83,7 +78,7 @@ void ApexGame::render(SDL_Renderer* renderer) const
 
     char hud[128];
     std::snprintf(hud, sizeof(hud), "Room: %d / %d   (highest: %d)",
-                  static_cast<int>((worldHeight_ - player_.getY()) / viewHeight_) + 1,
+                  static_cast<int>((worldHeight_ - playerTransform_->y) / viewHeight_) + 1,
                   roomCount, highestRoomReached_ + 1);
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     SDL_RenderDebugText(renderer, 20.0F, 20.0F, hud);

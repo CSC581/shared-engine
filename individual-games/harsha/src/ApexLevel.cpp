@@ -48,6 +48,17 @@ GameObject& makeMover(World& world, PathMover::Linear path, float speed, float w
     return platform;
 }
 
+GameObject& makePlayer(World& world, float x, float y, float width, float height, float gravity)
+{
+    GameObject& player = world.create("player");
+    player.add<Transform>(x, y, width, height);
+    player.add<Motion>();
+    player.add<Gravity>(gravity);
+    player.add<Collider>(Collider::Kind::Solid, platformLayer | triggerLayer);
+    player.setActive(true);
+    return player;
+}
+
 void buildLevel(World& world, float worldWidth, float worldHeight, float viewHeight, bool online)
 {
     using Kind = ApexPlatform::Kind;

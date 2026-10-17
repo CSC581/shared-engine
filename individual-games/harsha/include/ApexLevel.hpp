@@ -28,6 +28,9 @@ GameObject& makeStatic(World& world, float x, float y, float width, float height
 GameObject& makeMover(World& world, PathMover::Linear path, float speed, float width,
                       float height);
 
+// The local climber. No Renderable: ApexGame draws the animated sprite itself.
+GameObject& makePlayer(World& world, float x, float y, float width, float height, float gravity);
+
 // The whole tower. Online, movers are left out: NetworkWorldSync creates them
 // from server snapshots instead.
 void buildLevel(World& world, float worldWidth, float worldHeight, float viewHeight, bool online);
