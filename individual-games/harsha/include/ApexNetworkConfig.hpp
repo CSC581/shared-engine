@@ -78,13 +78,14 @@ inline const std::vector<MoverSpec>& movers()
         elevator.height = platformThickness;
         specs.push_back({MoverStyle::Plain, elevator});
 
-        // Room 3: fast slingshot rail over the pit, between the launch ledge
-        // and the goal ledge.
+        // Room 3: fast slingshot rail low in the room. The goal ledge is high
+        // above and only a short way left; only a fling gets there (see
+        // ApexLevel buildRoom3).
         Network::PlatformPath rail;
         rail.id = 3;
-        rail.startX = 120.0F;
-        rail.startY = roomTop(3) + 560.0F;
-        rail.endX = 520.0F;
+        rail.startX = 420.0F;
+        rail.startY = roomTop(3) + 880.0F;
+        rail.endX = 640.0F;
         rail.endY = rail.startY;
         rail.speed = 420.0F;
         rail.width = 140.0F;

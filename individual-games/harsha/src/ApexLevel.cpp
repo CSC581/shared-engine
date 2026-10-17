@@ -170,20 +170,16 @@ void buildRoom2(const Room& room)
     makeStatic(room.world, 20.0F, room.top + 500.0F, 340.0F, platformThickness, Kind::Stone);
 }
 
-// Room 3, the slingshot. A fast magenta rail (movers(), id 3) shuttles over a
-// pit; ride it from the launch ledge and jump off at its right end to reach
-// the goal ledge. The pit floor becomes a spike death zone (Step 4).
+// Room 3, the slingshot. The fast magenta rail (movers(), id 3) runs low in
+// the room; the only way on is the goal ledge high above and ~350 px to the
+// left. An ordinary jump that high is forced to fly ~800 px sideways (sideways
+// speed is tied to power), so it cannot land there. Jumping straight up (no
+// aim) off the rail while it moves left borrows the rail's speed instead: a
+// steep throw that lands on the ledge. Verified by simulation with wall and
+// ceiling collisions: reachable only with the fling, at near-full charge.
 void buildRoom3(const Room& room)
 {
-    // Launch ledge, reached from room 2's top ice ledge.
-    makeStatic(room.world, 380.0F, room.top + 840.0F, 180.0F, platformThickness, Kind::Stone);
-
-    // Goal ledge, up and right of the rail's far end.
-    makeStatic(room.world, 740.0F, room.top + 240.0F, 140.0F, platformThickness, Kind::Stone);
-
-    // Pit floor under the rail's far end and the goal; climbable back to the
-    // launch ledge until it gets spikes.
-    makeStatic(room.world, 620.0F, room.top + 900.0F, 280.0F, platformThickness, Kind::Stone);
+    makeStatic(room.world, 110.0F, room.top + 200.0F, 170.0F, platformThickness, Kind::Stone);
 }
 
 // Room 4, the orbit. A stone hub, then three violet wheels (movers(), ids
