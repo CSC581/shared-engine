@@ -117,6 +117,7 @@ void ApexGame::handleInput(Engine& engine)
         const float power = baseJumpSpeed + chargePower_;
         playerMotion_->velocityX = aimDirection_ * power * horizontalJumpRatio;
         playerMotion_->velocityY = -power;
+        applySlingshotFling();
 
         chargePower_ = 0.0F;
         isOnGround_ = false;
@@ -125,6 +126,28 @@ void ApexGame::handleInput(Engine& engine)
     if (Input::isKeyJustPressed(SDL_SCANCODE_ESCAPE)) {
         engine.quit();
     }
+}
+
+// Jumping off a slingshot rail throws the climber: the rail's velocity is
+// added to the leap (all of it sideways, half of it vertically). Ordinary
+// movers only carry; they never fling. Online, Carrier's velocity is measured
+// across snapshots and held between them, so the fling works there too.
+void ApexGame::applySlingshotFling()
+{
+    if (groundedPlatformId_ == 0) {
+        return;
+    }
+    const GameObject* platform = world_.find(groundedPlatformId_);
+    if (platform == nullptr) {
+        return;
+    }
+    const ApexPlatform* kind = platform->get<ApexPlatform>();
+    const Carrier* carrier = platform->get<Carrier>();
+    if (kind == nullptr || carrier == nullptr || kind->kind != ApexPlatform::Kind::Slingshot) {
+        return;
+    }
+    playerMotion_->velocityX += carrier->velocityX;
+    playerMotion_->velocityY += carrier->velocityY * slingshotVerticalShare;
 }
 
 void ApexGame::updateNetwork()

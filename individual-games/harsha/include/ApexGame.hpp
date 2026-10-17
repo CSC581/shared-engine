@@ -38,6 +38,8 @@ private:
     static constexpr float horizontalJumpRatio = 0.55F;
 
     static constexpr float walkSpeed = 300.0F;
+    // Share of a slingshot rail's vertical velocity added to a jump off it.
+    static constexpr float slingshotVerticalShare = 0.5F;
     // Slop for the direction-aware landing check (float drift on the surface).
     static constexpr float landingTolerance = 4.0F;
 
@@ -48,6 +50,7 @@ private:
 
     void handleCollisions();
     void onPlayerCollide(GameObject& other);
+    void applySlingshotFling();
     void updateCamera(float deltaTime);
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
