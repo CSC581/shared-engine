@@ -55,6 +55,7 @@ target_link_libraries(engine-threads PUBLIC Threads::Threads)
 add_library(network-core STATIC
     src/BinaryNetworkProtocol.cpp
     src/NetworkProtocol.cpp
+    src/SnapshotDelta.cpp
     src/NetworkServer.cpp
     src/NetworkServerHost.cpp
     src/NetworkClient.cpp
@@ -177,6 +178,11 @@ add_executable(binary-network-protocol-tests tests/BinaryNetworkProtocolTests.cp
 target_link_libraries(binary-network-protocol-tests PRIVATE network-core)
 
 add_test(NAME binary-network-protocol-tests COMMAND binary-network-protocol-tests)
+
+add_executable(snapshot-delta-tests tests/SnapshotDeltaTests.cpp)
+target_link_libraries(snapshot-delta-tests PRIVATE network-core)
+
+add_test(NAME snapshot-delta-tests COMMAND snapshot-delta-tests)
 
 # The real NetworkServerHost on loopback: handshake -> private worker, rejoin,
 # LEAVE reaping, GET_WORLD without joining, listen mode, and clean shutdown.
