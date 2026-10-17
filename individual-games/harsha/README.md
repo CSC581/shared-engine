@@ -60,12 +60,9 @@ the executable from any cwd; assets resolve via `SDL_GetBasePath()`.
 cmake --build build --target apex-network-server apex-ascent
 ./build/apex-network-server
 ./build/apex-ascent --join          # repeat in separate terminals (up to 4 slots)
-./build/apex-ascent --join --format binary   # Part 1C binary encoding (default: text)
 ```
 
-Text and binary clients can join the same server together. Each climber
-starts on its own ground slot, `(player id - 1) % 4`. `--format` applies
-to client-server only.
+Each climber starts on its own ground slot, `(player id - 1) % 4`.
 
 Use `./build/apex-network-server` (tower world), not the sandbox
 `network-server` (arena demo). Rebuild server and clients together after a
@@ -125,7 +122,7 @@ Peer ids and base ports must be unique. Across machines, every peer also needs
 | [ApexGameRender.cpp](src/ApexGameRender.cpp) | `renderWorld` for platforms, rail track and orbit guides, spikes, wind streaks, ghosts, charge meter, HUD |
 | [ApexComponents.hpp](include/ApexComponents.hpp) / [ApexComponents.cpp](src/ApexComponents.cpp) | Apex components: `ApexPlatform`, `Surface`, `Carrier`, `SpawnMarker`, `DeathZone`, `RoomZone`, `WindZone` |
 | [ApexLevel.hpp](include/ApexLevel.hpp) / [ApexLevel.cpp](src/ApexLevel.cpp) | Factory per object kind (platforms, movers, player, online objects, hidden triggers) and one function per room |
-| [ApexOptions.hpp](include/ApexOptions.hpp) / [ApexOptions.cpp](src/ApexOptions.cpp) | Command line (`--join`, `--mode`, `--format`, `--host`, …) |
+| [ApexOptions.hpp](include/ApexOptions.hpp) / [ApexOptions.cpp](src/ApexOptions.cpp) | Command line (`--join`, `--mode`, `--host`, …) |
 | [ApexPresence.hpp](include/ApexPresence.hpp) / [ApexPresence.cpp](src/ApexPresence.cpp) | Online presentation: HUD labels, ghost tints, animation hint encode/decode |
 | [ApexNetworkConfig.hpp](include/ApexNetworkConfig.hpp) | The one mover table (`movers()`) and the spawn slots, shared by the offline level, the online factory and the server |
 | [ApexNetworkServerMain.cpp](src/ApexNetworkServerMain.cpp) | Headless Apex world server: Apex config + CLI on the engine's `NetworkServerHost` |
