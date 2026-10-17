@@ -95,8 +95,13 @@ public:
     // the World advances at the tick rate however many clients are sending.
     void update();
 
-    // Processes one decoded transport message and returns its reply message.
+    // Processes a request that has already been decoded and validated by a
+    // protocol codec. This is the representation-independent server boundary.
     // Does not advance platforms: replies carry the poses of the last update().
+    Reply handle(Request request);
+
+    // Compatibility wrapper for the existing multipart text protocol. Invalid
+    // messages still receive the same text ERROR reply as before.
     Message handle(const Message& message);
 
     WorldSnapshot snapshot() const;
@@ -129,6 +134,7 @@ private:
     void expireInactivePlayers(std::int64_t now);
     void advancePlatforms(std::int64_t now);
     void removePlayer(std::unordered_map<PlayerId, ActivePlayer>::iterator player);
+    Reply handleLocked(Request request, std::int64_t now);
     WorldSnapshot buildSnapshot() const;
     WorldStateSnapshot buildWorldState() const;
     SpawnPoint chooseSpawn(PlayerId id) const;

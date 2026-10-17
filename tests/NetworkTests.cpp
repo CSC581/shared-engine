@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -452,6 +453,57 @@ bool serverCountsAcceptedTrafficAndSessions()
     return passed;
 }
 
+// The server's new typed boundary must be behaviorally identical to the
+// existing multipart-text wrapper. Keeping two independent servers in lockstep
+// catches changes to both the encoded reply and the stored scene/session state.
+bool typedServerBoundaryMatchesTextProtocol()
+{
+    ManualClock textClock;
+    ManualClock typedClock;
+    Network::ServerConfig config;
+    config.spawnPoints = {{10.0F, 20.0F}, {30.0F, 40.0F}};
+    config.platforms = {{7, 0.0F, 100.0F, 200.0F, 100.0F, 80.0F, 96.0F, 20.0F}};
+    Network::NetworkServer textServer(textClock, config);
+    Network::NetworkServer typedServer(typedClock, config);
+
+    bool passed = true;
+    const auto compare = [&](const Network::Message& requestMessage, const std::string& label) {
+        Network::Request request;
+        std::string error;
+        if (!Network::decodeRequest(requestMessage, request, error)) {
+            passed &= expect(false, label + ": test request should decode: " + error);
+            return;
+        }
+
+        const Network::Message textReply = textServer.handle(requestMessage);
+        const Network::Message typedReply = Network::encodeReply(typedServer.handle(std::move(request)));
+        passed &= expect(textReply == typedReply, label + ": typed and text paths should encode identically");
+    };
+
+    textClock.advance(kNsPerSec / 4);
+    typedClock.advance(kNsPerSec / 4);
+    textServer.update();
+    typedServer.update();
+    compare(Network::encodeGetWorld(), "GET_WORLD");
+
+    const Network::SessionToken owner(32, 'a');
+    const Network::SessionToken stranger(32, 'b');
+    compare(Network::encodeJoin(owner, "Ada"), "JOIN");
+    compare(Network::encodePosition(1, owner, {12.5F, 34.25F, 1, std::string("raw\0data", 8)}),
+            "POSITION");
+    compare(Network::encodePosition(1, owner, {99.0F, 99.0F, 1, {}}), "stale POSITION");
+    compare(Network::encodePosition(1, stranger, {99.0F, 99.0F, 2, {}}), "wrong-owner POSITION");
+    compare(Network::encodeJoin(owner, "Ada"), "repeated JOIN");
+    compare(Network::encodeLeave(1, owner), "LEAVE");
+    compare(Network::encodeLeave(999, owner), "unknown-player LEAVE");
+
+    passed &= expect(textServer.playerCount() == typedServer.playerCount() &&
+                         textServer.snapshot().serverTick == typedServer.snapshot().serverTick &&
+                         textServer.snapshot().players.size() == typedServer.snapshot().players.size(),
+                     "typed and text paths should leave equivalent server state");
+    return passed;
+}
+
 // The server keeps its scene as GameObjects: players appear on JOIN, follow
 // POSITION, and leave the scene on LEAVE; platforms move by PathMover on
 // update() only.
@@ -760,6 +812,7 @@ int main()
     passed &= worldStateClientReadsOnlyWorld();
     passed &= worldRequestDoesNotUsePlayerSlots();
     passed &= serverCountsAcceptedTrafficAndSessions();
+    passed &= typedServerBoundaryMatchesTextProtocol();
     passed &= serverSceneFollowsSessions();
     passed &= serverPlayerCap();
     passed &= serverCircularPlatform();

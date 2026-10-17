@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700">
+<rect width="100%" height="100%" fill="white"/>
+<text x="640.0" y="36" text-anchor="middle" font-family="sans-serif" font-size="24" font-weight="bold">Binary client RTT, alone vs mixed</text>
+<text x="24" y="315.0" text-anchor="middle" transform="rotate(-90 24 315.0)" font-family="sans-serif" font-size="15">mean RTT (ms)</text>
+<line x1="100" y1="550.00" x2="1240" y2="550.00" stroke="#dddddd"/>
+<text x="90" y="555.00" text-anchor="end" font-family="sans-serif" font-size="12">0</text>
+<line x1="100" y1="456.00" x2="1240" y2="456.00" stroke="#dddddd"/>
+<text x="90" y="461.00" text-anchor="end" font-family="sans-serif" font-size="12">0.0646</text>
+<line x1="100" y1="362.00" x2="1240" y2="362.00" stroke="#dddddd"/>
+<text x="90" y="367.00" text-anchor="end" font-family="sans-serif" font-size="12">0.129</text>
+<line x1="100" y1="268.00" x2="1240" y2="268.00" stroke="#dddddd"/>
+<text x="90" y="273.00" text-anchor="end" font-family="sans-serif" font-size="12">0.194</text>
+<line x1="100" y1="174.00" x2="1240" y2="174.00" stroke="#dddddd"/>
+<text x="90" y="179.00" text-anchor="end" font-family="sans-serif" font-size="12">0.258</text>
+<line x1="100" y1="80.00" x2="1240" y2="80.00" stroke="#dddddd"/>
+<text x="90" y="85.00" text-anchor="end" font-family="sans-serif" font-size="12">0.323</text>
+<rect x="130.40" y="344.06" width="56.85" height="205.94" fill="#4C78A8"/>
+<rect x="195.00" y="350.01" width="56.85" height="199.99" fill="#F58518"/>
+<text x="195.00" y="574" text-anchor="end" transform="rotate(-42 195.00 574)" font-family="sans-serif" font-size="13">2 clients, 10 platforms</text>
+<rect x="320.40" y="310.58" width="56.85" height="239.42" fill="#4C78A8"/>
+<rect x="385.00" y="330.65" width="56.85" height="219.35" fill="#F58518"/>
+<text x="385.00" y="574" text-anchor="end" transform="rotate(-42 385.00 574)" font-family="sans-serif" font-size="13">2 clients, 100 platforms</text>
+<rect x="510.40" y="218.51" width="56.85" height="331.49" fill="#4C78A8"/>
+<rect x="575.00" y="202.90" width="56.85" height="347.10" fill="#F58518"/>
+<text x="575.00" y="574" text-anchor="end" transform="rotate(-42 575.00 574)" font-family="sans-serif" font-size="13">2 clients, 500 platforms</text>
+<rect x="700.40" y="273.67" width="56.85" height="276.33" fill="#4C78A8"/>
+<rect x="765.00" y="303.35" width="56.85" height="246.65" fill="#F58518"/>
+<text x="765.00" y="574" text-anchor="end" transform="rotate(-42 765.00 574)" font-family="sans-serif" font-size="13">4 clients, 10 platforms</text>
+<rect x="890.40" y="270.44" width="56.85" height="279.56" fill="#4C78A8"/>
+<rect x="955.00" y="285.28" width="56.85" height="264.72" fill="#F58518"/>
+<text x="955.00" y="574" text-anchor="end" transform="rotate(-42 955.00 574)" font-family="sans-serif" font-size="13">4 clients, 100 platforms</text>
+<rect x="1080.40" y="130.36" width="56.85" height="419.64" fill="#4C78A8"/>
+<rect x="1145.00" y="159.23" width="56.85" height="390.77" fill="#F58518"/>
+<text x="1145.00" y="574" text-anchor="end" transform="rotate(-42 1145.00 574)" font-family="sans-serif" font-size="13">4 clients, 500 platforms</text>
+<rect x="100" y="666" width="18" height="18" fill="#4C78A8"/>
+<text x="125" y="680" font-family="sans-serif" font-size="14">binary alone</text>
+<rect x="250" y="666" width="18" height="18" fill="#F58518"/>
+<text x="275" y="680" font-family="sans-serif" font-size="14">binary mixed</text>
+</svg>
