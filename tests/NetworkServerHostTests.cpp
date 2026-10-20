@@ -785,6 +785,72 @@ bool listenModeServesEverythingOnOneSocket()
     return passed;
 }
 
+// A position the client cannot send (oversized data here) is skipped, so one
+// bad frame costs nothing. A client that keeps refusing sends nothing at all,
+// though, and the server times out a player it never hears from, so the client
+// must stop reporting Connected. Both formats have to behave the same way.
+bool refusedPositionsAreReportedNotHidden(Net::DataFormat format, const std::string& label)
+{
+    Network::NetworkServerHost host(testServerConfig(), testHostConfig(Network::HostMode::Dedicated));
+    host.start();
+    RealTimeClock clock;
+    Network::NetworkClient client(clock, host.boundEndpoint(), format);
+    client.start();
+
+    bool passed = expect(waitFor(
+                             [&] {
+                                 client.poll();
+                                 client.submitPosition(1.0F, 2.0F);
+                                 return client.state() == Network::ConnectionState::Connected &&
+                                        hasPlayerAt(client.snapshot(), client.playerId(), 1.0F);
+                             },
+                             std::chrono::milliseconds(3000)),
+                         label + " client should join and exchange a valid position");
+    const bool idle = waitFor(
+        [&] {
+            client.poll();
+            return !client.awaitingReply();
+        },
+        std::chrono::milliseconds(1000));
+    passed &= expect(idle, label + " client should finish its in-flight request");
+    const Network::PlayerId playerId = client.playerId();
+    const std::uint64_t sentBefore = client.telemetry().messagesSent;
+    const std::string oversized(Net::maxPlayerDataLength + 1, 'x');
+
+    client.submitPosition(3.0F, 4.0F, oversized);
+    passed &= expect(client.state() == Network::ConnectionState::Connected &&
+                         client.error() == "player data is too large" && !client.awaitingReply() &&
+                         client.telemetry().messagesSent == sentBefore,
+                     label + " client should skip one oversized update locally and stay connected");
+
+    passed &= expect(waitFor(
+                         [&] {
+                             client.poll();
+                             client.submitPosition(3.0F, 4.0F, oversized);
+                             return client.state() != Network::ConnectionState::Connected;
+                         },
+                         std::chrono::milliseconds(2500)),
+                     label + " client that keeps refusing updates should stop reporting Connected");
+    passed &= expect(client.state() == Network::ConnectionState::Connecting &&
+                         client.error() == "player data is too large" &&
+                         client.telemetry().messagesSent == sentBefore,
+                     label + " client should reconnect, keep the reason and never send the invalid update");
+
+    passed &= expect(waitFor(
+                         [&] {
+                             client.poll();
+                             client.submitPosition(5.0F, 6.0F);
+                             return client.state() == Network::ConnectionState::Connected &&
+                                    hasPlayerAt(client.snapshot(), client.playerId(), 5.0F);
+                         },
+                         std::chrono::milliseconds(4000)),
+                     label + " client should recover once its updates are valid again");
+    passed &= expect(client.playerId() == playerId && host.playerCount() == 1,
+                     label + " client should rejoin as the same player");
+    client.leave();
+    return passed;
+}
+
 } // namespace
 
 int main()
@@ -807,6 +873,8 @@ int main()
         passed &= takenAddressThrows();
         passed &= stopIsPromptAndIdempotent();
         passed &= listenModeServesEverythingOnOneSocket();
+        passed &= refusedPositionsAreReportedNotHidden(Net::DataFormat::TextMultipart, "text");
+        passed &= refusedPositionsAreReportedNotHidden(Net::DataFormat::Binary, "binary");
     } catch (const std::exception& exception) {
         std::cerr << "Test failed with exception: " << exception.what() << '\n';
         passed = false;

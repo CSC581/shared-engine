@@ -112,9 +112,27 @@ struct NetworkClient::Impl {
         waitingForReply = false;
         forceFullSnapshot = false;
         explicitFullSnapshotRequested = false;
+        refusing = false;
         state = ConnectionState::Connecting;
         error.clear();
         sendJoin();
+    }
+
+    // A position this client cannot send is skipped, so one bad frame costs
+    // nothing. A client that keeps refusing sends nothing at all, though, and
+    // the server times out a player it never hears from, so after a retry
+    // interval of refusals this is handled like a server that does not answer:
+    // reconnect, keeping the reason in error().
+    void refuse(const std::string& message)
+    {
+        error = message;
+        const std::int64_t now = clock.now();
+        if (!refusing) {
+            refusing = true;
+            refusingSince = now;
+        } else if (now - refusingSince >= retryDelayNs) {
+            scheduleRetry(message);
+        }
     }
 
     // Move the REQ socket onto the private per-client worker address. The JOIN
@@ -221,6 +239,9 @@ struct NetworkClient::Impl {
     std::uint64_t nextSequence = 1;
     std::int64_t requestSentAt = 0;
     std::int64_t nextRetryAt = 0;
+    // Set while every submitPosition() since refusingSince was refused.
+    bool refusing = false;
+    std::int64_t refusingSince = 0;
     bool waitingForReply = false;
     bool forceFullSnapshot = false;
     bool explicitFullSnapshotRequested = false;
@@ -378,7 +399,13 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
     }
 
     if (!std::isfinite(x) || !std::isfinite(y)) {
-        impl_->error = "position must be finite";
+        impl_->refuse("position must be finite");
+        return;
+    }
+    // Checked here rather than left to the encoder or the server, so text and
+    // binary refuse it the same way, and without a wasted round trip.
+    if (!Net::isValidPlayerData(data)) {
+        impl_->refuse("player data is too large");
         return;
     }
 
@@ -395,7 +422,7 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
                                          impl_->snapshot.serverTick,
                                          requestFull);
     } catch (const std::invalid_argument& exception) {
-        impl_->error = exception.what();
+        impl_->refuse(exception.what());
         return;
     }
     if (!Net::send(*impl_->socket, message, zmq::send_flags::dontwait)) {
@@ -403,6 +430,7 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
         return;
     }
 
+    impl_->refusing = false;
     impl_->recordSent(message);
     if (requestFull) ++impl_->snapshotStats.resyncRequestsSent;
     impl_->error.clear();

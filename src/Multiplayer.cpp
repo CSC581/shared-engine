@@ -335,6 +335,15 @@ public:
                 }
             } else if (envelope.type == Peer::MessageType::Leave) {
                 known_.erase(envelope.senderId);
+            } else if (envelope.type == Peer::MessageType::Hello) {
+                // A peer introduces itself when it starts, so a HELLO from an
+                // id already held is that peer restarted after a crash, its
+                // sequence counting from 1 again. Drop only the old count: the
+                // player stays, so its object is not rebuilt for one frame.
+                const auto restarted = known_.find(envelope.senderId);
+                if (restarted != known_.end()) {
+                    restarted->second.sequence = 0;
+                }
             }
         }
 
