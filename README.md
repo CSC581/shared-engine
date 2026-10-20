@@ -10,7 +10,7 @@ cmake -S . -B build && cmake --build build -j 4 -- -k   # -k: keep going past th
 ctest --test-dir build --output-on-failure -E 'starfall|multiplayer-tests'
 ```
 
-> The timeline and persistent-thread sandboxes use the component model. The individual games still contain Milestone 2 `Entity`/`Physics` code and are being ported separately, so build focused engine targets while that work remains out of scope.
+> The timeline and persistent-thread sandboxes use the component model, and Apex Ascent is ported to it. The other individual games are being ported separately, so build focused engine targets while that work remains out of scope.
 
 ## Milestone 3 progress
 
@@ -18,17 +18,17 @@ ctest --test-dir build --output-on-failure -E 'starfall|multiplayer-tests'
 | ---- | ------------------- | ------ | ------------- |
 | 1A | A component-, property- or custom-based object model (no monolithic hierarchy) that new object types can be built from | Done | A `GameObject` is an id, a tag and the components it owns. A new kind of object is a new mix of components, not a new class. `World` owns all objects and runs each frame |
 | 1B | The object model on every network endpoint; up to 4 clients; movement and platforms synced; disconnects handled | Done | The server keeps players and platforms as `GameObject`s. `NetworkWorldSync` mirrors each client's session into its `World`, removing a player's object when they leave or time out. Every endpoint is multithreaded and there is no player cap. Measured keyboard-to-other-screen latency: ~20 ms with 4 clients |
-| 1C | A second network data format and performance experiments | Done | Multipart text and compact one-frame binary carry identical snapshots through the real client-server stack. The tracked Release evidence covers 1/2/4 clients, 10/100/500 platforms and five repetitions |
+| 1C | A second network data format and performance experiments | Done | Multipart text and one-frame binary carry identical snapshots through the real client-server stack. On loopback, binary round trips were 2.8×–41× faster, mainly because each uses 2 ZeroMQ frames instead of up to 2,533; payloads were at most 24% smaller, and 3% larger in the smallest scene. The tracked Release evidence covers 1/2/4 clients, 10/100/500 platforms and five repetitions |
 | 2 | Individual games built on the engine | In progress | Games are being ported to the object model |
 
 ### Components
 
 | Component | Gives an object | Notes |
 | --------- | --------------- | ----- |
-| `Transform` | position and size | every other component requires it |
+| `Transform` | position and size | required by every built-in component except `Behavior` and `NetworkIdentity` |
 | `Motion` | velocity, applied each frame on game time | `kinematic` objects are never pushed by collisions |
 | `Gravity` | constant downward acceleration | per object, default 980 |
-| `PathMover` | movement along a `Linear` (back and forth) or `Circular` path | drives `Motion`, so riders can read its velocity |
+| `PathMover` | movement along a `Linear` (back and forth) or `Circular` path | drives `Motion`, so riders of local platforms can read its velocity |
 | `Collider` | collisions: `Solid` (blocks) or `Trigger` (reports only) | `onEnter` / `onCollide` (every frame) / `onExit` callbacks; layer masks |
 | `Renderable` | drawn by `renderWorld()` as a colour or texture | `layer` sets draw order; no `Renderable` = hidden |
 | `Behavior` | game logic each frame (e.g. reading the keyboard) | runs before movement |
@@ -65,7 +65,7 @@ Move with WASD. Each window shows the measured latency. Close one window and its
 ├── include/NetworkWorldSync.hpp                src/NetworkWorldSync.cpp  mirrors a session into a client's World
 └── include/Multiplayer.hpp                     src/Multiplayer.cpp    client-server session on its own network thread
 1C Network formats and experiments
-├── include/BinaryNetworkProtocol.hpp          src/BinaryNetworkProtocol.cpp  compact binary codec
+├── include/BinaryNetworkProtocol.hpp          src/BinaryNetworkProtocol.cpp  one-frame binary codec
 ├── benchmarks/NetworkPerformanceBenchmark.cpp                       real-stack comparison
 └── benchmarks/analyze_network_performance.py                         validation and graphs
 ```
@@ -75,7 +75,7 @@ Move with WASD. Each window shows the measured latency. Close one window and its
 - **Composition, not inheritance.** Components declare what they need with `require<T>()` (e.g. `Gravity` pulls in `Motion` and `Transform`). Lookups are one array read per type.
 - **Fixed update order.** Components run by priority (`Behavior` → `PathMover` → `Gravity` → `Motion`), so input, then velocity, then position, every frame. The sorted order is cached and rebuilt only when objects or components change.
 - **The legacy text protocol remains compatible.** Client-server sessions may instead select the binary representation; both carry the same typed requests, replies and full snapshots. Network threads never touch a game's `World`.
-- **Platforms move on the server's tick** (60 Hz), not once per client request, so the server's work does not grow with the number of clients.
+- **Platforms move on the server's tick** (60 Hz), not once per client request, so platform movement does not grow with the number of clients.
 - **Threads:** `World::destroy()` is safe from any thread. Creating objects is main-thread only.
 
 **Known limitations:** only players and platforms are synced; remote objects are not smoothed between updates; a player standing on a sideways-moving platform is not carried; collisions check every pair of objects.
