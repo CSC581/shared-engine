@@ -1,6 +1,7 @@
 #include "Multiplayer.hpp"
 #include "../sandbox/NetworkDemoConfig.hpp"
 #include "NetworkServerHost.hpp"
+#include "PeerProtocol.hpp"
 #include "SendPacer.hpp"
 #include "TimeUnits.hpp"
 #include "Timeline.hpp"
@@ -321,6 +322,73 @@ bool testPeerToPeerWithNoServerAtAll()
     return passed;
 }
 
+// One run of a stand-in peer process: introduce itself to `observer` the way a
+// starting peer does, then broadcast states from `firstSequence` until the
+// observer shows it at `x`. Returning closes its sockets without a LEAVE,
+// which is what a killed process looks like to everybody else.
+bool runFakePeer(Multiplayer::Session& observer, const std::string& observerGreet, std::uint64_t firstSequence,
+                 float x, std::chrono::milliseconds budget)
+{
+    Peer::PeerAddress self;
+    self.id = 2;
+    self.name = "two";
+    self.pubEndpoint = "tcp://127.0.0.1:57443";
+    self.greetEndpoint = "tcp://127.0.0.1:57442";
+
+    zmq::context_t context(1);
+    zmq::socket_t publisher(context, zmq::socket_type::pub);
+    publisher.set(zmq::sockopt::linger, 0);
+    publisher.bind(self.pubEndpoint);
+
+    zmq::socket_t greeter(context, zmq::socket_type::req);
+    greeter.set(zmq::sockopt::linger, 0);
+    greeter.set(zmq::sockopt::rcvtimeo, 2000);
+    greeter.connect(observerGreet);
+    bool introduced = false;
+    if (Net::send(greeter, Peer::encodeHello(self))) {
+        static_cast<void>(Net::receive(greeter, introduced));
+    }
+    if (!introduced) {
+        return false;
+    }
+
+    std::uint64_t sequence = firstSequence;
+    return waitUntil(
+        [&] {
+            Net::send(publisher, Peer::encodeState({self.id, self.name, sequence++, x, 0.0F, {}}),
+                      zmq::send_flags::dontwait);
+            observer.update();
+            const Multiplayer::Player* player = findPlayer(observer, self.id);
+            return player != nullptr && player->x == x;
+        },
+        budget);
+}
+
+// A peer that crashes and is restarted with the same id counts its sequence
+// numbers from 1 again. The others must follow the new run straight away,
+// not ignore it as stale until it overtakes the old count.
+bool testRestartedPeerIsFollowedImmediately()
+{
+    RealTimeClock clock;
+    Multiplayer::Config config;
+    config.mode = Multiplayer::Mode::PeerToPeer;
+    config.serverEndpoint = {};
+    config.peerId = 1;
+    config.playerName = "one";
+    config.basePort = 57440;
+    std::unique_ptr<Multiplayer::Session> observer = Multiplayer::Session::open(config, clock);
+    const std::string observerGreet = "tcp://127.0.0.1:57440";
+
+    bool passed = expect(runFakePeer(*observer, observerGreet, 1000, 10.0F, std::chrono::seconds(5)),
+                         "the observer should see the first run of the other peer");
+    // Well inside the 5 s silence timeout, so only the restart can explain it.
+    passed &= expect(runFakePeer(*observer, observerGreet, 1, 50.0F, std::chrono::seconds(2)),
+                     "a peer restarted with the same id should be followed, not ignored as stale");
+    passed &= expect(observer->remotePlayers().size() == 1,
+                     "a restarted peer should still be one player, not two");
+    return passed;
+}
+
 // A game has to be able to draw a sensible screen before anything connects,
 // and both modes must agree on what that looks like.
 bool testBothModesBehaveBeforeConnecting()
@@ -618,6 +686,7 @@ int main()
     passed &= testBinaryClientServer();
     passed &= testPeerToPeer();
     passed &= testPeerToPeerWithNoServerAtAll();
+    passed &= testRestartedPeerIsFollowedImmediately();
     passed &= testBothModesBehaveBeforeConnecting();
     passed &= testPeerReportsTerminalAuthorityFailure();
     passed &= testWorldSurvivesLosingTheAuthority();
