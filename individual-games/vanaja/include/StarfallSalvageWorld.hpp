@@ -74,10 +74,12 @@ constexpr float cameraTargetX(float playerX)
 
 constexpr std::uint8_t allCargoMask = (1U << cargo.size()) - 1U;
 
+// None of these lies in a drone's or shuttle's path (checked by the tests), so
+// nobody is hit or pushed the moment they spawn or respawn.
 constexpr std::array<Network::SpawnPoint, 8> spawns{{
     {76.0F, 380.0F}, {112.0F, 380.0F}, {182.0F, 380.0F},
-    {56.0F, 460.0F}, {290.0F, 460.0F}, {450.0F, 460.0F},
-    {640.0F, 460.0F}, {810.0F, 460.0F},
+    {56.0F, 460.0F}, {700.0F, 460.0F}, {750.0F, 460.0F},
+    {530.0F, 300.0F}, {810.0F, 460.0F},
 }};
 
 // Shuttle 1 runs sideways from the west floor to deck 2. Shuttle 2 is a

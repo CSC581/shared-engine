@@ -32,11 +32,6 @@ void rect(SDL_Renderer* renderer, float x, float y, float w, float h, Color colo
     SDL_RenderFillRect(renderer, &box);
 }
 
-void rect(SDL_Renderer* renderer, Rect box, Color color)
-{
-    rect(renderer, box.x, box.y, box.width, box.height, color);
-}
-
 void worldRect(SDL_Renderer* renderer, float cameraX, float x, float y, float w,
                float h, Color color)
 {
@@ -191,12 +186,17 @@ void StarfallSalvageGame::handleInput(Engine& engine)
 
     // Engine::run has no built-in frame cap. Pacing here is before its timer
     // tick, so both FrameTime and the actual loop/message rate reflect it.
+    // Frames follow a fixed schedule, so the small oversleeps of sleep_for do
+    // not add up and slow the loop; a frame that falls more than one interval
+    // behind restarts the schedule rather than rushing to catch up.
     const std::int64_t interval = StarfallSalvage::frameIntervalNs(engine.gameTime().scale());
     const std::int64_t now = engine.realTime().now();
-    if (lastLoopStartNs_ != 0 && now < lastLoopStartNs_ + interval) {
-        std::this_thread::sleep_for(std::chrono::nanoseconds(lastLoopStartNs_ + interval - now));
+    if (nextLoopStartNs_ == 0 || now - nextLoopStartNs_ > interval) {
+        nextLoopStartNs_ = now;
+    } else if (now < nextLoopStartNs_) {
+        std::this_thread::sleep_for(std::chrono::nanoseconds(nextLoopStartNs_ - now));
     }
-    lastLoopStartNs_ = engine.realTime().now();
+    nextLoopStartNs_ += interval;
 
     input_.axis = Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D);
     if (Input::isKeyPressed(SDL_SCANCODE_LEFT)) input_.axis -= 1.0F;
@@ -503,6 +503,25 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
             drone(renderer, bounds, cameraX_);
         }
     }
+
+    // The death zone itself is hidden, but the gap it sits in must be easy to
+    // see: most of the floor is under the HUD bar, so the breach gets hazard
+    // stripes on both edges, a red glow and a sign on the wall above.
+    const Rect& breach = StarfallSalvage::hullBreach;
+    const float breachPulse = 0.5F + 0.5F * std::sin(pulse_ * 6.2831853F * 2.0F);
+    for (int i = 0; i < 4; ++i) {
+        const Color stripe = i % 2 == 0 ? Color{247, 201, 72} : Color{30, 30, 34};
+        const float offset = 6.0F * static_cast<float>(i);
+        worldRect(renderer, cameraX_, breach.x - 24.0F + offset, breach.y, 6, 7, stripe);
+        worldRect(renderer, cameraX_, breach.x + breach.width + offset, breach.y, 6, 7, stripe);
+    }
+    worldRect(renderer, cameraX_, breach.x, breach.y, breach.width, 7,
+              {static_cast<std::uint8_t>(120 + 100 * breachPulse), 30, 36});
+    // The sign is 11 characters of 8 px, centred over the gap.
+    const float signX = breach.x + breach.width * 0.5F - 44.0F;
+    worldRect(renderer, cameraX_, signX - 4.0F, 436, 96, 15, {58, 18, 26});
+    SDL_SetRenderDrawColor(renderer, 255, static_cast<std::uint8_t>(120 + 80 * breachPulse), 110, 255);
+    SDL_RenderDebugText(renderer, signX - cameraX_, 440, "HULL BREACH");
 
     for (std::size_t i = 0; i < StarfallSalvage::gatePlates.size(); ++i) {
         const Rect& plate = StarfallSalvage::gatePlates[i];

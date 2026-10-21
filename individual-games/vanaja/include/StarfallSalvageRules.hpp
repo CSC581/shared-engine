@@ -49,10 +49,12 @@ std::uint8_t cargoAt(const Rect& player, std::uint8_t recoveredMask,
 std::uint8_t creditedCargoMask(const std::vector<Claim>& claims, std::uint32_t playerId);
 CargoWinner chooseCargoWinner(const std::vector<Claim>& claims);
 
-// A 50 Hz baseline gives every frame exactly 20 ms of game time, well under the
+// A 50 Hz baseline schedules a frame every 20 ms of game time, well under the
 // engine's 50 ms game-delta cap, at every supported scale: 25, 50 or 100
 // actual loop iterations per second. It also keeps each frame's fall short
-// enough for the engine's collision pass to land the astronaut cleanly.
+// enough for the engine's collision pass to land the astronaut cleanly. Each
+// frame's actual delta is measured, so a late frame is still simulated
+// correctly.
 std::int64_t frameIntervalNs(double scale);
 
 } // namespace StarfallSalvage

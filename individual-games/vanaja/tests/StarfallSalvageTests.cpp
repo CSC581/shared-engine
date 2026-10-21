@@ -182,6 +182,23 @@ int checkStation()
         EXPECT(supportedByDeck(r));
         EXPECT(!Collision::intersects({r.x, r.y, r.width, r.height + 1.0F}, StarfallSalvage::hullBreach));
     }
+    // No spawn point lies anywhere a drone or shuttle travels, so nobody is
+    // hit or pushed the moment they spawn or respawn.
+    for (const Network::PlatformPath& path : StarfallSalvage::serverConfig().platforms) {
+        Rect travel{};
+        if (path.shape == Network::PlatformPath::Shape::Circular) {
+            travel = {path.centerX - path.radius, path.centerY - path.radius,
+                      2.0F * path.radius + path.width, 2.0F * path.radius + path.height};
+        } else {
+            travel = {std::min(path.startX, path.endX), std::min(path.startY, path.endY),
+                      std::fabs(path.endX - path.startX) + path.width,
+                      std::fabs(path.endY - path.startY) + path.height};
+        }
+        for (const GameObject* spawn : station.spawns) {
+            EXPECT(!Collision::intersects(spawn->get<Transform>()->bounds(), travel));
+        }
+    }
+
     const std::vector<GameObject*> zones = world.findAllByTag("deathzone");
     EXPECT(zones.size() >= 1);
     for (const GameObject* zone : zones) {
@@ -271,6 +288,21 @@ int checkStation()
     EXPECT(std::fabs(body.x - 76.0F) < 0.01F);
     EXPECT(astronaut.lives == 3);
 
+    // The closed bulkhead stops the astronaut at the wall; opened, which only
+    // clears its collider's layers, it lets the astronaut walk through.
+    Collider& gate = *station.bulkhead->get<Collider>();
+    placeAt(astronaut, 880.0F, 460.0F);
+    astronaut.input.axis = 1.0F;
+    stepPlayer(world, astronaut, 100);
+    EXPECT(std::fabs(body.x - (StarfallSalvage::bulkhead.x - StarfallSalvage::playerWidth)) < 0.01F);
+    gate.layers = 0U;
+    stepPlayer(world, astronaut, 30);
+    EXPECT(body.x > StarfallSalvage::bulkhead.x + StarfallSalvage::bulkhead.width);
+    gate.layers = StarfallSalvage::solidLayer;
+    astronaut.input.axis = 0.0F;
+    placeAt(astronaut, 76.0F, 380.0F);
+    stepPlayer(world, astronaut, 5);
+
     // A drone costs one life and respawns the astronaut, then a second of
     // invulnerability protects it even though it respawned inside the drone.
     GameObject& drone = StarfallSalvage::makeNetworkPlatform(world, {11, 0.0F, 0.0F, 0.0F, 0.0F});
@@ -309,6 +341,28 @@ int checkStation()
     shuttlePose.x += 100.0F;
     astronaut.rideShuttle(&shuttle);
     EXPECT(astronaut.supportId == 0 && std::fabs(body.x - 345.0F) < 0.01F);
+
+    // Riding the lift up and back down: the astronaut's feet stay on its top
+    // surface every frame, moved the way NetworkWorldSync would move it.
+    GameObject& liftObject = StarfallSalvage::makeNetworkPlatform(world, {2, 0.0F, 0.0F, 0.0F, 0.0F});
+    liftObject.add<NetworkIdentity>(NetworkIdentity::Kind::Platform, 2U);
+    Transform& liftPose = *liftObject.get<Transform>();
+    liftPose.x = lift.startX;
+    liftPose.y = lift.startY;
+    liftPose.width = lift.width;
+    liftPose.height = lift.height;
+    liftObject.setActive(true);
+    placeAt(astronaut, lift.startX + 15.0F, lift.startY - StarfallSalvage::playerHeight - 1.0F);
+    stepPlayer(world, astronaut, 5);
+    EXPECT(astronaut.grounded && astronaut.supportId == 2);
+    const float liftStep = lift.speed / static_cast<float>(StarfallSalvage::normalLoopHz);
+    for (int frame = 0; frame < 90; ++frame) {
+        liftPose.y += frame < 60 ? -liftStep : liftStep;
+        astronaut.rideShuttle(&liftObject);
+        stepPlayer(world, astronaut, 1);
+        EXPECT(astronaut.grounded && astronaut.supportId == 2);
+        EXPECT(std::fabs(body.y + body.height - liftPose.y) <= 0.5F);
+    }
     return 0;
 }
 

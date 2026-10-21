@@ -85,7 +85,8 @@ private:
     std::uint64_t physicsFrames_ = 0;
     std::uint64_t signalFrames_ = 0;
 
-    std::int64_t lastLoopStartNs_ = 0;
+    // When the next frame is due, on a fixed schedule; 0 before the first frame.
+    std::int64_t nextLoopStartNs_ = 0;
     std::int64_t rateSampleStartNs_ = 0;
     std::uint64_t rateLoopCount_ = 0;
     std::uint64_t ratePublishCount_ = 0;

@@ -16,8 +16,8 @@ use the game server for the moving shuttles and drones.
    use the moving shuttles to reach higher decks: one slides sideways from the
    west floor to the middle deck, and a lift rises from there to the deck by the
    gate. Avoid the patrolling drones, including the one circling above the
-   middle deck, and the hull breach in the floor beneath it: falling in sends
-   you back to your spawn point.
+   middle deck, and the hull breach in the floor beneath it, marked with hazard
+   stripes and a red glow: falling in sends you back to your spawn point.
 2. Touch the orange cargo crates. The counter at the top shows the team's
    progress. One crate is on the raised deck in the east wing, beyond the
    tall red gate.
@@ -145,9 +145,10 @@ than calculating their paths again.
 
 ## Time and message rates
 
-The game runs at a 50-loop-per-second baseline, so every frame is exactly
-20 ms of game time. That keeps each frame's fall short enough for the engine's
-collision pass to land the astronaut instead of pushing it off a deck edge.
+The game runs at a 50-loop-per-second baseline: frames follow a fixed 20 ms
+schedule, so small sleep delays do not add up and slow the loop. That keeps
+each frame's fall short enough for the engine's collision pass to land the
+astronaut instead of pushing it off a deck edge.
 Keys `1`, `2`, and `3` change both local game time and the actual loop rate.
 The session also uses the engine's send pacing, with
 `sendIntervalGameTics = kGameTicsPerSecond / 50`. The game gives it a separate
