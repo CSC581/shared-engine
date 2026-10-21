@@ -1,0 +1,30 @@
+repetition 1/5 done
+repetition 2/5 done
+repetition 3/5 done
+repetition 4/5 done
+repetition 5/5 done
+   message  platforms  data_bytes  format  encode_us  decode_us  payload_bytes
+  position          0           0    text      0.874      0.735         58.000
+  position          0           0  binary      0.093      0.044         64.000
+  snapshot         10           0    text     21.098     16.298        306.000
+  snapshot         10           0  binary      0.400      0.290        408.000
+  snapshot        100           0    text    156.200    112.191       1859.000
+  snapshot        100           0  binary      1.833      1.242       2208.000
+  snapshot        500           0    text    758.873    542.699       9439.000
+  snapshot        500           0  binary      9.110      5.599      10208.000
+  position          0         128    text      0.933      0.766        186.000
+  position          0         128  binary      0.115      0.047        192.000
+  snapshot         10         128    text     21.388     15.484       1330.000
+  snapshot         10         128  binary      0.518      0.515       1432.000
+  snapshot        100         128    text    153.398    106.503       2883.000
+  snapshot        100         128  binary      1.995      1.416       3232.000
+  snapshot        500         128    text    746.381    533.330      10463.000
+  snapshot        500         128  binary      8.357      5.571      11232.000
+  position          0         512    text      0.884      0.724        570.000
+  position          0         512  binary      0.110      0.047        576.000
+  snapshot         10         512    text     20.118     14.924       4402.000
+  snapshot         10         512  binary      0.628      0.517       4504.000
+  snapshot        100         512    text    151.897    107.530       5955.000
+  snapshot        100         512  binary      2.054      1.465       6304.000
+  snapshot        500         512    text    773.608    544.853      13535.000
+  snapshot        500         512  binary      9.310      5.858      14304.000
