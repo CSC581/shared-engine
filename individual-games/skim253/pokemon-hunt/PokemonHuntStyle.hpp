@@ -1,19 +1,12 @@
 #pragma once
 
+#include "Color.hpp"
 #include "PokemonHuntWorld.hpp"
 
 #include <SDL3/SDL.h>
 
-// How Pokemon Hunt looks: every colour, and where everything on the HUD goes.
-// Client only; the server draws nothing.
+// Colours and HUD layout. Client only.
 namespace PokemonHunt {
-
-// ---------------------------------------------------------------------------
-// Colours
-// ---------------------------------------------------------------------------
-struct Color {
-    Uint8 r, g, b;
-};
 
 namespace Palette {
 constexpr Uint8 opaque = 255;
@@ -22,6 +15,9 @@ constexpr Color black{0, 0, 0};
 constexpr Color clear{20, 12, 34};
 constexpr Color missingArt{255, 0, 255};
 constexpr Color floor{96, 58, 44};
+constexpr Color stoneFloor{88, 92, 112};
+constexpr Color mossFloor{58, 96, 62};
+constexpr Color movingPlatform{214, 170, 64};
 
 constexpr Color nameTag{235, 235, 245};
 constexpr Color you{255, 230, 90};
@@ -63,19 +59,14 @@ constexpr Color frozenClock{150, 210, 255};
 constexpr Uint8 pausedOverlayAlpha = 120;
 } // namespace Palette
 
-// ---------------------------------------------------------------------------
-// Screen layout
-// ---------------------------------------------------------------------------
 namespace Layout {
 constexpr float centerX = windowWidth * 0.5F;
 
-// Text scales for SDL's debug font.
 constexpr float subtitleScale = 1.5F;
 constexpr float headingScale = 2.0F;
 constexpr float bannerScale = 4.0F;
 constexpr float overlayScale = 5.0F;
 
-// Name tags float this far above a Pokemon's hitbox.
 constexpr float nameTagOffsetY = 22.0F;
 
 // Mewtwo's HP bar, top centre.
@@ -90,7 +81,7 @@ constexpr float bossInfoWidth = 120.0F;
 // The bar turns red at or below 1/bossLowHpDivisor of full HP.
 constexpr int bossLowHpDivisor = 3;
 
-// Party scoreboard, top left.
+// Scoreboard, top left.
 constexpr float partyX = 8.0F;
 constexpr float partyY = 8.0F;
 constexpr float partyWidth = 224.0F;
@@ -122,8 +113,7 @@ constexpr float comboPipSpacing = 14.0F;
 constexpr float comboPipWidth = 10.0F;
 constexpr float comboPipHeight = 8.0F;
 
-// Bottom help lines stack upwards from helpBottomY; then messages across the
-// middle of the screen.
+// Help lines stack up from helpBottomY.
 constexpr float helpBottomY = 512.0F;
 constexpr float helpLineSpacing = 20.0F;
 constexpr float connectionStatusY = 60.0F;
