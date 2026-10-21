@@ -878,6 +878,8 @@ void printUsage()
   --server ENDPOINT Mewtwo's server. Default tcp://127.0.0.1:5600, or in
                     peer-to-peer mode Mewtwo's peer, tcp://127.0.0.1:7290.
   --format FORMAT   client-server encoding: text (default) or binary.
+  --snapshots KIND  client-server world state: full (default) or delta.
+                    delta sends only changed properties and needs binary.
 
 Benchmark:
   --benchmark N     Time N game-loop iterations, print a PH_BENCHMARK line.
@@ -921,6 +923,13 @@ bool applyOption(const std::string& arg, const std::string& value, Options& opti
             return false;
         }
         config.clientServerDataFormat = value == "binary" ? Net::DataFormat::Binary : Net::DataFormat::TextMultipart;
+    } else if (arg == "--snapshots") {
+        if (value != "full" && value != "delta") {
+            std::cerr << "pokemon-hunt: --snapshots must be full or delta\n";
+            return false;
+        }
+        config.clientServerSnapshotStrategy =
+            value == "delta" ? Net::SnapshotStrategy::PropertyDelta : Net::SnapshotStrategy::FullSnapshot;
     } else if (arg == "--benchmark" || arg == "--benchmark-party") {
         const int count = std::atoi(value.c_str());
         if (count < 1) {
@@ -982,6 +991,13 @@ bool parseArgs(int argc, char* argv[], Options& options, int& exitCode)
     if (options.config.mode == Multiplayer::Mode::PeerToPeer &&
         options.config.clientServerDataFormat == Net::DataFormat::Binary) {
         std::cerr << "pokemon-hunt: --format binary needs client-server mode\n";
+        exitCode = 1;
+        return false;
+    }
+    if (options.config.clientServerSnapshotStrategy == Net::SnapshotStrategy::PropertyDelta &&
+        (options.config.mode == Multiplayer::Mode::PeerToPeer ||
+         options.config.clientServerDataFormat != Net::DataFormat::Binary)) {
+        std::cerr << "pokemon-hunt: --snapshots delta needs client-server mode and --format binary\n";
         exitCode = 1;
         return false;
     }
