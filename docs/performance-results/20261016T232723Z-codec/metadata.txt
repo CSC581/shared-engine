@@ -1,0 +1,17 @@
+collected_utc=20261016T232723Z
+git_commit=16605440080ac50b87b5c84479b3fad10f6a0f6a
+git_status_begin
+ M CMakeLists.txt
+ M README.md
+ M benchmarks/MultiplayerModeBenchmark.cpp
+ M benchmarks/collect_engine_performance.sh
+ M docs/networking-guide.md
+git_status_end
+build_type=Release
+benchmarks=codec
+repetitions=5
+os=Linux 7.1.1-76070101-generic x86_64
+cpu_count=16
+cpu_model=12th Gen Intel(R) Core(TM) i7-12650H
+cmake=cmake version 3.22.1
+compiler=c++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
