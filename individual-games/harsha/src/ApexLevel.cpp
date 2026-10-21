@@ -213,8 +213,10 @@ void buildRoom1(const Room& room)
     makeStatic(room.world, 520.0F, room.top + 800.0F, 340.0F, platformThickness, Kind::Sandstone);
     checkpointOn(room, 1, 520.0F, room.top + 800.0F, 340.0F);
 
-    // Off the top of the lift, then up to the ledge below room 2.
-    makeStatic(room.world, 380.0F, room.top + 260.0F, mossWidth, platformThickness, Kind::Moss);
+    // Off the top of the lift, then up to the ledge below room 2. The lower
+    // ledge sits at x 460 (was 380) so the jump between them stays in this
+    // room even with A/D held in mid-air (design §11.29).
+    makeStatic(room.world, 460.0F, room.top + 260.0F, mossWidth, platformThickness, Kind::Moss);
     makeStatic(room.world, 680.0F, room.top + 120.0F, mossWidth, platformThickness, Kind::Moss);
 }
 

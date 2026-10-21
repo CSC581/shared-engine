@@ -297,7 +297,8 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
 
     updateNetwork();
 
-    const int room = static_cast<int>((worldHeight_ - playerTransform_->y) / viewHeight_);
+    // roomAt clamps, so a leap above the tower's top can't count as room 7.
+    const int room = roomAt(playerTransform_->y);
     if (room > highestRoomReached_) {
         highestRoomReached_ = room;
     }
