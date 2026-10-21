@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700">
+<rect width="100%" height="100%" fill="white"/>
+<text x="640.0" y="36" text-anchor="middle" font-family="sans-serif" font-size="24" font-weight="bold">Snapshot encode + decode time (no network)</text>
+<text x="24" y="315.0" text-anchor="middle" transform="rotate(-90 24 315.0)" font-family="sans-serif" font-size="15">microseconds per snapshot (log scale)</text>
+<line x1="100" y1="550.00" x2="1240" y2="550.00" stroke="#dddddd"/>
+<text x="90" y="555.00" text-anchor="end" font-family="sans-serif" font-size="12">0.1</text>
+<line x1="100" y1="456.00" x2="1240" y2="456.00" stroke="#dddddd"/>
+<text x="90" y="461.00" text-anchor="end" font-family="sans-serif" font-size="12">1</text>
+<line x1="100" y1="362.00" x2="1240" y2="362.00" stroke="#dddddd"/>
+<text x="90" y="367.00" text-anchor="end" font-family="sans-serif" font-size="12">10</text>
+<line x1="100" y1="268.00" x2="1240" y2="268.00" stroke="#dddddd"/>
+<text x="90" y="273.00" text-anchor="end" font-family="sans-serif" font-size="12">100</text>
+<line x1="100" y1="174.00" x2="1240" y2="174.00" stroke="#dddddd"/>
+<text x="90" y="179.00" text-anchor="end" font-family="sans-serif" font-size="12">1000</text>
+<line x1="100" y1="80.00" x2="1240" y2="80.00" stroke="#dddddd"/>
+<text x="90" y="85.00" text-anchor="end" font-family="sans-serif" font-size="12">10000</text>
+<rect x="160.00" y="308.15" width="120" height="241.85" fill="#4C78A8"/>
+<text x="220.00" y="300.15" text-anchor="middle" font-family="sans-serif" font-size="13">37.4 µs</text>
+<rect x="300.00" y="471.15" width="120" height="78.85" fill="#F58518"/>
+<text x="360.00" y="463.15" text-anchor="middle" font-family="sans-serif" font-size="13">0.7 µs</text>
+<text x="290.00" y="578" text-anchor="middle" font-family="sans-serif" font-size="14">10 platforms (54× faster)</text>
+<rect x="540.00" y="227.70" width="120" height="322.30" fill="#4C78A8"/>
+<text x="600.00" y="219.70" text-anchor="middle" font-family="sans-serif" font-size="13">268.4 µs</text>
+<rect x="680.00" y="410.14" width="120" height="139.86" fill="#F58518"/>
+<text x="740.00" y="402.14" text-anchor="middle" font-family="sans-serif" font-size="13">3.1 µs</text>
+<text x="670.00" y="578" text-anchor="middle" font-family="sans-serif" font-size="14">100 platforms (87× faster)</text>
+<rect x="920.00" y="163.24" width="120" height="386.76" fill="#4C78A8"/>
+<text x="980.00" y="155.24" text-anchor="middle" font-family="sans-serif" font-size="13">1,301.6 µs</text>
+<rect x="1060.00" y="346.25" width="120" height="203.75" fill="#F58518"/>
+<text x="1120.00" y="338.25" text-anchor="middle" font-family="sans-serif" font-size="13">14.7 µs</text>
+<text x="1050.00" y="578" text-anchor="middle" font-family="sans-serif" font-size="14">500 platforms (88× faster)</text>
+<line x1="100" y1="550" x2="1240" y2="550" stroke="#333"/>
+<rect x="100" y="666" width="18" height="18" fill="#4C78A8"/>
+<text x="125" y="680" font-family="sans-serif" font-size="14">text</text>
+<rect x="250" y="666" width="18" height="18" fill="#F58518"/>
+<text x="275" y="680" font-family="sans-serif" font-size="14">binary</text>
+</svg>
