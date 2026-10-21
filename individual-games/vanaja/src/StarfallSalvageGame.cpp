@@ -560,13 +560,15 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
                             119.0F, objective);
     }
 
+    // The label sits inside the relay's housing, below the name of anyone
+    // standing on the pad, so the two never overlap.
     for (std::size_t i = 0; i < StarfallSalvage::relayPads.size(); ++i) {
         const Rect& pad = StarfallSalvage::relayPads[i];
         const bool active = relays_.occupied[i];
-        worldRect(renderer, cameraX_, pad.x + pad.width * 0.5F - 4, pad.y - 18, 8, 8,
+        worldRect(renderer, cameraX_, pad.x + pad.width * 0.5F - 4, pad.y - 14, 8, 8,
                   active ? Color{218, 251, 214} : Color{77, 118, 149});
         SDL_SetRenderDrawColor(renderer, 233, 243, 250, 255);
-        SDL_RenderDebugTextFormat(renderer, pad.x - cameraX_ + 10, pad.y - 39, "RELAY %zu", i + 1);
+        SDL_RenderDebugTextFormat(renderer, pad.x - cameraX_ - 3, pad.y - 26, "RELAY %zu", i + 1);
     }
 
     const float pulseBrightness = 0.5F + 0.5F * std::sin(pulse_ * 6.2831853F);
