@@ -18,7 +18,7 @@ ctest --test-dir build --output-on-failure -E 'starfall|multiplayer-tests'
 | ---- | ------------------- | ------ | ------------- |
 | 1A | A component-, property- or custom-based object model (no monolithic hierarchy) that new object types can be built from | Done | A `GameObject` is an id, a tag and the components it owns. A new kind of object is a new mix of components, not a new class. `World` owns all objects and runs each frame |
 | 1B | The object model on every network endpoint; up to 4 clients; movement and platforms synced; disconnects handled | Done | The server keeps players and platforms as `GameObject`s. `NetworkWorldSync` mirrors each client's session into its `World`, removing a player's object when they leave or time out. Every endpoint is multithreaded and there is no player cap. Measured keyboard-to-other-screen latency: ~20 ms with 4 clients |
-| 1C | A second network data format and performance experiments | Done | Multipart text and one-frame binary carry identical snapshots through the real client-server stack. On loopback, binary round trips were 2.8×–41× faster, mainly because each uses 2 ZeroMQ frames instead of up to 2,533; payloads were at most 24% smaller, and 3% larger in the smallest scene. The tracked Release evidence covers 1/2/4 clients, 10/100/500 platforms and five repetitions |
+| 1C | A second network data format and performance experiments | Done | Multipart text and one-frame binary carry identical snapshots through the real client-server stack. On loopback, binary round trips were 2.8×–41× faster, mainly because each uses 2 ZeroMQ frames instead of up to 2,533; payloads were at most 24% smaller, and 3% larger in the smallest scene. The tracked Release evidence covers 1/2/4 clients, 10/100/500 platforms and five repetitions; all four experiments are listed under [Part 1C experiments](#part-1c-experiments) |
 | 2 | Individual games built on the engine | In progress | Games are being ported to the object model |
 
 ### Components
@@ -69,6 +69,17 @@ Move with WASD. Each window shows the measured latency. Close one window and its
 ├── benchmarks/NetworkPerformanceBenchmark.cpp                       real-stack comparison
 └── benchmarks/analyze_network_performance.py                         validation and graphs
 ```
+
+### Part 1C experiments
+
+Each experiment ran five times in Release; results, metadata and graphs are in `docs/performance-results/`.
+
+| Experiment | What it compares | Conditions | Key result | Results folder |
+| ---------- | ---------------- | ---------- | ---------- | -------------- |
+| Main | Text vs binary round trips through the real client and server | 1/2/4 clients, 10/100/500 moving platforms, 1,000 round trips per client | Binary round trips 2.8×–41× faster; payload at most 24% smaller | `20261011T032629Z` |
+| Mixed formats | Text and binary clients on one server, vs each format alone | 2/4 clients, 10/100/500 platforms | No meaningful slowdown for either format (round-trip ratio 0.86–1.05) | `20261013T011546Z-mixed` |
+| Codec | Encoding and decoding alone, without the network | Position and snapshot messages, 0/10/100/500 platforms, 0/128/512 B of player data | Binary encodes 8×–89× and decodes 15×–97× faster, though its messages were larger in every case here | `20261016T232723Z-codec` |
+| Snapshot delivery | Binary full snapshots vs binary property deltas at 60 requests per second | 1/2/4 clients, 10/100/500 platforms, 0/512 B of player data | Deltas 26.4%–73.7% smaller but 1.04×–2.15× slower round trips, so full snapshots stay the default | `20261017T041259Z-snapshot-delivery` |
 
 ### Design decisions
 
