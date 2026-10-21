@@ -13,7 +13,11 @@ use the game server for the moving shuttles and drones.
 ## How to play
 
 1. Move with `A`/`D` or the arrow keys. Press `Space` twice to double-jump, and
-   use the moving shuttles to reach higher decks. Avoid the patrolling drones.
+   use the moving shuttles to reach higher decks: one slides sideways from the
+   west floor to the middle deck, and a lift rises from there to the deck by the
+   gate. Avoid the patrolling drones, including the one circling above the
+   middle deck, and the hull breach in the floor beneath it: falling in sends
+   you back to your spawn point.
 2. Touch the orange cargo crates. The counter at the top shows the team's
    progress. One crate is on the raised deck in the east wing, beyond the
    tall red gate.
@@ -106,13 +110,33 @@ peer's reachable IP and port.
 
 ## Engine features
 
-The game uses `Entity`, `Physics`, and `Collision` for movement and jumping.
-`FrameWorkers` runs two update tasks: player physics and collisions on one
-worker, and remote relay/cargo checks and visual effects on the other. Both
-receive the same game-time delta. The main thread waits for both tasks before
-combining their results, sending player state, and drawing the frame. Input,
-networking calls, and rendering stay on the main thread. The engine joins the
-workers when the game closes.
+Everything in the station is a `GameObject` in one `World`, built from engine
+components by factory functions in `StarfallSalvageLevel.cpp`:
+
+| Object | Components |
+| --- | --- |
+| Astronaut (you) | `Transform`, `Motion`, `Gravity`, solid `Collider`, and the game's own `Astronaut` component for input, double jump, landing, shuttle riding and hazards |
+| Decks | `Transform`, solid `Collider`, `Renderable`, and a `DeckStyle` that picks one of three colour schemes (hull floor, west decks, east wing) |
+| Shuttles and drones | Made by `NetworkWorldSync` from the server's platforms: shuttles are solid and drawn, drones are hazard triggers |
+| Other astronauts | Made by `NetworkWorldSync`; removed when that player leaves |
+| Spawn points | `Transform` only, so they are never drawn |
+| Death zones | A hidden trigger `Collider` in the hull breach, plus a catch-all below the station |
+| Cargo, relay pads, gate switches | `Transform` and `Renderable`; the game changes their colour and visibility |
+| Bulkhead | A solid `Collider` whose layers are cleared while the gate is open |
+
+The engine's collision pass pushes the astronaut out of decks, shuttles and the
+closed bulkhead, and the `Astronaut` component's collider callbacks work out
+what happened: standing on something, touching a drone, or falling into a
+death zone. The engine does not carry riders, so the game moves the astronaut
+by however far its shuttle moved since the last frame.
+
+`FrameWorkers` runs two update tasks: the astronaut's components (through
+`World::updateComponents` for the `player` tag) on one worker, and remote
+relay/cargo checks and visual effects on the other. Both receive the same
+game-time delta. Once both finish, the main thread runs the collision pass,
+then sends player state and draws the frame. Input, networking calls,
+collisions and rendering stay on the main thread. The engine joins the workers
+when the game closes.
 
 `Multiplayer::Session` handles both networking modes, and `NetworkServerHost`
 runs the game server. Game code does not create ZeroMQ sockets. The server
@@ -121,17 +145,19 @@ than calculating their paths again.
 
 ## Time and message rates
 
-The game keeps its 25-loop-per-second baseline. Keys `1`, `2`, and `3` change
-both local game time and the actual loop rate. The session also uses the
-engine's send pacing, with `sendIntervalGameTics = kGameTicsPerSecond / 25`.
-The game gives it a separate timeline at the same scale as game time, but
-does not pause that timeline.
+The game runs at a 50-loop-per-second baseline, so every frame is exactly
+20 ms of game time. That keeps each frame's fall short enough for the engine's
+collision pass to land the astronaut instead of pushing it off a deck edge.
+Keys `1`, `2`, and `3` change both local game time and the actual loop rate.
+The session also uses the engine's send pacing, with
+`sendIntervalGameTics = kGameTicsPerSecond / 50`. The game gives it a separate
+timeline at the same scale as game time, but does not pause that timeline.
 
 | Setting | Target loops per real second | Target position updates per real second |
 | --- | --- | --- |
-| 0.5x | 12.5 | 12.5 |
-| 1x | 25 | 25 |
-| 2x | 50 | 50 |
+| 0.5x | 25 | 25 |
+| 1x | 50 | 50 |
+| 2x | 100 | 100 |
 
 These are targets, not guaranteed network rates. A busy frame or pending
 server reply can lower the actual count. `F2` shows loop and worker counters;
@@ -162,6 +188,9 @@ cmake --build build --target starfall-salvage-tests frame-workers-tests multipla
 ctest --test-dir build -R "starfall-salvage|frame-workers|multiplayer" --output-on-failure
 ```
 
-These cover the game's mission rules and timing settings, the engine's worker
-barrier and shutdown, and multiplayer pacing. They do not replace playing a
-full round with three clients.
+These cover the game's mission rules and timing settings, the station's
+objects (distinct platforms, hidden spawn points and death zones, three
+movement patterns), the astronaut's physics through the engine's real
+collision pass (standing, jumping, edge landings, the breach, drones and
+shuttle riding), the engine's worker barrier and shutdown, and multiplayer
+pacing. They do not replace playing a full round with three clients.

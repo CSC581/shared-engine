@@ -10,7 +10,7 @@ cmake -S . -B build && cmake --build build -j 4 -- -k   # -k: keep going past th
 ctest --test-dir build --output-on-failure -E 'starfall|multiplayer-tests'
 ```
 
-> The timeline and persistent-thread sandboxes use the component model, and Apex Ascent is ported to it. The other individual games are being ported separately, so build focused engine targets while that work remains out of scope.
+> The timeline and persistent-thread sandboxes use the component model, and Apex Ascent and Starfall Salvage are ported to it. The other individual games are being ported separately, so build focused engine targets while that work remains out of scope.
 
 ## Milestone 3 progress
 

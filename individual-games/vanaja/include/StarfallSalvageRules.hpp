@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Entity.hpp"
+#include "Collision.hpp"
 #include "TimeUnits.hpp"
 
 #include <array>
@@ -10,7 +10,7 @@
 
 namespace StarfallSalvage {
 
-constexpr std::int64_t normalLoopHz = 25;
+constexpr std::int64_t normalLoopHz = 50;
 constexpr std::int64_t positionSendIntervalGameTics = kGameTicsPerSecond / normalLoopHz;
 
 struct Claim {
@@ -49,8 +49,10 @@ std::uint8_t cargoAt(const Rect& player, std::uint8_t recoveredMask,
 std::uint8_t creditedCargoMask(const std::vector<Claim>& claims, std::uint32_t playerId);
 CargoWinner chooseCargoWinner(const std::vector<Claim>& claims);
 
-// A 25 Hz baseline leaves headroom beneath the engine's 50 ms game-delta cap
-// at every supported scale: 12.5, 25, or 50 actual loop iterations per second.
+// A 50 Hz baseline gives every frame exactly 20 ms of game time, well under the
+// engine's 50 ms game-delta cap, at every supported scale: 25, 50 or 100
+// actual loop iterations per second. It also keeps each frame's fall short
+// enough for the engine's collision pass to land the astronaut cleanly.
 std::int64_t frameIntervalNs(double scale);
 
 } // namespace StarfallSalvage
