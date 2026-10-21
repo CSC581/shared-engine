@@ -1,10 +1,14 @@
+#include "StarfallSalvageLevel.hpp"
 #include "StarfallSalvageRules.hpp"
 #include "StarfallSalvageWorld.hpp"
+#include "Components.hpp"
 #include "DeltaTimer.hpp"
 #include "SendPacer.hpp"
 #include "Timeline.hpp"
+#include "World.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <vector>
@@ -46,7 +50,7 @@ int checkTimeAndPacing()
             real.elapsed += interval;
             const auto delta = timer.tick();
             // Changing both loop frequency and time scale keeps each step at
-            // 40 ms of game time, below the engine's 50 ms clamp.
+            // 20 ms of game time, below the engine's 50 ms clamp.
             EXPECT(delta == StarfallSalvage::positionSendIntervalGameTics);
             EXPECT(!timer.lastWasClamped());
             totalGameTics += delta;
@@ -116,6 +120,250 @@ bool supportedByDeck(const Rect& object)
                                   object.x + object.width <= deck.x + deck.width &&
                                   object.y + object.height == deck.y;
                        });
+}
+
+// Frames the way the game runs them: the player's components, then the
+// collision pass whose callbacks land, hurt or respawn the astronaut.
+void stepPlayer(World& world, StarfallSalvage::Astronaut& astronaut, int frames)
+{
+    const FrameTime frame{1.0 / static_cast<double>(StarfallSalvage::normalLoopHz), 0};
+    for (int i = 0; i < frames; ++i) {
+        world.updateComponents(frame, "player");
+        astronaut.beginCollisionPass();
+        world.resolveCollisions();
+        world.flushDestroyed();
+    }
+}
+
+void placeAt(StarfallSalvage::Astronaut& astronaut, float x, float y)
+{
+    astronaut.spawn = {x, y, StarfallSalvage::playerWidth, StarfallSalvage::playerHeight};
+    astronaut.respawn();
+}
+
+bool sameColor(const Color& a, const Color& b)
+{
+    return a.red == b.red && a.green == b.green && a.blue == b.blue;
+}
+
+// The station as GameObjects, checked against the Part 2 requirements, and
+// the astronaut's physics run through the engine's real collision pass.
+int checkStation()
+{
+    World world;
+    const StarfallSalvage::Station station = StarfallSalvage::buildStation(world);
+
+    // At least three static platforms, each with its own position, size and
+    // colour combination, and at least three distinct colours among them.
+    const std::vector<GameObject*> decks = world.findAllByTag("deck");
+    EXPECT(decks.size() >= 3);
+    std::vector<Color> colors;
+    for (std::size_t i = 0; i < decks.size(); ++i) {
+        const Rect a = decks[i]->get<Transform>()->bounds();
+        const Color colorA = decks[i]->get<Renderable>()->color;
+        EXPECT(decks[i]->get<Collider>()->kind == Collider::Kind::Solid);
+        for (std::size_t j = i + 1; j < decks.size(); ++j) {
+            const Rect b = decks[j]->get<Transform>()->bounds();
+            const bool sameBox = a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+            EXPECT(!(sameBox && sameColor(colorA, decks[j]->get<Renderable>()->color)));
+        }
+        if (std::none_of(colors.begin(), colors.end(), [&](const Color& c) { return sameColor(c, colorA); })) {
+            colors.push_back(colorA);
+        }
+    }
+    EXPECT(colors.size() >= 3);
+
+    // Spawn points and death zones are hidden objects: no Renderable.
+    EXPECT(station.spawns.size() >= 2);
+    for (const GameObject* spawn : station.spawns) {
+        EXPECT(!spawn->has<Renderable>());
+        // On a deck, and not over the hull breach.
+        const Rect r = spawn->get<Transform>()->bounds();
+        EXPECT(supportedByDeck(r));
+        EXPECT(!Collision::intersects({r.x, r.y, r.width, r.height + 1.0F}, StarfallSalvage::hullBreach));
+    }
+    // No spawn point lies anywhere a drone or shuttle travels, so nobody is
+    // hit or pushed the moment they spawn or respawn.
+    for (const Network::PlatformPath& path : StarfallSalvage::serverConfig().platforms) {
+        Rect travel{};
+        if (path.shape == Network::PlatformPath::Shape::Circular) {
+            travel = {path.centerX - path.radius, path.centerY - path.radius,
+                      2.0F * path.radius + path.width, 2.0F * path.radius + path.height};
+        } else {
+            travel = {std::min(path.startX, path.endX), std::min(path.startY, path.endY),
+                      std::fabs(path.endX - path.startX) + path.width,
+                      std::fabs(path.endY - path.startY) + path.height};
+        }
+        for (const GameObject* spawn : station.spawns) {
+            EXPECT(!Collision::intersects(spawn->get<Transform>()->bounds(), travel));
+        }
+    }
+
+    const std::vector<GameObject*> zones = world.findAllByTag("deathzone");
+    EXPECT(zones.size() >= 1);
+    for (const GameObject* zone : zones) {
+        EXPECT(!zone->has<Renderable>());
+        EXPECT(zone->get<Collider>()->kind == Collider::Kind::Trigger);
+    }
+
+    // At least two movement patterns among the moving objects; there are three.
+    bool horizontal = false;
+    bool vertical = false;
+    bool circular = false;
+    for (const Network::PlatformPath& path : StarfallSalvage::serverConfig().platforms) {
+        if (path.shape == Network::PlatformPath::Shape::Circular) {
+            circular = path.radius > 0.0F;
+        } else if (path.startY == path.endY && path.startX != path.endX) {
+            horizontal = true;
+        } else if (path.startX == path.endX && path.startY != path.endY) {
+            vertical = true;
+        }
+    }
+    EXPECT(horizontal && vertical && circular);
+
+    // The circling drone only threatens jumps: its whole orbit stays clear of
+    // anyone standing on deck 2 (including on relay 2 or at cargo 3) and of
+    // anyone riding the lift, even overhanging either edge.
+    const Network::PlatformPath& circling = StarfallSalvage::dronePaths[1];
+    const Network::PlatformPath& lift = StarfallSalvage::shuttlePaths[1];
+    const Rect orbit{circling.centerX - circling.radius, circling.centerY - circling.radius,
+                     2.0F * circling.radius + circling.width, 2.0F * circling.radius + circling.height};
+    const Rect deck2 = StarfallSalvage::decks[2];
+    const Rect standingOnDeck2{deck2.x - StarfallSalvage::playerWidth, deck2.y - StarfallSalvage::playerHeight,
+                               deck2.width + 2.0F * StarfallSalvage::playerWidth, StarfallSalvage::playerHeight};
+    const float liftTop = std::min(lift.startY, lift.endY);
+    const Rect ridingLift{lift.startX - StarfallSalvage::playerWidth, liftTop - StarfallSalvage::playerHeight,
+                          lift.width + 2.0F * StarfallSalvage::playerWidth,
+                          std::fabs(lift.startY - lift.endY) + StarfallSalvage::playerHeight};
+    EXPECT(!Collision::intersects(orbit, standingOnDeck2));
+    EXPECT(!Collision::intersects(orbit, ridingLift));
+
+    // The lift's whole travel stays clear of every deck.
+    const Rect liftTravel{lift.startX, liftTop, lift.width,
+                          std::fabs(lift.startY - lift.endY) + lift.height};
+    for (const Rect& deck : StarfallSalvage::decks) EXPECT(!Collision::intersects(liftTravel, deck));
+
+    GameObject& player = StarfallSalvage::makePlayer(world);
+    StarfallSalvage::Astronaut& astronaut = *player.get<StarfallSalvage::Astronaut>();
+    const Transform& body = *player.get<Transform>();
+    const Motion& motion = *player.get<Motion>();
+
+    // Standing on deck 1 for six seconds: grounded, and no drift either way.
+    placeAt(astronaut, 76.0F, 380.0F);
+    stepPlayer(world, astronaut, 300);
+    EXPECT(astronaut.grounded);
+    EXPECT(std::fabs(body.x - 76.0F) < 0.01F);
+    EXPECT(std::fabs(body.y + body.height - StarfallSalvage::decks[1].y) <= 0.5F);
+
+    // A jump and a double jump, but no third jump until landing again.
+    astronaut.input.jump = true;
+    stepPlayer(world, astronaut, 1);
+    EXPECT(!astronaut.grounded && astronaut.jumpsUsed == 1 && motion.velocityY < 0.0F);
+    stepPlayer(world, astronaut, 1);
+    EXPECT(astronaut.jumpsUsed == 2);
+    stepPlayer(world, astronaut, 1);
+    EXPECT(astronaut.jumpsUsed == 2);
+    astronaut.input.jump = false;
+    stepPlayer(world, astronaut, 200);
+    EXPECT(astronaut.grounded && astronaut.jumpsUsed == 0);
+
+    // Falling from high above at terminal speed with only half the astronaut
+    // over deck 4's east edge still lands on the deck, not beside it.
+    const Rect deck4 = StarfallSalvage::decks[4];
+    const float edgeX = deck4.x + deck4.width - StarfallSalvage::playerWidth * 0.5F;
+    placeAt(astronaut, edgeX, -200.0F);
+    stepPlayer(world, astronaut, 150);
+    EXPECT(astronaut.grounded);
+    EXPECT(std::fabs(body.x - edgeX) < 0.01F);
+    EXPECT(std::fabs(body.y + body.height - deck4.y) <= 0.5F);
+
+    // Into the hull breach, which is reached along the floor under deck 2: the
+    // hidden death zone sends the astronaut back to its spawn point without
+    // costing a life.
+    placeAt(astronaut, 76.0F, 380.0F);
+    Transform& movable = *player.get<Transform>();
+    movable.x = StarfallSalvage::hullBreach.x + 25.0F;
+    movable.y = StarfallSalvage::decks[2].y + StarfallSalvage::decks[2].height + 20.0F;
+    stepPlayer(world, astronaut, 150);
+    EXPECT(std::fabs(body.x - 76.0F) < 0.01F);
+    EXPECT(astronaut.lives == 3);
+
+    // The closed bulkhead stops the astronaut at the wall; opened, which only
+    // clears its collider's layers, it lets the astronaut walk through.
+    Collider& gate = *station.bulkhead->get<Collider>();
+    placeAt(astronaut, 880.0F, 460.0F);
+    astronaut.input.axis = 1.0F;
+    stepPlayer(world, astronaut, 100);
+    EXPECT(std::fabs(body.x - (StarfallSalvage::bulkhead.x - StarfallSalvage::playerWidth)) < 0.01F);
+    gate.layers = 0U;
+    stepPlayer(world, astronaut, 30);
+    EXPECT(body.x > StarfallSalvage::bulkhead.x + StarfallSalvage::bulkhead.width);
+    gate.layers = StarfallSalvage::solidLayer;
+    astronaut.input.axis = 0.0F;
+    placeAt(astronaut, 76.0F, 380.0F);
+    stepPlayer(world, astronaut, 5);
+
+    // A drone costs one life and respawns the astronaut, then a second of
+    // invulnerability protects it even though it respawned inside the drone.
+    GameObject& drone = StarfallSalvage::makeNetworkPlatform(world, {11, 0.0F, 0.0F, 0.0F, 0.0F});
+    Transform& dronePose = *drone.get<Transform>();
+    dronePose.x = 70.0F;
+    dronePose.y = 390.0F;
+    dronePose.width = 46.0F;
+    dronePose.height = 26.0F;
+    drone.setActive(true);
+    stepPlayer(world, astronaut, 1);
+    EXPECT(astronaut.lives == 2 && astronaut.invulnerableSeconds > 0.0F);
+    stepPlayer(world, astronaut, 10);
+    EXPECT(astronaut.lives == 2);
+    stepPlayer(world, astronaut, 60);
+    EXPECT(astronaut.lives == 1);
+    drone.setActive(false);
+
+    // Riding a shuttle: carried by its move between frames, and let go if it
+    // jumps further than a rider could have stayed on.
+    GameObject& shuttle = StarfallSalvage::makeNetworkPlatform(world, {1, 0.0F, 0.0F, 0.0F, 0.0F});
+    shuttle.add<NetworkIdentity>(NetworkIdentity::Kind::Platform, 1U);
+    Transform& shuttlePose = *shuttle.get<Transform>();
+    shuttlePose.x = 300.0F;
+    shuttlePose.y = 300.0F;
+    shuttlePose.width = 112.0F;
+    shuttlePose.height = 18.0F;
+    shuttle.setActive(true);
+    placeAt(astronaut, 340.0F, 300.0F - StarfallSalvage::playerHeight - 1.0F);
+    stepPlayer(world, astronaut, 5);
+    EXPECT(astronaut.grounded && astronaut.supportId == 1);
+    shuttlePose.x += 5.0F;
+    astronaut.rideShuttle(&shuttle);
+    EXPECT(std::fabs(body.x - 345.0F) < 0.01F);
+    stepPlayer(world, astronaut, 1);
+    EXPECT(astronaut.supportId == 1);
+    shuttlePose.x += 100.0F;
+    astronaut.rideShuttle(&shuttle);
+    EXPECT(astronaut.supportId == 0 && std::fabs(body.x - 345.0F) < 0.01F);
+
+    // Riding the lift up and back down: the astronaut's feet stay on its top
+    // surface every frame, moved the way NetworkWorldSync would move it.
+    GameObject& liftObject = StarfallSalvage::makeNetworkPlatform(world, {2, 0.0F, 0.0F, 0.0F, 0.0F});
+    liftObject.add<NetworkIdentity>(NetworkIdentity::Kind::Platform, 2U);
+    Transform& liftPose = *liftObject.get<Transform>();
+    liftPose.x = lift.startX;
+    liftPose.y = lift.startY;
+    liftPose.width = lift.width;
+    liftPose.height = lift.height;
+    liftObject.setActive(true);
+    placeAt(astronaut, lift.startX + 15.0F, lift.startY - StarfallSalvage::playerHeight - 1.0F);
+    stepPlayer(world, astronaut, 5);
+    EXPECT(astronaut.grounded && astronaut.supportId == 2);
+    const float liftStep = lift.speed / static_cast<float>(StarfallSalvage::normalLoopHz);
+    for (int frame = 0; frame < 90; ++frame) {
+        liftPose.y += frame < 60 ? -liftStep : liftStep;
+        astronaut.rideShuttle(&liftObject);
+        stepPlayer(world, astronaut, 1);
+        EXPECT(astronaut.grounded && astronaut.supportId == 2);
+        EXPECT(std::fabs(body.y + body.height - liftPose.y) <= 0.5F);
+    }
+    return 0;
 }
 
 } // namespace
@@ -214,20 +462,22 @@ int main()
                                              StarfallSalvage::playerWidth,
                                              StarfallSalvage::playerHeight}) == 4);
 
-    EXPECT(StarfallSalvage::frameIntervalNs(0.5) == 80'000'000);
-    EXPECT(StarfallSalvage::frameIntervalNs(1.0) == 40'000'000);
-    EXPECT(StarfallSalvage::frameIntervalNs(2.0) == 20'000'000);
-    EXPECT(StarfallSalvage::frameIntervalNs(0.0) == 40'000'000);
-    EXPECT(StarfallSalvage::frameIntervalNs(-1.0) == 40'000'000);
-    EXPECT(StarfallSalvage::frameIntervalNs(std::numeric_limits<double>::infinity()) == 40'000'000);
-    EXPECT(StarfallSalvage::frameIntervalNs(std::numeric_limits<double>::quiet_NaN()) == 40'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(0.5) == 40'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(1.0) == 20'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(2.0) == 10'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(0.0) == 20'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(-1.0) == 20'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(std::numeric_limits<double>::infinity()) == 20'000'000);
+    EXPECT(StarfallSalvage::frameIntervalNs(std::numeric_limits<double>::quiet_NaN()) == 20'000'000);
     EXPECT(checkTimeAndPacing() == 0);
 
     const auto config = StarfallSalvage::serverConfig();
     EXPECT(config.platforms.size() == 5);
     EXPECT(config.spawnPoints.size() == 8);
     EXPECT(config.platforms[0].endX > config.platforms[0].startX);
-    EXPECT(config.platforms[1].endX > config.platforms[1].startX);
+    // Shuttle 2 is a lift: same x, different heights.
+    EXPECT(config.platforms[1].endX == config.platforms[1].startX);
+    EXPECT(config.platforms[1].endY < config.platforms[1].startY);
     EXPECT(StarfallSalvage::isShuttle(config.platforms[0].id));
     EXPECT(StarfallSalvage::isDrone(config.platforms[2].id));
     EXPECT(StarfallSalvage::isDrone(config.platforms[3].id));
@@ -245,5 +495,7 @@ int main()
     EXPECT(StarfallSalvage::cameraTargetX(1550.0F) == 640.0F);
     EXPECT(StarfallSalvage::cameraTargetX(2000.0F) == 640.0F);
 
-    std::cout << "Starfall Salvage cooperative rules and time/pacing checks passed\n";
+    EXPECT(checkStation() == 0);
+
+    std::cout << "Starfall Salvage cooperative rules, time/pacing and station checks passed\n";
 }

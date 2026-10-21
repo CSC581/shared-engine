@@ -1,9 +1,9 @@
 #include "StarfallSalvageGame.hpp"
 
 #include "Collision.hpp"
+#include "Components.hpp"
 #include "Engine.hpp"
 #include "Input.hpp"
-#include "Physics.hpp"
 #include "StarfallSalvageWorld.hpp"
 #include "TimeUnits.hpp"
 
@@ -20,12 +20,6 @@
 
 namespace {
 
-struct Color {
-    Uint8 r;
-    Uint8 g;
-    Uint8 b;
-};
-
 constexpr std::array<Color, 8> suits{{
     {105, 225, 245}, {255, 185, 95}, {245, 115, 155}, {154, 224, 148},
     {180, 161, 255}, {245, 210, 110}, {105, 170, 255}, {235, 150, 210},
@@ -34,13 +28,8 @@ constexpr std::array<Color, 8> suits{{
 void rect(SDL_Renderer* renderer, float x, float y, float w, float h, Color color)
 {
     const SDL_FRect box{x, y, w, h};
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
+    SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, 255);
     SDL_RenderFillRect(renderer, &box);
-}
-
-void rect(SDL_Renderer* renderer, Rect box, Color color)
-{
-    rect(renderer, box.x, box.y, box.width, box.height, color);
 }
 
 void worldRect(SDL_Renderer* renderer, float cameraX, float x, float y, float w,
@@ -51,7 +40,7 @@ void worldRect(SDL_Renderer* renderer, float cameraX, float x, float y, float w,
 
 void line(SDL_Renderer* renderer, float x1, float y1, float x2, float y2, Color color)
 {
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
+    SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, 255);
     SDL_RenderLine(renderer, x1, y1, x2, y2);
 }
 
@@ -59,6 +48,19 @@ void worldLine(SDL_Renderer* renderer, float cameraX, float x1, float y1, float 
                float y2, Color color)
 {
     line(renderer, x1 - cameraX, y1, x2 - cameraX, y2, color);
+}
+
+void worldRing(SDL_Renderer* renderer, float cameraX, float centerX, float centerY,
+               float radius, Color color)
+{
+    constexpr int segments = 48;
+    constexpr float step = 6.2831853F / static_cast<float>(segments);
+    for (int i = 0; i < segments; ++i) {
+        const float a = step * static_cast<float>(i);
+        const float b = a + step;
+        worldLine(renderer, cameraX, centerX + radius * std::cos(a), centerY + radius * std::sin(a),
+                  centerX + radius * std::cos(b), centerY + radius * std::sin(b), color);
+    }
 }
 
 Color suitFor(std::uint32_t id)
@@ -94,21 +96,22 @@ void astronaut(SDL_Renderer* renderer, Rect bounds, Color suit, const std::strin
     SDL_RenderDebugText(renderer, bounds.x - 5, bounds.y - 12, name.c_str());
 }
 
-void deck(SDL_Renderer* renderer, Rect bounds, float cameraX)
+// Trim drawn over a deck's Renderable fill.
+void deckDetails(SDL_Renderer* renderer, Rect bounds, float cameraX,
+                 const StarfallSalvage::DeckPalette& palette)
 {
     bounds.x -= cameraX;
-    rect(renderer, bounds, {37, 58, 86});
-    rect(renderer, bounds.x, bounds.y, bounds.width, 5, {115, 174, 208});
-    rect(renderer, bounds.x + 8, bounds.y + 11, bounds.width - 16, 3, {65, 100, 137});
+    rect(renderer, bounds.x, bounds.y, bounds.width, 5, palette.top);
+    rect(renderer, bounds.x + 8, bounds.y + 11, bounds.width - 16, 3, palette.line);
     for (float x = bounds.x + 20; x < bounds.x + bounds.width - 10; x += 38) {
-        rect(renderer, x, bounds.y + bounds.height - 7, 5, 3, {80, 118, 151});
+        rect(renderer, x, bounds.y + bounds.height - 7, 5, 3, palette.bolt);
     }
 }
 
-void cargoCrate(SDL_Renderer* renderer, Rect bounds, float cameraX)
+// Straps drawn over a crate's Renderable fill.
+void cargoDetails(SDL_Renderer* renderer, Rect bounds, float cameraX)
 {
     bounds.x -= cameraX;
-    rect(renderer, bounds, {213, 112, 47});
     rect(renderer, bounds.x + 3, bounds.y + 3, bounds.width - 6, bounds.height - 6,
          {255, 184, 76});
     rect(renderer, bounds.x + 10, bounds.y + 3, 4, bounds.height - 6, {148, 70, 39});
@@ -140,9 +143,16 @@ StarfallSalvageGame::StarfallSalvageGame(Engine& engine, Multiplayer::Config con
     : networkTime_(engine.realTime(), kNsPerUs),
       session_(Multiplayer::Session::open(config, engine.realTime(), &networkTime_)),
       config_(std::move(config)),
+      station_(StarfallSalvage::buildStation(world_)),
+      player_(&StarfallSalvage::makePlayer(world_)),
+      astronaut_(player_->get<StarfallSalvage::Astronaut>()),
+      sync_(world_, StarfallSalvage::makeRemotePlayer, StarfallSalvage::makeNetworkPlatform),
       workers_({
-          [this](float dt) {
-              simulatePlayer(frameJob_, dt);
+          [this](float) {
+              // Only objects tagged "player", so no other thread writes them.
+              if (runPhysics_) {
+                  world_.updateComponents(frameTime_, "player");
+              }
               ++physicsFrames_;
           },
           [this](float dt) {
@@ -151,8 +161,10 @@ StarfallSalvageGame::StarfallSalvageGame(Engine& engine, Multiplayer::Config con
           },
       })
 {
+    // Nothing to stand on until the session is ready and the station's
+    // shuttles and drones have arrived; activated at spawn.
+    player_->setActive(false);
     networkTime_.setScale(engine.gameTime().scale());
-    Physics::setGravity(StarfallSalvage::gravity);
     engine.setClearColor({7, 14, 31});
 }
 
@@ -167,19 +179,24 @@ void StarfallSalvageGame::handleInput(Engine& engine)
     if (networkTime_.scale() != engine.gameTime().scale()) {
         networkTime_.setScale(engine.gameTime().scale());
     }
-    if (lives_ == 0 && Input::isKeyJustPressed(SDL_SCANCODE_R)) {
-        lives_ = 3;
-        respawn();
+    if (astronaut_->lives == 0 && Input::isKeyJustPressed(SDL_SCANCODE_R)) {
+        astronaut_->lives = 3;
+        astronaut_->respawn();
     }
 
     // Engine::run has no built-in frame cap. Pacing here is before its timer
     // tick, so both FrameTime and the actual loop/message rate reflect it.
+    // Frames follow a fixed schedule, so the small oversleeps of sleep_for do
+    // not add up and slow the loop; a frame that falls more than one interval
+    // behind restarts the schedule rather than rushing to catch up.
     const std::int64_t interval = StarfallSalvage::frameIntervalNs(engine.gameTime().scale());
     const std::int64_t now = engine.realTime().now();
-    if (lastLoopStartNs_ != 0 && now < lastLoopStartNs_ + interval) {
-        std::this_thread::sleep_for(std::chrono::nanoseconds(lastLoopStartNs_ + interval - now));
+    if (nextLoopStartNs_ == 0 || now - nextLoopStartNs_ > interval) {
+        nextLoopStartNs_ = now;
+    } else if (now < nextLoopStartNs_) {
+        std::this_thread::sleep_for(std::chrono::nanoseconds(nextLoopStartNs_ - now));
     }
-    lastLoopStartNs_ = engine.realTime().now();
+    nextLoopStartNs_ += interval;
 
     input_.axis = Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D);
     if (Input::isKeyPressed(SDL_SCANCODE_LEFT)) input_.axis -= 1.0F;
@@ -206,6 +223,9 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     session_->update();
     remote_ = session_->remotePlayers();
     platforms_ = session_->platforms();
+    // Remote astronauts, shuttles and drones into the World before anything
+    // reads a position this frame.
+    sync_.apply(*session_);
     const auto hasPlatform = [this](std::uint32_t id) {
         return std::any_of(platforms_.begin(), platforms_.end(), [id](const auto& platform) {
             return platform.id == id;
@@ -227,23 +247,51 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     }
 
     const bool ready = session_->state() == Multiplayer::State::Ready;
-    const bool canMove = ready && hasWorld_ && lives_ > 0;
+    const bool canMove = ready && hasWorld_ && astronaut_->lives > 0;
     if (ready && hasWorld_ && !spawned_) {
         const auto id = session_->localPlayerId();
-        const auto& spawn = StarfallSalvage::spawns[(id ? id - 1 : 0) % StarfallSalvage::spawns.size()];
-        spawnPoint_ = {spawn.x, spawn.y, StarfallSalvage::playerWidth, StarfallSalvage::playerHeight};
-        player_.setPosition(spawn.x, spawn.y);
+        const GameObject& spawn = *station_.spawns[(id ? id - 1 : 0) % station_.spawns.size()];
+        astronaut_->spawn = spawn.get<Transform>()->bounds();
+        astronaut_->respawn();
+        player_->setActive(true);
         spawned_ = true;
     }
 
-    // Workers read this fixed snapshot and write separate results. The main
-    // thread resumes only after both tasks have completed the frame.
-    frameJob_ = FrameJob{input_, canMove, gateOpen_, paused_, session_->localPlayerId(),
-                         platforms_, remote_};
+    // A closed bulkhead blocks like a deck; opening it only clears its layers.
+    station_.bulkhead->get<Collider>()->layers = gateOpen_ ? 0U : StarfallSalvage::solidLayer;
+
+    // The server's shuttles keep moving while this player is paused, so a
+    // paused astronaut lets go rather than receive all that travel at once.
+    if (paused_ && astronaut_->supportId != 0) {
+        astronaut_->detachFromShuttle();
+    }
+    runPhysics_ = canMove && !paused_ && time.dtSeconds > 0.0;
+    if (runPhysics_ && astronaut_->supportId != 0) {
+        astronaut_->rideShuttle(sync_.platform(astronaut_->supportId));
+    }
+
+    // The workers read these and nothing else; the main thread resumes only
+    // after both have finished the frame.
+    astronaut_->input = {input_.axis, input_.jump};
+    frameTime_ = time;
+    frameJob_ = FrameJob{session_->localPlayerId(), remote_};
     workers_.runFrame(static_cast<float>(time.dtSeconds));
 
+    // Back on the main thread: the collision pass pushes the astronaut out of
+    // decks, shuttles and the bulkhead, and its callbacks handle landing,
+    // drones and death zones. Skipped while it cannot move, so nothing pushes
+    // or hurts a paused astronaut.
+    Transform& body = *player_->get<Transform>();
+    if (runPhysics_) {
+        astronaut_->beginCollisionPass();
+        world_.resolveCollisions();
+        body.x = std::clamp(body.x, 18.0F,
+                            StarfallSalvage::worldWidth - 18.0F - StarfallSalvage::playerWidth);
+    }
+    world_.flushDestroyed();
+
     if (spawned_) {
-        const float target = StarfallSalvage::cameraTargetX(player_.getX());
+        const float target = StarfallSalvage::cameraTargetX(body.x);
         if (!cameraInitialized_ ||
             std::fabs(target - cameraX_) > StarfallSalvage::width * 0.55F) {
             cameraX_ = target;
@@ -254,11 +302,10 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
         }
     }
 
-    const Rect localBounds = player_.getBounds();
+    const Rect localBounds = body.bounds();
     const std::uint8_t previousCargoMask = cargoMask_;
     cargoMask_ |= remoteMission_.cargoMask;
-    const auto pickedUp = StarfallSalvage::cargoAt(localBounds, cargoMask_,
-                                                   canMove && lives_ > 0,
+    const auto pickedUp = StarfallSalvage::cargoAt(localBounds, cargoMask_, canMove,
                                                    static_cast<float>(time.dtSeconds));
     cargoMask_ |= pickedUp;
     personalCargoMask_ |= pickedUp;
@@ -266,7 +313,7 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     cargoFlashSeconds_ = std::max(0.0F, cargoFlashSeconds_ -
                                         static_cast<float>(time.dtSeconds));
     int control = -1;
-    if (canMove && input_.hold && grounded_) {
+    if (canMove && input_.hold && astronaut_->grounded) {
         control = StarfallSalvage::padUnderPlayer(localBounds);
         if (control < 0) control = StarfallSalvage::gatePlateUnderPlayer(localBounds);
     }
@@ -286,6 +333,20 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     missionComplete_ = cargoMask_ == StarfallSalvage::allCargoMask && relays_.online;
     const std::string localData = StarfallSalvage::encodeState(cargoMask_, control,
                                                             personalCargoMask_);
+
+    // The fixtures show the mission state through their Renderables.
+    for (std::size_t i = 0; i < station_.cargo.size(); ++i) {
+        station_.cargo[i]->get<Renderable>()->visible = (cargoMask_ & (1U << i)) == 0;
+    }
+    const float pulseBrightness = 0.5F + 0.5F * std::sin(pulse_ * 6.2831853F);
+    for (std::size_t i = 0; i < station_.relayPads.size(); ++i) {
+        station_.relayPads[i]->get<Renderable>()->color =
+            relays_.occupied[i] ? Color{static_cast<std::uint8_t>(85 + 30 * pulseBrightness), 238, 209}
+                                : Color{70, 104, 134};
+    }
+    for (GameObject* plate : station_.gatePlates) {
+        plate->get<Renderable>()->color = gateOpen_ ? Color{81, 224, 186} : Color{247, 180, 93};
+    }
 
     std::vector<StarfallSalvage::Claim> claims;
     claims.reserve(remote_.size() + 1);
@@ -315,8 +376,7 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     }
 
     if (ready && hasWorld_ && spawned_) {
-        session_->publishLocalPlayer(localBounds.x, localBounds.y,
-                                     localData);
+        session_->publishLocalPlayer(localBounds.x, localBounds.y, localData);
         ++ratePublishCount_;
     }
 
@@ -346,143 +406,11 @@ void StarfallSalvageGame::updateSignals(const FrameJob& job, float deltaTime)
     pulse_ = std::fmod(pulse_ + deltaTime * 0.55F, 1.0F);
 }
 
-void StarfallSalvageGame::simulatePlayer(const FrameJob& job, float deltaTime)
+std::string StarfallSalvageGame::remoteName(std::uint32_t id) const
 {
-    if (job.paused && supportId_ != 0) {
-        // The server's shuttle keeps moving, but this player's paused position does not.
-        // Detach so resuming cannot apply all of the missed shuttle travel at once.
-        supportId_ = 0;
-        grounded_ = false;
-    }
-    if (!job.paused && supportId_ != 0 && job.canMove) {
-        const auto oldPlatform = std::find_if(lastPhysicsPlatforms_.begin(), lastPhysicsPlatforms_.end(),
-            [this](const auto& platform) { return platform.id == supportId_; });
-        const auto newPlatform = std::find_if(job.platforms.begin(), job.platforms.end(),
-            [this](const auto& platform) { return platform.id == supportId_; });
-        if (oldPlatform != lastPhysicsPlatforms_.end() && newPlatform != job.platforms.end()) {
-            const float dx = newPlatform->x - oldPlatform->x;
-            const float dy = newPlatform->y - oldPlatform->y;
-            if (std::fabs(dx) <= 32.0F && std::fabs(dy) <= 32.0F) {
-                player_.setPosition(player_.getX() + dx, player_.getY() + dy);
-            } else {
-                supportId_ = 0;
-                grounded_ = false;
-            }
-        } else {
-            supportId_ = 0;
-            grounded_ = false;
-        }
-    }
-    lastPhysicsPlatforms_ = job.platforms;
-
-    if (deltaTime > 0.0F) {
-        invulnerableSeconds_ = std::max(0.0F, invulnerableSeconds_ -
-                                               deltaTime);
-    }
-    if (job.paused || !job.canMove || deltaTime <= 0.0F) return;
-
-    if (job.input.jump && jumpsUsed_ < StarfallSalvage::maximumJumps) {
-        player_.setVelocityY(-StarfallSalvage::jumpSpeed);
-        ++jumpsUsed_;
-        grounded_ = false;
-        supportId_ = 0;
-    }
-    const int steps = std::max(1, static_cast<int>(std::ceil(deltaTime / 0.01F)));
-    const float step = deltaTime / static_cast<float>(steps);
-    for (int i = 0; i < steps; ++i) {
-        const Rect previous = player_.getBounds();
-        player_.setVelocityX(job.input.axis * StarfallSalvage::playerSpeed);
-        Physics::applyGravity(player_, step);
-        player_.update(step);
-        grounded_ = false;
-        supportId_ = 0;
-
-        for (const Rect& box : StarfallSalvage::decks) resolveBlocker(box, 0, previous);
-        for (const auto& platform : job.platforms) {
-            if (!StarfallSalvage::isShuttle(platform.id)) continue;
-            resolveBlocker({platform.x, platform.y, platform.width, platform.height},
-                           platform.id, previous);
-        }
-        if (!job.gateOpen && !Collision::intersects(previous, StarfallSalvage::bulkhead)) {
-            resolveBlocker(StarfallSalvage::bulkhead, 0, previous);
-        }
-        const float x = std::clamp(player_.getX(), 18.0F,
-                                   StarfallSalvage::worldWidth - 18.0F - StarfallSalvage::playerWidth);
-        player_.setPosition(x, player_.getY());
-        if (player_.getY() > StarfallSalvage::height + 60.0F) respawn();
-
-        if (invulnerableSeconds_ <= 0.0F) {
-            for (const auto& platform : job.platforms) {
-                if (!StarfallSalvage::isDrone(platform.id) ||
-                    !Collision::intersects(player_.getBounds(),
-                                           {platform.x, platform.y, platform.width,
-                                            platform.height})) {
-                    continue;
-                }
-                --lives_;
-                if (lives_ > 0) {
-                    respawn();
-                    invulnerableSeconds_ = 1.0F;
-                } else {
-                    player_.setVelocity(0.0F, 0.0F);
-                    grounded_ = false;
-                    supportId_ = 0;
-                }
-                return;
-            }
-        }
-    }
-}
-
-void StarfallSalvageGame::resolveBlocker(const Rect& blocker, std::uint32_t platformId,
-                                     const Rect& previous)
-{
-    Rect player = player_.getBounds();
-    if (!Collision::intersects(player, blocker)) return;
-
-    const float previousBottom = previous.y + previous.height;
-    const float currentBottom = player.y + player.height;
-    if (previousBottom <= blocker.y + 5.0F && player_.getVelocityY() >= 0.0F &&
-        currentBottom >= blocker.y) {
-        player_.setPosition(player.x, blocker.y - player.height);
-        player_.setVelocityY(0.0F);
-        grounded_ = true;
-        jumpsUsed_ = 0;
-        supportId_ = platformId;
-        return;
-    }
-    if (previous.y >= blocker.y + blocker.height - 5.0F && player_.getVelocityY() < 0.0F) {
-        player_.setPosition(player.x, blocker.y + blocker.height);
-        player_.setVelocityY(0.0F);
-        return;
-    }
-
-    const Rect overlap = Collision::getIntersection(player, blocker);
-    if (overlap.width < overlap.height) {
-        const float direction = player.x + player.width * 0.5F <
-                                        blocker.x + blocker.width * 0.5F ? -1.0F : 1.0F;
-        player_.setPosition(player.x + direction * overlap.width, player.y);
-        player_.setVelocityX(0.0F);
-    } else {
-        const bool above = player.y + player.height * 0.5F <
-                           blocker.y + blocker.height * 0.5F;
-        player_.setPosition(player.x, player.y + (above ? -overlap.height : overlap.height));
-        player_.setVelocityY(0.0F);
-        if (above) {
-            grounded_ = true;
-            jumpsUsed_ = 0;
-            supportId_ = platformId;
-        }
-    }
-}
-
-void StarfallSalvageGame::respawn()
-{
-    player_.setPosition(spawnPoint_.x, spawnPoint_.y);
-    player_.setVelocity(0.0F, 0.0F);
-    grounded_ = false;
-    jumpsUsed_ = 0;
-    supportId_ = 0;
+    const auto player = std::find_if(remote_.begin(), remote_.end(),
+                                     [id](const auto& entry) { return entry.id == id; });
+    return player == remote_.end() || player->name.empty() ? std::string("PEER") : player->name;
 }
 
 void StarfallSalvageGame::render(SDL_Renderer* renderer) const
@@ -511,16 +439,31 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
     SDL_RenderDebugText(renderer, 885.0F - cameraX_, 105.0F, "EAST WING >>");
     SDL_RenderDebugText(renderer, 1300.0F - cameraX_, 105.0F, "RELAY ARRAY");
 
-    // Rails show where server-authored shuttles may travel.
+    // Rails show where the server-authored shuttles and drones travel.
     for (const auto& path : StarfallSalvage::shuttlePaths) {
-        worldRect(renderer, cameraX_, path.startX, path.startY + 22,
-                  path.endX - path.startX + path.width, 3, {49, 85, 121});
-        worldRect(renderer, cameraX_, path.startX, path.startY + 25, 4, 7,
-                  {80, 136, 171});
-        worldRect(renderer, cameraX_, path.endX + path.width - 4,
-                  path.endY + 25, 4, 7, {80, 136, 171});
+        if (path.startY == path.endY) {
+            worldRect(renderer, cameraX_, path.startX, path.startY + 22,
+                      path.endX - path.startX + path.width, 3, {49, 85, 121});
+            worldRect(renderer, cameraX_, path.startX, path.startY + 25, 4, 7,
+                      {80, 136, 171});
+            worldRect(renderer, cameraX_, path.endX + path.width - 4,
+                      path.endY + 25, 4, 7, {80, 136, 171});
+        } else {
+            // A lift: a vertical rail with a stop at the bottom.
+            const float top = std::min(path.startY, path.endY);
+            const float bottom = std::max(path.startY, path.endY) + path.height;
+            worldRect(renderer, cameraX_, path.startX + path.width * 0.5F - 1.5F, top,
+                      3, bottom - top + 12, {49, 85, 121});
+            worldRect(renderer, cameraX_, path.startX + 10, bottom + 10, path.width - 20, 4,
+                      {80, 136, 171});
+        }
     }
     for (const auto& path : StarfallSalvage::dronePaths) {
+        if (path.shape == Network::PlatformPath::Shape::Circular) {
+            worldRing(renderer, cameraX_, path.centerX + path.width * 0.5F,
+                      path.centerY + path.height * 0.5F, path.radius, {126, 53, 70});
+            continue;
+        }
         worldRect(renderer, cameraX_, path.startX, path.startY + 29,
                   path.endX - path.startX + path.width, 2, {126, 53, 70});
         worldRect(renderer, cameraX_, path.startX, path.startY + 27, 4, 6,
@@ -528,31 +471,62 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
         worldRect(renderer, cameraX_, path.endX + path.width - 4,
                   path.endY + 27, 4, 6, {231, 107, 102});
     }
-    for (const Rect& box : StarfallSalvage::decks) deck(renderer, box, cameraX_);
-    for (const auto& platform : platforms_) {
-        if (StarfallSalvage::isShuttle(platform.id)) {
-            deck(renderer, {platform.x, platform.y, platform.width, platform.height}, cameraX_);
-            worldRect(renderer, cameraX_, platform.x + 8, platform.y + 7, 8, 4,
-                      {91, 232, 241});
-            worldRect(renderer, cameraX_, platform.x + platform.width - 16,
-                      platform.y + 7, 8, 4, {91, 232, 241});
-        } else if (StarfallSalvage::isDrone(platform.id)) {
-            drone(renderer, {platform.x, platform.y, platform.width, platform.height}, cameraX_);
-        }
+
+    // Housings behind the pads and switches, which renderWorld draws on top.
+    for (std::size_t i = 0; i < StarfallSalvage::relayPads.size(); ++i) {
+        const Rect& pad = StarfallSalvage::relayPads[i];
+        worldRect(renderer, cameraX_, pad.x - 8, pad.y - 28, pad.width + 16, 29, {23, 45, 68});
+        worldRect(renderer, cameraX_, pad.x - 3, pad.y - 24, pad.width + 6, 18,
+                  relays_.occupied[i] ? Color{38, 128, 120} : Color{40, 71, 97});
     }
-    for (std::size_t i = 0; i < StarfallSalvage::cargo.size(); ++i) {
-        if ((cargoMask_ & (1U << i)) == 0) {
-            cargoCrate(renderer, StarfallSalvage::cargo[i], cameraX_);
+    for (const Rect& plate : StarfallSalvage::gatePlates) {
+        worldRect(renderer, cameraX_, plate.x - 5, plate.y - 13, plate.width + 10, 14, {26, 44, 64});
+    }
+
+    // Every deck, shuttle, crate, pad and switch: their Renderable fills.
+    renderWorld(renderer, world_, cameraX_, 0.0F);
+
+    // Detail drawn over those fills, and the drones, which are sprites.
+    for (const auto& object : world_.objects()) {
+        if (!object->isActive()) continue;
+        const Rect bounds = object->get<Transform>()->bounds();
+        if (const auto* style = object->get<StarfallSalvage::DeckStyle>()) {
+            deckDetails(renderer, bounds, cameraX_, StarfallSalvage::paletteFor(style->kind));
+        } else if (object->tag() == "shuttle") {
+            deckDetails(renderer, bounds, cameraX_, StarfallSalvage::paletteFor(StarfallSalvage::DeckKind::Hull));
+            worldRect(renderer, cameraX_, bounds.x + 8, bounds.y + 7, 8, 4, {91, 232, 241});
+            worldRect(renderer, cameraX_, bounds.x + bounds.width - 16, bounds.y + 7, 8, 4,
+                      {91, 232, 241});
+        } else if (object->tag() == "cargo" && object->get<Renderable>()->visible) {
+            cargoDetails(renderer, bounds, cameraX_);
+        } else if (object->tag() == "drone") {
+            drone(renderer, bounds, cameraX_);
         }
     }
 
+    // The death zone itself is hidden, but the gap it sits in must be easy to
+    // see: most of the floor is under the HUD bar, so the breach gets hazard
+    // stripes on both edges, a red glow and a sign on the wall above.
+    const Rect& breach = StarfallSalvage::hullBreach;
+    const float breachPulse = 0.5F + 0.5F * std::sin(pulse_ * 6.2831853F * 2.0F);
+    for (int i = 0; i < 4; ++i) {
+        const Color stripe = i % 2 == 0 ? Color{247, 201, 72} : Color{30, 30, 34};
+        const float offset = 6.0F * static_cast<float>(i);
+        worldRect(renderer, cameraX_, breach.x - 24.0F + offset, breach.y, 6, 7, stripe);
+        worldRect(renderer, cameraX_, breach.x + breach.width + offset, breach.y, 6, 7, stripe);
+    }
+    worldRect(renderer, cameraX_, breach.x, breach.y, breach.width, 7,
+              {static_cast<std::uint8_t>(120 + 100 * breachPulse), 30, 36});
+    // The sign is 11 characters of 8 px, centred over the gap.
+    const float signX = breach.x + breach.width * 0.5F - 44.0F;
+    worldRect(renderer, cameraX_, signX - 4.0F, 436, 96, 15, {58, 18, 26});
+    SDL_SetRenderDrawColor(renderer, 255, static_cast<std::uint8_t>(120 + 80 * breachPulse), 110, 255);
+    SDL_RenderDebugText(renderer, signX - cameraX_, 440, "HULL BREACH");
+
     for (std::size_t i = 0; i < StarfallSalvage::gatePlates.size(); ++i) {
-        Rect plate = StarfallSalvage::gatePlates[i];
-        plate.x -= cameraX_;
-        rect(renderer, plate.x - 5, plate.y - 13, plate.width + 10, 14, {26, 44, 64});
-        rect(renderer, plate, gateOpen_ ? Color{81, 224, 186} : Color{247, 180, 93});
+        const Rect& plate = StarfallSalvage::gatePlates[i];
         SDL_SetRenderDrawColor(renderer, 238, 230, 210, 255);
-        SDL_RenderDebugText(renderer, plate.x - 12, plate.y - 27,
+        SDL_RenderDebugText(renderer, plate.x - cameraX_ - 12, plate.y - 27,
                             i == 0 ? "HOLD E: GATE" : "HOLD E: RETURN");
     }
     if (gateOpen_) {
@@ -569,11 +543,12 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
         }
     }
 
+    const Rect localBounds = player_->get<Transform>()->bounds();
     if (!missionComplete_) {
         rect(renderer, 306, 110, 348, 27, {18, 43, 66});
         SDL_SetRenderDrawColor(renderer, 255, 213, 139, 255);
-        const bool nearBulkhead = spawned_ && player_.getX() > 720.0F &&
-                                  player_.getX() < StarfallSalvage::bulkhead.x &&
+        const bool nearBulkhead = spawned_ && localBounds.x > 720.0F &&
+                                  localBounds.x < StarfallSalvage::bulkhead.x &&
                                   cargoMask_ != StarfallSalvage::allCargoMask;
         const char* objective = cargoFlashSeconds_ > 0.0F ? "CARGO SECURED" :
                                 cargoMask_ == StarfallSalvage::allCargoMask
@@ -585,24 +560,18 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
                             119.0F, objective);
     }
 
-    const Color dark{70, 104, 134};
-    const float pulseBrightness = 0.5F + 0.5F * std::sin(pulse_ * 6.2831853F);
+    // The label sits inside the relay's housing, below the name of anyone
+    // standing on the pad, so the two never overlap.
     for (std::size_t i = 0; i < StarfallSalvage::relayPads.size(); ++i) {
-        Rect pad = StarfallSalvage::relayPads[i];
-        pad.x -= cameraX_;
+        const Rect& pad = StarfallSalvage::relayPads[i];
         const bool active = relays_.occupied[i];
-        rect(renderer, pad.x - 8, pad.y - 28, pad.width + 16, 29, {23, 45, 68});
-        rect(renderer, pad.x - 3, pad.y - 24, pad.width + 6, 18,
-             active ? Color{38, 128, 120} : Color{40, 71, 97});
-        const Color animated = active
-            ? Color{static_cast<Uint8>(85 + 30 * pulseBrightness), 238, 209} : dark;
-        rect(renderer, pad, animated);
-        rect(renderer, pad.x + pad.width * 0.5F - 4, pad.y - 18, 8, 8,
-             active ? Color{218, 251, 214} : Color{77, 118, 149});
+        worldRect(renderer, cameraX_, pad.x + pad.width * 0.5F - 4, pad.y - 14, 8, 8,
+                  active ? Color{218, 251, 214} : Color{77, 118, 149});
         SDL_SetRenderDrawColor(renderer, 233, 243, 250, 255);
-        SDL_RenderDebugTextFormat(renderer, pad.x + 10, pad.y - 39, "RELAY %zu", i + 1);
+        SDL_RenderDebugTextFormat(renderer, pad.x - cameraX_ - 3, pad.y - 26, "RELAY %zu", i + 1);
     }
 
+    const float pulseBrightness = 0.5F + 0.5F * std::sin(pulse_ * 6.2831853F);
     if (relays_.online) {
         worldLine(renderer, cameraX_, 150, 389, 580, 309, {85, 224, 202});
         worldLine(renderer, cameraX_, 580, 309, 1415, 229, {85, 224, 202});
@@ -610,7 +579,7 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
         worldLine(renderer, cameraX_, 580, 307, 1415, 227, {202, 255, 229});
         rect(renderer, 279, 128, 402, 59, {16, 69, 77});
         rect(renderer, 284, 133, 392, 49,
-             {static_cast<Uint8>(40 + 20 * pulseBrightness), 122, 117});
+             {static_cast<std::uint8_t>(40 + 20 * pulseBrightness), 122, 117});
         SDL_SetRenderDrawColor(renderer, 230, 255, 229, 255);
         if (missionComplete_) {
             SDL_RenderDebugText(renderer, 374, 143, "SALVAGE COMPLETE");
@@ -622,18 +591,19 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
         }
     }
 
-    for (const auto& player : remote_) {
-        astronaut(renderer, {player.x, player.y, StarfallSalvage::playerWidth, StarfallSalvage::playerHeight},
-                  suitFor(player.id), player.name.empty() ? "PEER" : player.name,
-                  cameraX_);
+    // Astronauts are multi-part sprites drawn at their objects' Transforms.
+    for (const auto& object : world_.objects()) {
+        if (!object->isActive() || object->tag() != "remote") continue;
+        const std::uint32_t id = object->get<NetworkIdentity>()->id;
+        astronaut(renderer, object->get<Transform>()->bounds(), suitFor(id), remoteName(id), cameraX_);
     }
     if (spawned_) {
-        const float stride = grounded_ && !paused_ && input_.axis != 0.0F
+        const float stride = astronaut_->grounded && !paused_ && input_.axis != 0.0F
                                  ? static_cast<float>(std::sin(gameSeconds_ * 16.0) * 2.5)
                                  : 0.0F;
-        astronaut(renderer, player_.getBounds(), suitFor(session_->localPlayerId()),
-                  config_.playerName + " (YOU)", cameraX_, stride, !grounded_,
-                  invulnerableSeconds_ > 0.0F);
+        astronaut(renderer, localBounds, suitFor(session_->localPlayerId()),
+                  config_.playerName + " (YOU)", cameraX_, stride, !astronaut_->grounded,
+                  astronaut_->invulnerableSeconds > 0.0F);
     }
 
     rect(renderer, 0, 0, 960, 68, {8, 18, 35});
@@ -651,7 +621,7 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
         (session_->state() == Multiplayer::State::Ready ? 1U : 0U);
     SDL_RenderDebugTextFormat(renderer, 20, 32,
                               "CARGO %d/4 | LIVES %d | RELAYS %d/3 | %s | %zu PLAYERS | %.1fX | %.1f LOOP/S | %s | %s",
-                              recoveredCargo(cargoMask_), lives_, relayCount,
+                              recoveredCargo(cargoMask_), astronaut_->lives, relayCount,
                               Multiplayer::modeName(session_->mode()), playerCount,
                               currentScale_, measuredLoopHz_,
                               proportionalScale_ ? "FIT" : "PIXEL",
@@ -668,7 +638,7 @@ void StarfallSalvageGame::render(SDL_Renderer* renderer) const
     SDL_RenderDebugTextFormat(renderer, 824, 516, "YOU %d CARGO",
                               recoveredCargo(creditedCargoMask_));
 
-    if (lives_ == 0 && session_->state() == Multiplayer::State::Ready) {
+    if (astronaut_->lives == 0 && session_->state() == Multiplayer::State::Ready) {
         rect(renderer, 285, 204, 390, 78, {83, 27, 45});
         SDL_SetRenderDrawColor(renderer, 255, 225, 228, 255);
         SDL_RenderDebugText(renderer, 411, 225, "SUIT DISABLED");

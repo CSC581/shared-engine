@@ -403,6 +403,7 @@ add_custom_command(TARGET apex-ascent POST_BUILD
 # and owns this game's shuttle and drone paths.
 add_library(starfall-salvage-rules STATIC
     individual-games/vanaja/src/StarfallSalvageRules.cpp
+    individual-games/vanaja/src/StarfallSalvageLevel.cpp
 )
 target_include_directories(starfall-salvage-rules PUBLIC
     individual-games/vanaja/include

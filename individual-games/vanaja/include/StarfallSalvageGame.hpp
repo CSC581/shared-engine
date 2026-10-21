@@ -1,11 +1,14 @@
 #pragma once
 
-#include "Entity.hpp"
+#include "FrameTime.hpp"
 #include "FrameWorkers.hpp"
 #include "Game.hpp"
 #include "Multiplayer.hpp"
+#include "NetworkWorldSync.hpp"
+#include "StarfallSalvageLevel.hpp"
 #include "StarfallSalvageRules.hpp"
 #include "Timeline.hpp"
+#include "World.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -34,26 +37,27 @@ private:
         bool hold = false;
     };
 
+    // What the signal worker reads: a copy taken before the workers start.
     struct FrameJob {
-        InputFrame input{};
-        bool canMove = false;
-        bool gateOpen = false;
-        bool paused = false;
         Multiplayer::PlayerId localId = 0;
-        std::vector<Multiplayer::Platform> platforms;
         std::vector<Multiplayer::Player> remote;
     };
 
     void updateSignals(const FrameJob& job, float deltaTime);
-    void simulatePlayer(const FrameJob& job, float deltaTime);
-    void resolveBlocker(const Rect& blocker, std::uint32_t platformId, const Rect& previous);
-    void respawn();
+    std::string remoteName(std::uint32_t id) const;
 
     // Network updates keep flowing while the local simulation is paused.
     Timeline networkTime_;
     std::unique_ptr<Multiplayer::Session> session_;
     Multiplayer::Config config_;
-    Entity player_{76.0F, 380.0F, 30.0F, 40.0F};
+
+    // The scene. world_ comes before everything that points into it.
+    World world_;
+    StarfallSalvage::Station station_;
+    GameObject* player_ = nullptr;
+    StarfallSalvage::Astronaut* astronaut_ = nullptr;
+    NetworkWorldSync sync_;
+
     InputFrame input_{};
     std::vector<Multiplayer::Player> remote_;
     std::vector<Multiplayer::Platform> platforms_;
@@ -69,23 +73,20 @@ private:
     bool gateOpen_ = false;
     bool hasWorld_ = false;
     bool spawned_ = false;
-    bool grounded_ = false;
-    int jumpsUsed_ = 0;
-    int lives_ = 3;
-    float invulnerableSeconds_ = 0.0F;
-    Rect spawnPoint_{76.0F, 380.0F, 30.0F, 40.0F};
-    std::uint32_t supportId_ = 0;
-    std::vector<Multiplayer::Platform> lastPhysicsPlatforms_;
     float pulse_ = 0.0F;
     float cameraX_ = 0.0F;
     bool cameraInitialized_ = false;
     bool diagnostics_ = false;
 
+    // Read by the workers; written only before runFrame().
     FrameJob frameJob_{};
+    FrameTime frameTime_{0.0, 0};
+    bool runPhysics_ = false;
     std::uint64_t physicsFrames_ = 0;
     std::uint64_t signalFrames_ = 0;
 
-    std::int64_t lastLoopStartNs_ = 0;
+    // When the next frame is due, on a fixed schedule; 0 before the first frame.
+    std::int64_t nextLoopStartNs_ = 0;
     std::int64_t rateSampleStartNs_ = 0;
     std::uint64_t rateLoopCount_ = 0;
     std::uint64_t ratePublishCount_ = 0;
