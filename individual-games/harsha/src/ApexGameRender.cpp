@@ -1,8 +1,10 @@
 #include "ApexGame.hpp"
 
+#include "ApexLevel.hpp"
 #include "ApexNetworkConfig.hpp"
 #include "ApexPresence.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -64,6 +66,18 @@ void ApexGame::render(SDL_Renderer* renderer) const
     // Platforms: every object with a Renderable (colour set per kind by
     // ApexLevel). The player has none; its sprite is drawn below.
     renderWorld(renderer, world_, 0.0F, camera_);
+
+    // Debris of a crumbled moss ledge: green and brown chunks that shrink
+    // away over their last 0.3 s.
+    const Color moss = ApexLevel::colorFor(ApexPlatform::Kind::Moss);
+    for (std::size_t i = 0; i < debris_.size(); ++i) {
+        const Debris& bit = debris_[i];
+        const float size = bit.size * std::min(bit.life / 0.3F, 1.0F);
+        const Color& color = i % 2 == 0 ? moss : crumbledColor;
+        SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, 255);
+        const SDL_FRect rect{bit.x + (bit.size - size) * 0.5F, bit.y - camera_, size, size};
+        SDL_RenderFillRect(renderer, &rect);
+    }
 
     // Spikes: the visible side of hidden death zones, a row of pale teeth
     // standing on the zone's bottom edge.

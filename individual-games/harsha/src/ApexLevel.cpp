@@ -38,6 +38,10 @@ GameObject& makeStatic(World& world, float x, float y, float width, float height
     platform.add<Renderable>(colorFor(kind));
     platform.add<ApexPlatform>(kind);
     platform.add<Surface>(kind == ApexPlatform::Kind::Ice ? Surface::ice : Surface::ground);
+    // Moss gives way under a climber and grows back (ApexGame ticks it).
+    if (kind == ApexPlatform::Kind::Moss) {
+        platform.add<Crumble>(x);
+    }
     platform.setActive(true);
     return platform;
 }
@@ -204,7 +208,8 @@ void buildRoom0(const Room& room)
 // to (a jump that rises h also travels about 1.1h sideways, and the room is
 // too narrow), so the elevator (movers(), id 2) is the only way up.
 // Heights were tuned with a jump simulation so every jump allows at least
-// ~0.14 s of charge error.
+// ~0.14 s of charge error. Both moss ledges crumble 1.5 s after a climber
+// lands (Crumble), so the climb up them cannot wait.
 void buildRoom1(const Room& room)
 {
     constexpr float mossWidth = 90.0F;
