@@ -103,6 +103,30 @@ public:
     float period;
 };
 
+// A ledge that gives way: standing on it starts a short countdown, then it
+// breaks (the object is switched off, so it neither collides nor draws) and
+// comes back a few seconds later. The game ticks it, not update(): an
+// inactive object is never updated, so it could not bring itself back.
+class Crumble : public Component {
+public:
+    enum class State { Intact, Shaking, Broken };
+
+    // Longer than a full charge (1.36 s): from mid-ledge, the jump off room
+    // 1's upper moss needs 0.85 s or more, so a shorter fuse leaves almost no
+    // window. Holding Space while landing starts the charge at once.
+    static constexpr float breakAfterSeconds = 1.5F;
+    static constexpr float returnAfterSeconds = 3.0F;
+
+    explicit Crumble(float homeX)
+        : homeX(homeX)
+    {
+    }
+
+    State state = State::Intact;
+    float timer = 0.0F; // seconds in the current state, game time
+    float homeX;        // x to restore after the shake
+};
+
 // Measures how far its object moved this frame, so a climber standing on it
 // can be carried along.
 //

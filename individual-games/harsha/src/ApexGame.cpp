@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <iostream>
 #include <utility>
@@ -32,6 +33,7 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
     playerGravity_ = player_->get<Gravity>();
     const std::vector<GameObject*> windZones = world_.findAllWith<WindZone>();
     windZoneObject_ = windZones.empty() ? nullptr : windZones.front();
+    crumbles_ = world_.findAllWith<Crumble>();
 
     Collider& playerCollider = *player_->get<Collider>();
     playerCollider.onCollide = [this](GameObject&, GameObject& other) { onPlayerCollide(other); };
@@ -271,6 +273,7 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     // the anim to Fall, then to a Land clip that cannot advance at dt 0.
     if (!gameTimePaused_) {
         handleCollisions();
+        updateCrumbles(deltaTime);
     }
     // Online ghosts that disconnected were queued for removal by sync_.
     world_.flushDestroyed();
@@ -312,6 +315,10 @@ void ApexGame::handleCollisions()
     // Landing pass first, over every platform: snap onto any top the feet
     // crossed this frame.
     for (GameObject* platform : world_.findAllByTag("platform")) {
+        // findAllByTag also returns switched-off objects: a crumbled ledge.
+        if (!platform->isActive()) {
+            continue;
+        }
         const Rect playerBounds = playerTransform_->bounds();
         const Rect platformBounds = platform->get<Transform>()->bounds();
 
@@ -454,6 +461,105 @@ void ApexGame::snapCamera()
 void ApexGame::updateCamera(float deltaTime)
 {
     camera_ += (cameraTarget() - camera_) * (1.0F - std::pow(0.0001F, deltaTime));
+}
+
+// Crumbling ledges, on the main thread after the collision pass (so this
+// frame's grounded platform is known). Standing on one starts a shake; when
+// it ends the ledge breaks into debris and is switched off, then grows back.
+void ApexGame::updateCrumbles(float deltaTime)
+{
+    const Color moss = ApexLevel::colorFor(ApexPlatform::Kind::Moss);
+    const Color rotten = crumbledColor;
+
+    for (GameObject* ledge : crumbles_) {
+        Crumble& crumble = *ledge->get<Crumble>();
+        Transform& transform = *ledge->get<Transform>();
+        Renderable& renderable = *ledge->get<Renderable>();
+
+        switch (crumble.state) {
+        case Crumble::State::Intact:
+            if (isOnGround_ && groundedPlatformId_ == ledge->id()) {
+                crumble.state = Crumble::State::Shaking;
+                crumble.timer = 0.0F;
+            }
+            break;
+
+        case Crumble::State::Shaking: {
+            crumble.timer += deltaTime;
+            const float progress = std::min(crumble.timer / Crumble::breakAfterSeconds, 1.0F);
+            // A tremor that grows as the ledge weakens.
+            transform.x = crumble.homeX + std::sin(crumble.timer * 70.0F) * (0.5F + 1.5F * progress);
+            const auto mix = [progress](std::uint8_t from, std::uint8_t to) {
+                return static_cast<std::uint8_t>(static_cast<float>(from) + (static_cast<float>(to) - static_cast<float>(from)) * progress);
+            };
+            renderable.color = {mix(moss.red, rotten.red), mix(moss.green, rotten.green), mix(moss.blue, rotten.blue)};
+
+            if (crumble.timer >= Crumble::breakAfterSeconds) {
+                transform.x = crumble.homeX;
+                renderable.color = moss;
+                spawnDebris(transform.bounds());
+                ledge->setActive(false);
+                crumble.state = Crumble::State::Broken;
+                crumble.timer = 0.0F;
+                // The climber drops with it. A charge in progress is lost, or
+                // releasing Space would leap from mid-air.
+                if (groundedPlatformId_ == ledge->id()) {
+                    isOnGround_ = false;
+                    groundedPlatformId_ = 0;
+                    isCharging_ = false;
+                    chargePower_ = 0.0F;
+                }
+            }
+            break;
+        }
+
+        case Crumble::State::Broken: {
+            crumble.timer += deltaTime;
+            // Grow back only once the space is clear, so it never closes
+            // around a climber passing through.
+            const Rect playerBounds = playerTransform_->bounds();
+            const Rect ledgeBounds = transform.bounds();
+            const bool blocked = playerBounds.x < ledgeBounds.x + ledgeBounds.width &&
+                                 playerBounds.x + playerBounds.width > ledgeBounds.x &&
+                                 playerBounds.y < ledgeBounds.y + ledgeBounds.height &&
+                                 playerBounds.y + playerBounds.height > ledgeBounds.y;
+            if (crumble.timer >= Crumble::returnAfterSeconds && !blocked) {
+                ledge->setActive(true);
+                crumble.state = Crumble::State::Intact;
+                crumble.timer = 0.0F;
+            }
+            break;
+        }
+        }
+    }
+
+    // Debris falls under the climber's gravity and fades out.
+    for (Debris& bit : debris_) {
+        bit.velocityY += gravity * deltaTime;
+        bit.x += bit.velocityX * deltaTime;
+        bit.y += bit.velocityY * deltaTime;
+        bit.life -= deltaTime;
+    }
+    debris_.erase(std::remove_if(debris_.begin(), debris_.end(), [](const Debris& bit) { return bit.life <= 0.0F; }),
+                  debris_.end());
+}
+
+// Eight chunks spread along the ledge, kicked up and outward from its middle.
+// Fixed spread rather than random, so every break looks the same.
+void ApexGame::spawnDebris(const Rect& ledge)
+{
+    constexpr int pieces = 8;
+    for (int i = 0; i < pieces; ++i) {
+        const float along = (static_cast<float>(i) + 0.5F) / pieces; // 0..1 across the ledge
+        Debris bit{};
+        bit.size = 5.0F + static_cast<float>((i * 3) % 5);
+        bit.x = ledge.x + along * ledge.width - bit.size * 0.5F;
+        bit.y = ledge.y;
+        bit.velocityX = (along - 0.5F) * 260.0F;
+        bit.velocityY = -140.0F - 50.0F * static_cast<float>(i % 3);
+        bit.life = 0.9F + 0.1F * static_cast<float>(i % 3);
+        debris_.push_back(bit);
+    }
 }
 
 // Player worker thread: touches only the player and its charge, never a

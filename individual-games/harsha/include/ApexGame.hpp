@@ -17,6 +17,7 @@
 #include <SDL3/SDL.h>
 
 #include <memory>
+#include <vector>
 
 class ApexGame : public Game {
 public:
@@ -48,6 +49,9 @@ private:
 
     static constexpr int roomCount = 6;
 
+    // Dark brown a crumbling moss ledge fades toward; also half its debris.
+    static constexpr Color crumbledColor{110, 80, 45};
+
     void handleCollisions();
     void onPlayerCollide(GameObject& other);
     void applySlingshotFling();
@@ -62,6 +66,8 @@ private:
     void snapCamera();
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
+    void updateCrumbles(float deltaTime);
+    void spawnDebris(const Rect& ledge);
 
     // Every object in the scene: platforms, the local player and, online,
     // the remote players and server-owned platforms NetworkWorldSync mirrors.
@@ -92,6 +98,20 @@ private:
     const GameObject* windZoneObject_ = nullptr;
     float windNow_ = 0.0F;
     float windStreakOffset_ = 0.0F;
+
+    // Ledges with a Crumble (the moss). Level objects are never destroyed,
+    // so the pointers stay valid; ticked on the main thread.
+    std::vector<GameObject*> crumbles_;
+    // Bits of a broken ledge: drawn shapes only, not World objects.
+    struct Debris {
+        float x;
+        float y;
+        float velocityX;
+        float velocityY;
+        float life; // seconds left
+        float size;
+    };
+    std::vector<Debris> debris_;
 
     // Milestone 4: climb-loop clips + facing driven by gameplay.
     PlayerAnimation playerAnim_;

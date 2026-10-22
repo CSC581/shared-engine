@@ -27,13 +27,13 @@ Six rooms, one screen each. The camera snaps to whichever room you are in.
 | Room | What it asks of you |
 | --- | --- |
 | 0 Tutorial | Stone ledges for short, medium and sideways charges; an amber mover for timing |
-| 1 Lift | Wide sandstone landing; the elevator is the only way up to the narrow moss ledges |
+| 1 Lift | Wide sandstone landing; the elevator is the only way up to the narrow moss ledges, which crumble 1.5 s after you land (hold Space as you land to start charging at once) and grow back 3 s later |
 | 2 Ice | Slippery ice ledges; land short of the top one, or slide off it, and the spike shelf below sends you back |
 | 3 Slingshot | The goal is high above the fast magenta rail and only a little to the left. Charge fully, aim nowhere, and release while the rail moves left: the rail throws you there. A straight-up jump steered left in mid-air also works, but the throw is the intended route |
 | 4 Orbit | Three violet wheels at 3:2:1 speeds, repeating every 8 s; land on a moving target |
 | 5 Summit | Narrow ledges in gusty wind (watch the streaks and the HUD arrow) up to the gold summit |
 
-Platforms: slate stone, green moss (narrow), tan sandstone (wide), pale cyan
+Platforms: slate stone, green moss (narrow, crumbles), tan sandstone (wide), pale cyan
 ice (slippery), amber movers, magenta slingshot rail (on a drawn track),
 violet orbit wheels (on drawn circles), gold summit.
 
