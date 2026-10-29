@@ -2,6 +2,7 @@
 
 #include "Color.hpp"
 #include "DeltaTimer.hpp"
+#include "EventManager.hpp"
 #include "TimeUnits.hpp"
 #include "Timeline.hpp"
 
@@ -68,6 +69,7 @@ public:
     // with no cooperation from those objects. Games bind the keys for that
     // themselves; the engine deliberately reserves none.
     Timeline& gameTime();
+    EventManager& events();
 
     // Real time, never paused and never scaled. Anchor a timeline here for
     // anything that must keep running while the game is frozen -- a menu
@@ -116,6 +118,7 @@ private:
     // server, gets its own set.
     RealTimeClock realClock_;
     Timeline gameTime_{realClock_, kNsPerUs};
+    EventManager events_{gameTime_};
     DeltaTimer frameTimer_{gameTime_, maxFrameDeltaTics};
 
     // The third scale: loop iterations, counted by a clock that does not care

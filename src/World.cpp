@@ -2,6 +2,7 @@
 
 #include "Collision.hpp"
 #include "Components.hpp"
+#include "EventManager.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -131,6 +132,11 @@ const std::vector<std::unique_ptr<GameObject>>& World::objects() const
     return objects_;
 }
 
+void World::setEventManager(EventManager* events)
+{
+    events_ = events;
+}
+
 void World::update(const FrameTime& time)
 {
     updateComponents(time);
@@ -217,6 +223,15 @@ void World::resolveCollisions()
         current.insert(pair);
 
         if (contacts_.count(pair) == 0) {
+            if (events_ != nullptr) {
+                Event event{Events::Collision};
+                event.set("a", idA).set("b", idB)
+                     .set("tagA", a->object->tag()).set("tagB", b->object->tag())
+                     .set("phase", "enter")
+                     .set("trigger", a->collider->kind == Collider::Kind::Trigger ||
+                                      b->collider->kind == Collider::Kind::Trigger);
+                events_->raise(std::move(event));
+            }
             fire(a->collider->onEnter, *a->object, *b->object);
             fire(b->collider->onEnter, *b->object, *a->object);
         }
@@ -232,6 +247,15 @@ void World::resolveCollisions()
         GameObject* second = find(secondId);
         if (first == nullptr || second == nullptr) {
             continue;
+        }
+        if (events_ != nullptr) {
+            Event event{Events::Collision};
+            event.set("a", firstId).set("b", secondId)
+                 .set("tagA", first->tag()).set("tagB", second->tag())
+                 .set("phase", "exit")
+                 .set("trigger", first->get<Collider>()->kind == Collider::Kind::Trigger ||
+                                  second->get<Collider>()->kind == Collider::Kind::Trigger);
+            events_->raise(std::move(event));
         }
         fire(first->get<Collider>()->onExit, *first, *second);
         fire(second->get<Collider>()->onExit, *second, *first);

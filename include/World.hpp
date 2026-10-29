@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+class EventManager;
+
 // Owns every GameObject in a scene and runs one frame of them.
 //
 // A frame is three passes, in this order:
@@ -78,9 +80,15 @@ public:
 
     void resolveCollisions();
 
+    // Optional event sink. Must outlive this World or be cleared before it
+    // is destroyed. CollisionEvent args are a/b (local object IDs), tagA/tagB,
+    // phase ("enter"/"exit") and trigger (bool). The owner dispatches later.
+    void setEventManager(EventManager* events);
+
     void flushDestroyed();
 
 private:
+    EventManager* events_ = nullptr;
     std::vector<std::unique_ptr<GameObject>> objects_;
     // Every component of every object, sorted into update order. Rebuilt only
     // when structureVersion_ has moved past orderVersion_, that is when an

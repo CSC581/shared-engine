@@ -1,5 +1,7 @@
 #include "Input.hpp"
 
+#include "EventManager.hpp"
+
 #include <SDL3/SDL_keyboard.h>
 
 #include <algorithm>
@@ -31,6 +33,20 @@ void Input::update()
         std::copy(keyboardState, keyboardState + copyCount, currentKeys_.begin());
     }
 
+}
+
+void Input::raiseEvents(EventManager& events)
+{
+    for (int key = 0; key < keyCount; ++key) {
+        if (currentKeys_[key] == previousKeys_[key]) {
+            continue;
+        }
+        Event event{Events::Input};
+        event.set("kind", "key")
+             .set("key", key)
+             .set("state", currentKeys_[key] ? "pressed" : "released");
+        events.raise(std::move(event));
+    }
 }
 
 bool Input::isKeyPressed(SDL_Scancode key)

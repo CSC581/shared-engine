@@ -38,6 +38,11 @@ target_include_directories(engine-time PUBLIC include)
 find_package(Threads REQUIRED)
 target_link_libraries(engine-time PUBLIC Threads::Threads)
 
+# Queued, SDL-free events shared by local worlds and later networking/replay.
+add_library(engine-events STATIC src/EventManager.cpp)
+target_include_directories(engine-events PUBLIC include)
+target_link_libraries(engine-events PUBLIC engine-time)
+
 # SDL-free frame workers (Section 3): persistent threads that split a game's
 # per-frame update, with a barrier so the main thread reads their results
 # race-free. Its own library so a test can link it without SDL.
@@ -106,7 +111,7 @@ add_library(engine-geometry STATIC
 target_include_directories(engine-geometry PUBLIC include)
 
 # Components update on a FrameTime, so the clocks come with the object model.
-target_link_libraries(engine-geometry PUBLIC engine-time)
+target_link_libraries(engine-geometry PUBLIC engine-time engine-events)
 
 # SDL-dependent engine core (window, renderer, main loop, input). Publicly
 # links engine-geometry and SDL3 so any target linking `engine` gets both
@@ -133,6 +138,14 @@ add_executable(input-tests tests/InputTests.cpp)
 target_link_libraries(input-tests PRIVATE engine)
 
 add_test(NAME input-tests COMMAND input-tests)
+
+add_executable(event-manager-tests tests/EventManagerTests.cpp)
+target_link_libraries(event-manager-tests PRIVATE engine-events engine-geometry)
+add_test(NAME event-manager-tests COMMAND event-manager-tests)
+
+add_executable(event-integration-tests tests/EventIntegrationTests.cpp)
+target_link_libraries(event-integration-tests PRIVATE engine)
+add_test(NAME event-integration-tests COMMAND event-integration-tests)
 
 # renderWorld() draw order (Renderable::layer), checked on pixels through SDL's
 # software renderer, so it needs no window.
