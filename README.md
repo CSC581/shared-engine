@@ -1,7 +1,7 @@
 # Shared Engine, Milestone 3: Game Object Model and Networked Scene
 
-**Team:** Harsha Vardhan Puvvadi, Seojin Kim, Vanaja Agarwal · **CSC 581**
-**Github Link:**https://github.com/CSC581/shared-engine/tree/milestone-3
+**Team:** Harsha Vardhan Puvvadi, Seojin Kim, Vanaja Agarwal · **CSC 581**  
+**Github Link:** https://github.com/CSC581/shared-engine/tree/milestone-3
 
 This is our C++17 game engine. It uses SDL3 for the window, input and drawing, and ZeroMQ for networking. Each game keeps its own rules, and any networking goes through the engine. There are tests for each module. This README only covers Milestone 3. Time, threads and the networking foundations were done in Milestone 2 and are left out here, except where Milestone 3 changed them.
 
