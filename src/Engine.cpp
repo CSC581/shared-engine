@@ -66,12 +66,14 @@ void Engine::run(Game& game)
         }
 
         Input::update();
+        Input::raiseEvents(events_);
 
         if (scaleToggleKey_ != SDL_SCANCODE_UNKNOWN && Input::isKeyJustPressed(scaleToggleKey_)) {
             toggleScaleMode();
         }
 
         game.handleInput(*this);
+        events_.dispatch();
 
         // Ticked after the game has read its input, so a pause pressed this
         // frame takes effect this frame rather than one frame late.
@@ -85,6 +87,7 @@ void Engine::run(Game& game)
             gameTime_.now()};
 
         game.update(frameTime, *this);
+        events_.dispatch();
 
         applyScaleMode();
         SDL_SetRenderDrawColor(renderer_, clearColor_.red, clearColor_.green, clearColor_.blue, 255);
@@ -113,6 +116,11 @@ SDL_Window* Engine::getWindow() const
 Timeline& Engine::gameTime()
 {
     return gameTime_;
+}
+
+EventManager& Engine::events()
+{
+    return events_;
 }
 
 const TimeSource& Engine::realTime() const

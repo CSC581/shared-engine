@@ -201,6 +201,29 @@ void Behavior::update(const FrameTime& time)
     }
 }
 
+// --- EventListener -----------------------------------------------------------
+
+EventListener::EventListener(EventManager& events) : events_(events) {}
+
+EventListener::~EventListener()
+{
+    for (const auto id : subscriptions_) {
+        events_.unsubscribe(id);
+    }
+}
+
+void EventListener::listen(const std::string& type, EventManager::Handler handler)
+{
+    if (!handler) {
+        throw std::invalid_argument("EventListener needs a handler");
+    }
+    subscriptions_.push_back(events_.subscribe(type, [this, handler = std::move(handler)](const Event& event) {
+        if (owner().isActive()) {
+            handler(event);
+        }
+    }));
+}
+
 // --- NetworkIdentity ---------------------------------------------------------
 
 NetworkIdentity::NetworkIdentity(Kind kind, std::uint32_t id)

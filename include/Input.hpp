@@ -6,6 +6,8 @@
 #include <initializer_list>
 #include <vector>
 
+class EventManager;
+
 // Keyboard input for games built on the engine.
 //
 // The engine calls Input::update() once per frame; games only ever ask
@@ -15,6 +17,11 @@
 class Input {
 public:
     static void update();
+
+    // Queue a pressed/released InputEvent for every key changed by the last
+    // update(). Args: kind="key", key=int64 scancode, state="pressed"/"released".
+    // Called once per frame by Engine; useful without an SDL window.
+    static void raiseEvents(EventManager& events);
 
     static bool isKeyPressed(SDL_Scancode key);
     static bool isKeyJustPressed(SDL_Scancode key);

@@ -3,9 +3,12 @@
 #include "Collision.hpp"
 #include "Color.hpp"
 #include "Component.hpp"
+#include "EventManager.hpp"
 
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <vector>
 
 class GameObject;
 struct SDL_Texture;
@@ -21,6 +24,7 @@ struct SDL_Texture;
 //   Collider    takes part in World's collision pass
 //   Renderable  drawn by renderWorld()
 //   Behavior    game-specific per-frame logic
+//   EventListener  subscriptions removed with the object
 //   NetworkIdentity  which networked player or platform this object stands for
 
 // Position and size. Every other built-in component depends on it.
@@ -211,6 +215,20 @@ public:
 
 private:
     UpdateFn fn_;
+};
+
+// Binds event subscriptions to a GameObject's lifetime. The manager must
+// outlive this component. Call listen() on the owning thread after attachment.
+class EventListener : public Component {
+public:
+    explicit EventListener(EventManager& events);
+    ~EventListener() override;
+
+    void listen(const std::string& type, EventManager::Handler handler);
+
+private:
+    EventManager& events_;
+    std::vector<EventManager::SubscriptionId> subscriptions_;
 };
 
 // Ties an object to the network id it stands for: a player id assigned by the
