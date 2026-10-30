@@ -69,6 +69,20 @@ void fire(const Collider::Callback& callback, GameObject& self, GameObject& othe
     }
 }
 
+// The smaller id is always `a`, so a pair reads the same in every phase.
+void raiseCollision(EventManager& events, const GameObject& x, const GameObject& y, const char* phase)
+{
+    const GameObject& a = x.id() < y.id() ? x : y;
+    const GameObject& b = x.id() < y.id() ? y : x;
+    Event event{Events::Collision};
+    event.set("a", a.id()).set("b", b.id())
+         .set("tagA", a.tag()).set("tagB", b.tag())
+         .set("phase", phase)
+         .set("trigger", a.get<Collider>()->kind == Collider::Kind::Trigger ||
+                          b.get<Collider>()->kind == Collider::Kind::Trigger);
+    events.raise(std::move(event));
+}
+
 } // namespace
 
 GameObject& World::create(std::string tag)
@@ -224,16 +238,12 @@ void World::resolveCollisions()
 
         if (contacts_.count(pair) == 0) {
             if (events_ != nullptr) {
-                Event event{Events::Collision};
-                event.set("a", idA).set("b", idB)
-                     .set("tagA", a->object->tag()).set("tagB", b->object->tag())
-                     .set("phase", "enter")
-                     .set("trigger", a->collider->kind == Collider::Kind::Trigger ||
-                                      b->collider->kind == Collider::Kind::Trigger);
-                events_->raise(std::move(event));
+                raiseCollision(*events_, *a->object, *b->object, "enter");
             }
             fire(a->collider->onEnter, *a->object, *b->object);
             fire(b->collider->onEnter, *b->object, *a->object);
+        } else if (events_ != nullptr && (a->collider->raiseStayEvents || b->collider->raiseStayEvents)) {
+            raiseCollision(*events_, *a->object, *b->object, "stay");
         }
         fire(a->collider->onCollide, *a->object, *b->object);
         fire(b->collider->onCollide, *b->object, *a->object);
@@ -249,13 +259,7 @@ void World::resolveCollisions()
             continue;
         }
         if (events_ != nullptr) {
-            Event event{Events::Collision};
-            event.set("a", firstId).set("b", secondId)
-                 .set("tagA", first->tag()).set("tagB", second->tag())
-                 .set("phase", "exit")
-                 .set("trigger", first->get<Collider>()->kind == Collider::Kind::Trigger ||
-                                  second->get<Collider>()->kind == Collider::Kind::Trigger);
-            events_->raise(std::move(event));
+            raiseCollision(*events_, *first, *second, "exit");
         }
         fire(first->get<Collider>()->onExit, *first, *second);
         fire(second->get<Collider>()->onExit, *second, *first);

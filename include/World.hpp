@@ -81,8 +81,9 @@ public:
     void resolveCollisions();
 
     // Optional event sink. Must outlive this World or be cleared before it
-    // is destroyed. CollisionEvent args are a/b (local object IDs), tagA/tagB,
-    // phase ("enter"/"exit") and trigger (bool). The owner dispatches later.
+    // is destroyed. CollisionEvent args are a/b (local object IDs, smaller
+    // first), tagA/tagB, phase ("enter", "stay" or "exit") and trigger (bool).
+    // "stay" needs Collider::raiseStayEvents. The owner dispatches later.
     void setEventManager(EventManager* events);
 
     void flushDestroyed();

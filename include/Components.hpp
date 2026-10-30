@@ -170,6 +170,10 @@ public:
     Callback onCollide;
     Callback onExit;
 
+    // CollisionEvent "stay" fires every frame after "enter" while a pair
+    // overlaps, so it is opt-in: set on either collider of the pair.
+    bool raiseStayEvents = false;
+
 private:
     Transform* transform_ = nullptr;
 };

@@ -11,12 +11,16 @@
 using EventValue = std::variant<bool, std::int64_t, double, std::string>;
 
 namespace Events {
-// Stable names shared by the engine and games. Death and Spawn are raised by
-// game rules; this local engine slice produces Collision and Input.
+// Stable names shared by the engine and games. World raises Collision and
+// Engine raises Input. Games raise Death {object, cause} and Spawn, either
+// {object, x, y} to respawn or {kind, x, y} to create.
 constexpr const char* Collision = "CollisionEvent";
 constexpr const char* Death = "DeathEvent";
 constexpr const char* Spawn = "SpawnEvent";
 constexpr const char* Input = "InputEvent";
+
+// Event::origin of events raised by the server. Player ids start at 1.
+constexpr std::uint32_t ServerOrigin = 0xFFFFFFFF;
 } // namespace Events
 
 namespace EventPriority {
@@ -36,8 +40,7 @@ struct Event {
     std::int64_t deliverAt = 0;
     int priority = EventPriority::Normal;
     std::uint64_t sequence = 0;
-    std::uint32_t age = 0; // Number of event-handler links in this chain.
-    std::uint32_t origin = 0; // Local by default; reserved for a future network bridge.
+    std::uint32_t origin = 0; // 0 = this machine, else a remote player id or ServerOrigin.
 
     Event& set(std::string name, bool value)
     {

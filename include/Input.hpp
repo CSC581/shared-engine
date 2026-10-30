@@ -4,9 +4,16 @@
 
 #include <array>
 #include <initializer_list>
+#include <string>
 #include <vector>
 
 class EventManager;
+
+// A named key combination, registered with Engine::registerChord().
+struct InputChord {
+    std::string name;
+    std::vector<SDL_Scancode> keys;
+};
 
 // Keyboard input for games built on the engine.
 //
@@ -20,8 +27,9 @@ public:
 
     // Queue a pressed/released InputEvent for every key changed by the last
     // update(). Args: kind="key", key=int64 scancode, state="pressed"/"released".
+    // Each chord raises kind="chord", name and state when it completes or breaks.
     // Called once per frame by Engine; useful without an SDL window.
-    static void raiseEvents(EventManager& events);
+    static void raiseEvents(EventManager& events, const std::vector<InputChord>& chords = {});
 
     static bool isKeyPressed(SDL_Scancode key);
     static bool isKeyJustPressed(SDL_Scancode key);
