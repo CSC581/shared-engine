@@ -23,6 +23,17 @@ add_subdirectory(vendored/cppzmq EXCLUDE_FROM_ALL)
 
 add_subdirectory(vendored/SDL EXCLUDE_FROM_ALL)
 
+# Optional sanitizer for every engine target, e.g. -DENGINE_SANITIZER=thread.
+# Set after the vendored libraries so only engine code is instrumented.
+set(ENGINE_SANITIZER "" CACHE STRING "Sanitizer for engine targets: thread, address or empty")
+if(ENGINE_SANITIZER)
+    if(NOT ENGINE_SANITIZER MATCHES "^(thread|address)$")
+        message(FATAL_ERROR "ENGINE_SANITIZER must be thread or address")
+    endif()
+    add_compile_options(-fsanitize=${ENGINE_SANITIZER} -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=${ENGINE_SANITIZER})
+endif()
+
 # SDL-free time module (clocks, timelines, per-consumer deltas). Its own
 # library rather than a folder inside engine-geometry: the rule that it must
 # never depend on SDL is then enforced by the link line rather than by care,
@@ -300,6 +311,11 @@ target_link_libraries(network-client PRIVATE engine network-core)
 # directly, which is the point being made.
 add_executable(multiplayer-demo sandbox/MultiplayerDemo.cpp)
 target_link_libraries(multiplayer-demo PRIVATE engine multiplayer)
+
+# Milestone 4 Phase 2: the four required events and a chord, all through
+# engine.events().
+add_executable(events-demo sandbox/EventsDemo.cpp)
+target_link_libraries(events-demo PRIVATE engine)
 
 # Headless Part 1C comparison. It uses the production client, host, ZeroMQ
 # transport and moving-platform world; no SDL or synthetic codec loop stands

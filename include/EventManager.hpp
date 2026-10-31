@@ -28,6 +28,7 @@ public:
     // A subscription added during handling begins with the next event.
     SubscriptionId subscribe(const std::string& type, Handler handler);
     SubscriptionId subscribeAll(Handler handler);
+    // Owning thread too, but never throws, so a destructor may call it.
     void unsubscribe(SubscriptionId id);
 
     // Stamp and queue an event. Delay is in the clock's tics and must be >= 0.

@@ -7,11 +7,6 @@
 #include <tuple>
 #include <utility>
 
-namespace {
-thread_local EventManager* handlingManager = nullptr;
-thread_local std::uint32_t handlingAge = 0;
-}
-
 EventManager::EventManager(const TimeSource& clock)
     : clock_(clock), owner_(std::this_thread::get_id())
 {
@@ -56,7 +51,6 @@ EventManager::SubscriptionId EventManager::subscribeAll(Handler handler)
 
 void EventManager::unsubscribe(SubscriptionId id)
 {
-    requireOwner();
     const auto it = subscriptions_.find(id);
     if (it == subscriptions_.end()) {
         return;
@@ -83,8 +77,6 @@ void EventManager::raise(Event event, std::int64_t delayTics)
     }
     event.timestamp = now;
     event.deliverAt = now + delayTics;
-    event.age = handlingManager == this && handlingAge < std::numeric_limits<std::uint32_t>::max()
-                    ? handlingAge + 1 : 0;
     const std::lock_guard<std::mutex> lock(queueMutex_);
     event.sequence = nextSequence_++;
     queue_.push(std::move(event));
@@ -99,10 +91,6 @@ void EventManager::deliver(const Event& event, std::exception_ptr& firstError)
     }
     listeners.insert(listeners.end(), all_.begin(), all_.end());
 
-    EventManager* previousManager = handlingManager;
-    const std::uint32_t previousAge = handlingAge;
-    handlingManager = this;
-    handlingAge = event.age;
     for (const auto& listener : listeners) {
         if (!listener->active) {
             continue;
@@ -115,8 +103,6 @@ void EventManager::deliver(const Event& event, std::exception_ptr& firstError)
             }
         }
     }
-    handlingManager = previousManager;
-    handlingAge = previousAge;
 }
 
 std::size_t EventManager::dispatch()

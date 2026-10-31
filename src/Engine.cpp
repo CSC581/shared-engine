@@ -66,7 +66,7 @@ void Engine::run(Game& game)
         }
 
         Input::update();
-        Input::raiseEvents(events_);
+        Input::raiseEvents(events_, chords_);
 
         if (scaleToggleKey_ != SDL_SCANCODE_UNKNOWN && Input::isKeyJustPressed(scaleToggleKey_)) {
             toggleScaleMode();
@@ -121,6 +121,14 @@ Timeline& Engine::gameTime()
 EventManager& Engine::events()
 {
     return events_;
+}
+
+void Engine::registerChord(std::string name, std::vector<SDL_Scancode> keys)
+{
+    if (name.empty() || keys.empty()) {
+        throw std::invalid_argument("A chord needs a name and at least one key");
+    }
+    chords_.push_back({std::move(name), std::move(keys)});
 }
 
 const TimeSource& Engine::realTime() const

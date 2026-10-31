@@ -35,7 +35,7 @@ void Input::update()
 
 }
 
-void Input::raiseEvents(EventManager& events)
+void Input::raiseEvents(EventManager& events, const std::vector<InputChord>& chords)
 {
     for (int key = 0; key < keyCount; ++key) {
         if (currentKeys_[key] == previousKeys_[key]) {
@@ -45,6 +45,22 @@ void Input::raiseEvents(EventManager& events)
         event.set("kind", "key")
              .set("key", key)
              .set("state", currentKeys_[key] ? "pressed" : "released");
+        events.raise(std::move(event));
+    }
+
+    for (const InputChord& chord : chords) {
+        const auto heldIn = [&chord](const std::array<bool, keyCount>& keys) {
+            return std::all_of(chord.keys.begin(), chord.keys.end(),
+                               [&keys](SDL_Scancode key) { return isValidKey(key) && keys[key]; });
+        };
+        const bool held = heldIn(currentKeys_);
+        if (held == heldIn(previousKeys_)) {
+            continue;
+        }
+        Event event{Events::Input};
+        event.set("kind", "chord")
+             .set("name", chord.name)
+             .set("state", held ? "pressed" : "released");
         events.raise(std::move(event));
     }
 }

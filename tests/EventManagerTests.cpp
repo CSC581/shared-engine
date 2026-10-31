@@ -71,29 +71,40 @@ void chainsAndChanges()
     EventManager manager(clock);
     std::vector<std::string> seen;
     EventManager::SubscriptionId removed = 0;
-    manager.subscribe("A", [&](const Event& e) {
+    manager.subscribe("A", [&](const Event&) {
         seen.push_back("A");
-        CHECK(e.age == 0);
         manager.unsubscribe(removed);
         manager.subscribe("A", [&](const Event&) { seen.push_back("new A"); });
         manager.raise(Event{"B"});
     });
     removed = manager.subscribe("A", [&](const Event&) { seen.push_back("removed A"); });
-    manager.subscribe("B", [&](const Event& e) {
+    manager.subscribe("B", [&](const Event&) {
         seen.push_back("B");
-        CHECK(e.age == 1);
         manager.raise(Event{"C"});
     });
-    manager.subscribe("C", [&](const Event& e) {
-        seen.push_back("C");
-        CHECK(e.age == 2);
-    });
+    manager.subscribe("C", [&](const Event&) { seen.push_back("C"); });
     manager.raise(Event{"A"});
     CHECK(manager.dispatch() == 3);
     CHECK((seen == std::vector<std::string>{"A", "B", "C"}));
     manager.raise(Event{"A"});
     CHECK(manager.dispatch() == 3);
     CHECK(seen[4] == "new A");
+
+    // A high-priority event raised by a handler waits for the next round.
+    EventManager rounds(clock);
+    std::vector<std::string> order;
+    rounds.subscribe("first", [&](const Event&) {
+        order.push_back("first");
+        Event urgent{"urgent"};
+        urgent.priority = EventPriority::High;
+        rounds.raise(urgent);
+    });
+    rounds.subscribe("second", [&](const Event&) { order.push_back("second"); });
+    rounds.subscribe("urgent", [&](const Event&) { order.push_back("urgent"); });
+    rounds.raise(Event{"first"});
+    rounds.raise(Event{"second"});
+    CHECK(rounds.dispatch() == 3);
+    CHECK((order == std::vector<std::string>{"first", "second", "urgent"}));
 
     EventManager limited(clock);
     limited.setLimits(2, 3);
@@ -111,10 +122,15 @@ void chainsAndChanges()
 
     EventManager budget(clock);
     budget.setLimits(8, 2);
+    std::vector<std::uint64_t> sequences;
+    budget.subscribe("burst", [&](const Event& e) { sequences.push_back(e.sequence); });
     for (int i = 0; i < 5; ++i) { budget.raise(Event{"burst"}); }
     CHECK(budget.dispatch() == 2);
     CHECK(budget.pending() == 3);
     CHECK(budget.deferredByLimits() == 1);
+    CHECK(budget.dispatch() == 2);
+    CHECK(budget.dispatch() == 1);
+    CHECK((sequences == std::vector<std::uint64_t>{1, 2, 3, 4, 5}));
 
     EventManager errors(clock);
     int continued = 0;
@@ -124,6 +140,9 @@ void chainsAndChanges()
     bool threw = false;
     try { errors.dispatch(); } catch (const std::runtime_error&) { threw = true; }
     CHECK(threw && continued == 1 && errors.pending() == 0);
+    errors.subscribe("ok", [&](const Event&) { ++continued; });
+    errors.raise(Event{"ok"});
+    CHECK(errors.dispatch() == 1 && continued == 2);
 
     EventManager reentrant(clock);
     bool rejected = false;
@@ -150,7 +169,9 @@ void timelineAndThreads()
     CHECK(manager.dispatch() == 1);
     timeline.unpause();
     timeline.setScale(2.0);
-    anchor.advance(50);
+    anchor.advance(40);   // 8 tics at 2x (4 at 1x): not due yet
+    CHECK(manager.dispatch() == 0);
+    anchor.advance(10);   // 10 tics after 50 anchor units, half the 1x time
     CHECK(manager.dispatch() == 1);
 
     constexpr int workers = 4;

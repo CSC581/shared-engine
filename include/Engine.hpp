@@ -3,12 +3,15 @@
 #include "Color.hpp"
 #include "DeltaTimer.hpp"
 #include "EventManager.hpp"
+#include "Input.hpp"
 #include "TimeUnits.hpp"
 #include "Timeline.hpp"
 
 #include <SDL3/SDL_scancode.h>
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 struct SDL_Renderer;
 struct SDL_Window;
@@ -69,7 +72,14 @@ public:
     // with no cooperation from those objects. Games bind the keys for that
     // themselves; the engine deliberately reserves none.
     Timeline& gameTime();
+
+    // Events on the game timeline, dispatched after handleInput() and after
+    // update(). Pass it to World::setEventManager() for CollisionEvent.
     EventManager& events();
+
+    // Raise InputEvent kind="chord" for `name` when every key is held, and
+    // again when the chord breaks. Throws for an empty name or no keys.
+    void registerChord(std::string name, std::vector<SDL_Scancode> keys);
 
     // Real time, never paused and never scaled. Anchor a timeline here for
     // anything that must keep running while the game is frozen -- a menu
@@ -119,6 +129,7 @@ private:
     RealTimeClock realClock_;
     Timeline gameTime_{realClock_, kNsPerUs};
     EventManager events_{gameTime_};
+    std::vector<InputChord> chords_;
     DeltaTimer frameTimer_{gameTime_, maxFrameDeltaTics};
 
     // The third scale: loop iterations, counted by a clock that does not care
