@@ -92,4 +92,12 @@ The input polling and collider callbacks from Milestone 3 still work alongside t
 
 **Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event.
 
+<div style="page-break-before: always"></div>
+
+## Appendix: how the pieces fit
+
+**A. One event, from raise to handler (1.1).** Engine systems, game rules and worker threads raise events, which only puts them in the queue with a game-time timestamp. Twice per frame, `dispatch()` hands out every due event, in order, to the handlers registered for its type and then to the `subscribeAll` handlers. Events raised by those handlers run in later rounds of the same dispatch.
+
+![Event flow](docs/event-flow.svg)
+
 <sub> **Disclaimer:** The team designed and wrote code, but also used LLMs such as Claude Sonnet 5 and ChatGPT 5.6 Terra to help restructure the code and refactor the components when in need.</sub>
