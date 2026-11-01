@@ -105,8 +105,9 @@ public:
     std::vector<Event> takeEvents();
     // Events queued and not yet accepted by the server.
     std::size_t pendingEvents() const;
-    // Events dropped from a full queue, outgoing or incoming, since this
-    // client was created.
+    // Events dropped from this client's full queues, outgoing or incoming,
+    // since it was created. A Multiplayer::Session drops events in its own
+    // buffers too, and those are not counted here.
     std::uint64_t droppedEvents() const;
 
     ConnectionState state() const;

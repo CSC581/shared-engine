@@ -204,7 +204,8 @@ public:
     // Announce departure. Called by the destructor; call it earlier to leave
     // without tearing the session down. In client-server mode, events
     // published before it are sent first, waiting at most about 0.2 s for the
-    // server to accept them.
+    // server to accept them. A session that is reconnecting at that moment
+    // cannot send, so its waiting events are lost.
     virtual void leave() = 0;
 
     // This player's id, or 0 before the session is Ready.
@@ -250,8 +251,9 @@ public:
     //
     // Events can still be lost: when more than 256 wait at this client, at
     // the server for one receiver, or at a receiver that stops calling
-    // update() (the oldest go); when the server timed this player out; and
-    // when published after leave(). Throws std::invalid_argument if the event
+    // update() (the oldest go); when the server timed this player out; when
+    // leave() is called while reconnecting; and when published after
+    // leave(). None of these losses are counted here. Throws std::invalid_argument if the event
     // breaks a rule of the wire format (validateEvent in EventCodec.hpp), and
     // std::logic_error in peer-to-peer mode, which carries no events.
     virtual void publishEvent(const Event& event) = 0;

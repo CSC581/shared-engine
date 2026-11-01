@@ -29,6 +29,12 @@ namespace Network {
 // the same sign, so both formats always carry the same value.
 bool validateEvent(const Event& event, std::string& error);
 
+// True when a client-to-server list can be encoded: at most
+// maxEventsPerMessage events, each valid, with client sequences that start at
+// 1 or more and go up by exactly 1. The same check the encoders and decoders
+// make, for a server handed a Request that no decoder saw.
+bool validateEvents(const std::vector<OutgoingEvent>& events, std::string& error);
+
 // Append a list to `out`. Throw std::invalid_argument, leaving `out`
 // unchanged, if the list breaks a rule: an invalid event, more than
 // maxEventsPerMessage events, or sequences out of order.

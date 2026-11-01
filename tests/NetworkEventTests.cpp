@@ -822,6 +822,60 @@ bool fullClientQueueDropsTheOldestUnsentEvents()
     return passed;
 }
 
+// A request the client gave up on can still reach the server after the client
+// has joined again. Its events must keep their numbers, even when the queue
+// overflows in between, so the server's late acceptance still matches.
+bool lateOldRequestStillMatchesAfterRejoin()
+{
+    ScriptedServer server;
+    ManualClock clock;
+    Network::NetworkClient client(clock, server.endpoint);
+    for (std::int64_t n = 0; n < 100; ++n) {
+        client.publishEvent(ping(n));
+    }
+    client.start();
+    Network::Request request;
+    server.receive(request);
+    server.reply(welcome(5));
+    settle(client);
+
+    client.submitPosition(0.0F, 0.0F);
+    bool passed = expect(server.receive(request) && clientSequences(request) == sequenceRange(1, 64) &&
+                             eventNumbers(request) == range(0, 64),
+                         "the first request carries the oldest 64 events");
+    // No reply in time: the client gives up and joins again. The reply to the
+    // abandoned request goes nowhere.
+    clock.advance(kNsPerSec);
+    client.poll();
+    server.reply(snapshotReply(1, 0));
+    clock.advance(kNsPerSec);
+    client.poll();
+    passed &= expect(server.receive(request) && request.type == Network::RequestType::Join,
+                     "the client joins again");
+    // The server has not handled the old request yet, so nothing is accepted.
+    server.reply(welcome(5, 0, 1));
+    settle(client);
+
+    for (std::int64_t n = 1000; n < 1300; ++n) {
+        client.publishEvent(ping(n));
+    }
+    passed &= expect(client.pendingEvents() == Network::NetworkClient::maxPendingEvents &&
+                         client.droppedEvents() == 144,
+                     "an overflow drops only events that were never sent");
+    client.submitPosition(0.0F, 0.0F);
+    passed &= expect(server.receive(request) && clientSequences(request) == sequenceRange(1, 64) &&
+                         eventNumbers(request) == range(0, 64),
+                     "events already sent keep their numbers through the rejoin and the overflow");
+    // Now the server handles the old request after all and accepts 1..64.
+    server.reply(snapshotReply(2, 64));
+    settle(client);
+    client.submitPosition(0.0F, 0.0F);
+    passed &= expect(server.receive(request) && clientSequences(request) == sequenceRange(65, 64) &&
+                         eventNumbers(request) == range(1108, 64),
+                     "the late acceptance matches, and the oldest surviving events follow");
+    return passed;
+}
+
 // Relayed events a caller never takes stop at the cap, keeping the newest.
 bool clientIncomingQueueIsCapped()
 {
@@ -1138,6 +1192,7 @@ struct SessionPair {
     RealTimeClock realTime;
     std::unique_ptr<Multiplayer::Session> sender;
     std::unique_ptr<Multiplayer::Session> receiver;
+    bool senderPublishes = true;
 
     bool open()
     {
@@ -1149,8 +1204,8 @@ struct SessionPair {
         return waitFor(
             [&] {
                 frame();
-                return sender->state() == Multiplayer::State::Ready &&
-                       receiver->remotePlayers().size() == 1 && sender->remotePlayers().size() == 1;
+                return sender->state() == Multiplayer::State::Ready && receiver->remotePlayers().size() == 1 &&
+                       (!senderPublishes || sender->remotePlayers().size() == 1);
             },
             std::chrono::milliseconds(2000));
     }
@@ -1160,7 +1215,9 @@ struct SessionPair {
     {
         if (sender) {
             sender->update();
-            sender->publishLocalPlayer(1.0F, 1.0F);
+            if (senderPublishes) {
+                sender->publishLocalPlayer(1.0F, 1.0F);
+            }
         }
         receiver->update();
         receiver->publishLocalPlayer(2.0F, 2.0F);
@@ -1225,6 +1282,23 @@ bool leaveSendsEventsPublishedJustBefore()
                          },
                          std::chrono::milliseconds(1000)),
                      "the sender still leaves cleanly afterwards");
+    return passed;
+}
+
+// A game's very first pose, an event and leave() in one frame: the pose has
+// not reached the network thread yet, but it still carries the event.
+bool leaveUsesAPosePublishedTheSameFrame()
+{
+    SessionPair pair;
+    pair.senderPublishes = false;
+    bool passed = expect(pair.open(), "both sessions connect");
+
+    pair.sender->publishLocalPlayer(1.0F, 1.0F);
+    pair.sender->publishEvent(ping(4));
+    pair.sender->leave();
+    const std::vector<Event> received = pair.receive(std::chrono::milliseconds(1000));
+    passed &= expect(received.size() == 1 && received[0].getOr<std::int64_t>("n", 0) == 4,
+                     "an event published with the first pose, right before leave(), still arrives");
     return passed;
 }
 
@@ -1319,6 +1393,7 @@ int main()
     passed &= clientResendsUntilAcceptedAndHandlesEachEventOnce();
     passed &= clientKeepsOrRenumbersEventsOnRejoin();
     passed &= fullClientQueueDropsTheOldestUnsentEvents();
+    passed &= lateOldRequestStillMatchesAfterRejoin();
     passed &= clientIncomingQueueIsCapped();
     passed &= mixedClientsExchangeEventsThroughTheHost();
     passed &= bridgeSharesOnlyListedLocalEvents();
@@ -1326,6 +1401,7 @@ int main()
     passed &= pacedSessionSendsEventsWithoutWaiting();
     passed &= sessionKeepsOnlyTheLatestFrameOfEvents();
     passed &= leaveSendsEventsPublishedJustBefore();
+    passed &= leaveUsesAPosePublishedTheSameFrame();
     passed &= sessionsShareEventsThroughBridges();
 
     if (!passed) {

@@ -472,6 +472,11 @@ bool validateEvent(const Event& event, std::string& error)
     return true;
 }
 
+bool validateEvents(const std::vector<OutgoingEvent>& events, std::string& error)
+{
+    return validateList(events, error);
+}
+
 void appendEventsText(Message& out, const std::vector<OutgoingEvent>& events)
 {
     appendText(out, events);

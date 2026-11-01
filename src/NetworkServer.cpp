@@ -215,16 +215,13 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
     // The wire decoders already enforce the event rules; they are checked
     // again here because handle(Request) can be called directly, and one bad
     // event in an outbox would make every reply to that player fail.
-    if (request.events.size() > Net::maxEventsPerMessage) {
-        return errorReply("too many events in one message");
+    std::string invalid;
+    if (!validateEvents(request.events, invalid)) {
+        return errorReply(invalid);
     }
     std::uint64_t lastAccepted = player->second.lastAcceptedEvent;
     std::vector<Event> accepted;
     for (OutgoingEvent& outgoing : request.events) {
-        std::string invalid;
-        if (!validateEvent(outgoing.event, invalid)) {
-            return errorReply(invalid);
-        }
         if (outgoing.clientSequence <= lastAccepted) {
             continue;
         }

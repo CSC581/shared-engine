@@ -260,44 +260,56 @@ private:
             if (pose) {
                 client_.submitPosition(pose->x, pose->y, pose->data);
                 lastPose_ = std::move(pose);
-            } else if (lastPose_ && client_.pendingEvents() > 0 && !client_.awaitingReply()) {
-                // Events travel on POSITION requests, so with send pacing on
-                // (or paused, between heartbeats) they would wait for the
-                // next paced pose. Resending the last pose carries them now;
-                // the server already has it, and REQ allows one request per
-                // round trip.
-                client_.submitPosition(lastPose_->x, lastPose_->y, lastPose_->data);
+            } else {
+                carryWaitingEvents();
             }
             publishIfChanged();
             std::this_thread::sleep_for(networkInterval);
         }
 
-        // Events published just before leaving still go: hand them over and
-        // keep carrying them on the last pose until the server accepts them.
+        // Events and a pose published just before leaving still count: hand
+        // them over and keep carrying the events until the server accepts
+        // them. A client that is reconnecting cannot send, so they are lost.
         std::vector<Event> lastEvents;
+        std::optional<Pose> lastPublished;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             lastEvents.swap(outgoingEvents_);
+            lastPublished.swap(outbox_);
         }
         for (const Event& event : lastEvents) {
             client_.publishEvent(event);
         }
+        if (lastPublished) {
+            lastPose_ = std::move(lastPublished);
+        }
         for (int i = 0; client_.state() == Network::ConnectionState::Connected; ++i) {
-            const bool eventsWaiting = client_.pendingEvents() > 0 && lastPose_;
-            if (i >= (eventsWaiting ? leaveEventPolls : leaveGracePolls)) {
+            const bool eventsWaiting = lastPose_ && client_.pendingEvents() > 0;
+            if (i >= (eventsWaiting ? leaveEventPolls : leaveGracePolls) ||
+                (!client_.awaitingReply() && !carryWaitingEvents())) {
                 break;
-            }
-            if (!client_.awaitingReply()) {
-                if (!eventsWaiting) {
-                    break;
-                }
-                client_.submitPosition(lastPose_->x, lastPose_->y, lastPose_->data);
             }
             std::this_thread::sleep_for(networkInterval);
             client_.poll();
         }
         client_.leave();
         publishIfChanged();
+    }
+
+    // Events travel on POSITION requests, so with send pacing on (or paused,
+    // between heartbeats) they would wait for the next paced pose. Resending
+    // the last pose carries them now; the server already has it, and REQ
+    // allows one request per round trip. Returns whether events are waiting
+    // that a pose can carry.
+    bool carryWaitingEvents()
+    {
+        if (!lastPose_ || client_.pendingEvents() == 0) {
+            return false;
+        }
+        if (!client_.awaitingReply()) {
+            client_.submitPosition(lastPose_->x, lastPose_->y, lastPose_->data);
+        }
+        return true;
     }
 
     void publishIfChanged()
