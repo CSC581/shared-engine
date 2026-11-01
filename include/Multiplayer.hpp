@@ -202,7 +202,9 @@ public:
     virtual void publishLocalPlayer(float x, float y, const std::string& data = {}) = 0;
 
     // Announce departure. Called by the destructor; call it earlier to leave
-    // without tearing the session down.
+    // without tearing the session down. In client-server mode, events
+    // published before it are sent first, waiting at most about 0.2 s for the
+    // server to accept them.
     virtual void leave() = 0;
 
     // This player's id, or 0 before the session is Ready.
@@ -248,9 +250,11 @@ public:
     // mode, which carries no events.
     virtual void publishEvent(const Event& event) = 0;
 
-    // Other players' events delivered by update() and not yet taken, oldest
-    // first. origin is the sender's player id. Always empty in peer-to-peer
-    // mode.
+    // Other players' events delivered by the last update(), oldest first;
+    // each is returned once. Like remotePlayers(), this is the latest frame
+    // only: events not taken before the next update() are dropped, so a game
+    // that never takes them does not pile them up. origin is the sender's
+    // player id. Always empty in peer-to-peer mode.
     virtual std::vector<Event> takeRemoteEvents() = 0;
 
 protected:

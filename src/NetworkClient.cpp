@@ -11,6 +11,7 @@
 #include <cmath>
 #include <deque>
 #include <iomanip>
+#include <iterator>
 #include <locale>
 #include <random>
 #include <sstream>
@@ -261,6 +262,10 @@ struct NetworkClient::Impl {
             if (relayed.serverSequence > handledEventSequence) {
                 handledEventSequence = relayed.serverSequence;
                 receivedEvents.push_back(std::move(relayed.event));
+                if (receivedEvents.size() > NetworkClient::maxPendingEvents) {
+                    receivedEvents.pop_front();
+                    ++droppedEvents;
+                }
             }
         }
     }
@@ -313,7 +318,8 @@ struct NetworkClient::Impl {
     std::uint64_t droppedEvents = 0;
     // Highest relayed serverSequence passed on; sent back as the acknowledgement.
     std::uint64_t handledEventSequence = 0;
-    std::vector<Event> receivedEvents;
+    // Relayed events not yet taken, oldest first.
+    std::deque<Event> receivedEvents;
     TransportTelemetry transport;
     SnapshotTelemetry snapshotStats;
 };
@@ -563,8 +569,9 @@ void NetworkClient::publishEvent(const Event& event)
 
 std::vector<Event> NetworkClient::takeEvents()
 {
-    std::vector<Event> events;
-    events.swap(impl_->receivedEvents);
+    std::vector<Event> events(std::make_move_iterator(impl_->receivedEvents.begin()),
+                              std::make_move_iterator(impl_->receivedEvents.end()));
+    impl_->receivedEvents.clear();
     return events;
 }
 

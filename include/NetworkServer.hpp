@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -147,8 +148,9 @@ private:
         // Highest clientSequence accepted from this player.
         std::uint64_t lastAcceptedEvent = 0;
         std::uint64_t acceptedEvents = 0;
-        // Other players' events not yet acknowledged, oldest first.
-        std::deque<RelayedEvent> outbox;
+        // Other players' events not yet acknowledged, oldest first. Each event
+        // is stored once and shared by every outbox that holds it.
+        std::deque<std::shared_ptr<const RelayedEvent>> outbox;
         std::uint64_t droppedEvents = 0;
     };
 

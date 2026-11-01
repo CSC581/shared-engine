@@ -227,8 +227,8 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
     ActivePlayer& sender = player->second;
     sender.lastAcceptedEvent = lastAccepted;
     sender.acceptedEvents += accepted.size();
-    std::deque<RelayedEvent>& outbox = sender.outbox;
-    while (!outbox.empty() && outbox.front().serverSequence <= request.ackedEventSequence) {
+    auto& outbox = sender.outbox;
+    while (!outbox.empty() && outbox.front()->serverSequence <= request.ackedEventSequence) {
         outbox.pop_front();
     }
 
@@ -237,7 +237,10 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
     reply.snapshot = buildSnapshot();
     reply.acceptedClientSequence = sender.lastAcceptedEvent;
     const std::size_t count = std::min(outbox.size(), Net::maxEventsPerMessage);
-    reply.events.assign(outbox.begin(), outbox.begin() + static_cast<std::ptrdiff_t>(count));
+    reply.events.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        reply.events.push_back(*outbox[i]);
+    }
     return reply;
 }
 
@@ -301,12 +304,13 @@ void NetworkServer::relayEvent(PlayerId sender, Event event)
     relayed.serverSequence = nextEventSequence_++;
     relayed.event = std::move(event);
     relayed.event.origin = sender;
+    const auto shared = std::make_shared<const RelayedEvent>(std::move(relayed));
     for (auto& entry : players_) {
         if (entry.first == sender) {
             continue;
         }
-        std::deque<RelayedEvent>& outbox = entry.second.outbox;
-        outbox.push_back(relayed);
+        auto& outbox = entry.second.outbox;
+        outbox.push_back(shared);
         if (outbox.size() > config_.eventOutboxLimit) {
             outbox.pop_front();
             ++entry.second.droppedEvents;

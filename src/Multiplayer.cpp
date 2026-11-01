@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <map>
@@ -92,7 +93,8 @@ public:
     {
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            remoteEvents_.insert(remoteEvents_.end(), std::make_move_iterator(incomingEvents_.begin()),
+            // This frame's events replace any the game did not take.
+            remoteEvents_.assign(std::make_move_iterator(incomingEvents_.begin()),
                                  std::make_move_iterator(incomingEvents_.end()));
             incomingEvents_.clear();
             if (inbox_.version == view_.version) {
@@ -219,6 +221,9 @@ private:
     // send LEAVE until it has one, and without LEAVE the server only notices
     // the departure at its inactivity timeout.
     static constexpr int leaveGracePolls = 20;
+    // On leave with events still waiting, how long they get to be accepted
+    // before LEAVE is sent anyway.
+    static constexpr int leaveEventPolls = 200;
 
     // Network thread only (and the constructor, before that thread exists).
     void copyClient(ClientView& view) const
@@ -264,9 +269,27 @@ private:
             std::this_thread::sleep_for(networkInterval);
         }
 
-        for (int i = 0; i < leaveGracePolls && client_.awaitingReply() &&
-                        client_.state() == Network::ConnectionState::Connected;
-             ++i) {
+        // Events published just before leaving still go: hand them over and
+        // keep carrying them on the last pose until the server accepts them.
+        std::vector<Event> lastEvents;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            lastEvents.swap(outgoingEvents_);
+        }
+        for (const Event& event : lastEvents) {
+            client_.publishEvent(event);
+        }
+        for (int i = 0; client_.state() == Network::ConnectionState::Connected; ++i) {
+            const bool eventsWaiting = client_.pendingEvents() > 0 && lastPose_;
+            if (i >= (eventsWaiting ? leaveEventPolls : leaveGracePolls)) {
+                break;
+            }
+            if (!client_.awaitingReply()) {
+                if (!eventsWaiting) {
+                    break;
+                }
+                client_.submitPosition(lastPose_->x, lastPose_->y, lastPose_->data);
+            }
             std::this_thread::sleep_for(networkInterval);
             client_.poll();
         }
@@ -281,6 +304,12 @@ private:
             const std::lock_guard<std::mutex> lock(mutex_);
             incomingEvents_.insert(incomingEvents_.end(), std::make_move_iterator(arrived.begin()),
                                    std::make_move_iterator(arrived.end()));
+            // A game that stops calling update() keeps only the newest.
+            constexpr std::size_t limit = Network::NetworkClient::maxPendingEvents;
+            if (incomingEvents_.size() > limit) {
+                incomingEvents_.erase(incomingEvents_.begin(),
+                                      incomingEvents_.end() - static_cast<std::ptrdiff_t>(limit));
+            }
         }
 
         const Network::WorldSnapshot& snapshot = client_.snapshot();

@@ -491,6 +491,35 @@ bool decodersRejectBrokenEventFields()
     passed &= expect(!Network::decodeBinaryReply(binaryWelcome, reply, error),
                      "a binary WELCOME resumed flag must be 0 or 1");
 
+    // Every shorter prefix of a binary message carrying events is refused.
+    Network::BinaryRequestEnvelope deltaRequest;
+    deltaRequest.request = positionWithEvents();
+    deltaRequest.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
+    deltaRequest.acknowledgedServerTick = 3;
+    Network::BinaryReplyEnvelope deltaReply;
+    deltaReply.kind = Network::BinaryReplyKind::SnapshotDelta;
+    deltaReply.reply = snapshotWithEvents();
+    Network::WorldSnapshot base = deltaReply.reply.snapshot;
+    base.serverTick = 11;
+    deltaReply.delta = Network::makeSnapshotDelta(base, deltaReply.reply.snapshot);
+    const Network::BinaryMessage whole[] = {
+        Network::encodeBinaryRequest(positionWithEvents()),
+        Network::encodeBinaryRequest(deltaRequest),
+        Network::encodeBinaryReply(snapshotWithEvents()),
+        Network::encodeBinaryReply(deltaReply),
+    };
+    bool everyPrefixRefused = true;
+    for (std::size_t kind = 0; kind < 4; ++kind) {
+        for (std::size_t length = 0; length < whole[kind].size(); ++length) {
+            const Network::BinaryMessage prefix = whole[kind].substr(0, length);
+            Network::BinaryRequestEnvelope requestEnvelope;
+            Network::BinaryReplyEnvelope replyEnvelope;
+            everyPrefixRefused &= kind < 2 ? !Network::decodeBinaryRequest(prefix, requestEnvelope, error)
+                                           : !Network::decodeBinaryReply(prefix, replyEnvelope, error);
+        }
+    }
+    passed &= expect(everyPrefixRefused, "every truncated binary message carrying events is refused");
+
     // A relayed event decoded from a client's request would let a client
     // choose its own origin; the direction of each list is fixed.
     Network::Message relayedInRequest(position.begin(), position.begin() + 9);
@@ -750,6 +779,44 @@ bool fullClientQueueDropsTheOldestUnsentEvents()
     settle(client);
     passed &= expect(client.pendingEvents() == static_cast<std::size_t>(cap - 128),
                      "the server's acceptance matches what the client renumbered");
+    return passed;
+}
+
+// Relayed events a caller never takes stop at the cap, keeping the newest.
+bool clientIncomingQueueIsCapped()
+{
+    ScriptedServer server;
+    ManualClock clock;
+    Network::NetworkClient client(clock, server.endpoint);
+    client.start();
+    Network::Request request;
+    server.receive(request);
+    server.reply(welcome(5, false));
+    settle(client);
+
+    std::uint64_t sequence = 0;
+    std::int64_t n = 0;
+    for (std::uint64_t tick = 1; tick <= 5; ++tick) {
+        std::vector<std::pair<std::uint64_t, std::int64_t>> relayed;
+        for (int i = 0; i < 64; ++i) {
+            relayed.push_back({++sequence, n++});
+        }
+        client.submitPosition(0.0F, 0.0F);
+        server.receive(request);
+        server.reply(snapshotReply(tick, 0, relayed));
+        settle(client);
+    }
+    constexpr auto cap = static_cast<std::int64_t>(Network::NetworkClient::maxPendingEvents);
+    const std::vector<Event> received = client.takeEvents();
+    std::vector<std::int64_t> values;
+    for (const Event& event : received) {
+        values.push_back(event.getOr<std::int64_t>("n", -1));
+    }
+    bool passed = expect(values == range(5 * 64 - cap, cap) && client.droppedEvents() == 5 * 64 - cap,
+                         "untaken relayed events stop at the cap, keeping the newest and counting the rest");
+    client.submitPosition(0.0F, 0.0F);
+    passed &= expect(server.receive(request) && request.ackedEventSequence == sequence,
+                     "dropped events are still acknowledged, so the server does not resend them");
     return passed;
 }
 
@@ -1025,6 +1092,102 @@ bool pacedSessionSendsEventsWithoutWaiting()
     return passed;
 }
 
+// Two sessions on one host, connected and seeing each other.
+struct SessionPair {
+    Network::NetworkServerHost host{serverConfig(), hostConfig()};
+    RealTimeClock realTime;
+    std::unique_ptr<Multiplayer::Session> sender;
+    std::unique_ptr<Multiplayer::Session> receiver;
+
+    bool open()
+    {
+        host.start();
+        Multiplayer::Config config;
+        config.serverEndpoint = host.boundEndpoint();
+        sender = Multiplayer::Session::open(config, realTime);
+        receiver = Multiplayer::Session::open(config, realTime);
+        return waitFor(
+            [&] {
+                frame();
+                return sender->state() == Multiplayer::State::Ready &&
+                       receiver->remotePlayers().size() == 1 && sender->remotePlayers().size() == 1;
+            },
+            std::chrono::milliseconds(2000));
+    }
+
+    // One game frame on both sides, without taking any events.
+    void frame()
+    {
+        if (sender) {
+            sender->update();
+            sender->publishLocalPlayer(1.0F, 1.0F);
+        }
+        receiver->update();
+        receiver->publishLocalPlayer(2.0F, 2.0F);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    // Frames until the receiver takes an event, or the time runs out.
+    std::vector<Event> receive(std::chrono::milliseconds limit)
+    {
+        std::vector<Event> taken;
+        waitFor(
+            [&] {
+                frame();
+                taken = receiver->takeRemoteEvents();
+                return !taken.empty();
+            },
+            limit);
+        return taken;
+    }
+};
+
+bool sessionKeepsOnlyTheLatestFrameOfEvents()
+{
+    SessionPair pair;
+    bool passed = expect(pair.open(), "both sessions connect");
+
+    pair.sender->publishEvent(ping(1));
+    const std::vector<Event> first = pair.receive(std::chrono::milliseconds(1000));
+    passed &= expect(first.size() == 1 && first[0].getOr<std::int64_t>("n", 0) == 1, "an event arrives");
+
+    // Delivered by some update() but never taken: gone by the next one.
+    pair.sender->publishEvent(ping(2));
+    const auto until = Clock::now() + std::chrono::milliseconds(500);
+    while (Clock::now() < until) {
+        pair.frame();
+    }
+    passed &= expect(pair.receiver->takeRemoteEvents().empty(),
+                     "events not taken before the next update() are dropped, not piled up");
+
+    pair.sender->publishEvent(ping(3));
+    const std::vector<Event> later = pair.receive(std::chrono::milliseconds(1000));
+    passed &= expect(later.size() == 1 && later[0].getOr<std::int64_t>("n", 0) == 3,
+                     "later events still arrive normally");
+    return passed;
+}
+
+bool leaveSendsEventsPublishedJustBefore()
+{
+    SessionPair pair;
+    bool passed = expect(pair.open(), "both sessions connect");
+
+    pair.sender->publishEvent(ping(9));
+    pair.sender->leave();
+    const std::vector<Event> received = pair.receive(std::chrono::milliseconds(1000));
+    passed &= expect(received.size() == 1 && received[0].getOr<std::int64_t>("n", 0) == 9,
+                     "an event published right before leave() still reaches the others");
+    pair.sender.reset();
+    passed &= expect(waitFor(
+                         [&] {
+                             pair.frame();
+                             return pair.receiver->remotePlayers().empty();
+                         },
+                         std::chrono::milliseconds(1000)),
+                     "the sender still leaves cleanly afterwards");
+    return passed;
+}
+
 // The whole path a game uses: EventManager -> bridge -> Session -> host ->
 // Session -> bridge -> EventManager, with a text and a binary session.
 bool sessionsShareEventsThroughBridges()
@@ -1116,10 +1279,13 @@ int main()
     passed &= clientResendsUntilAcceptedAndHandlesEachEventOnce();
     passed &= clientKeepsOrRenumbersEventsOnRejoin();
     passed &= fullClientQueueDropsTheOldestUnsentEvents();
+    passed &= clientIncomingQueueIsCapped();
     passed &= mixedClientsExchangeEventsThroughTheHost();
     passed &= bridgeSharesOnlyListedLocalEvents();
     passed &= bridgeRefusesWhatCannotWork();
     passed &= pacedSessionSendsEventsWithoutWaiting();
+    passed &= sessionKeepsOnlyTheLatestFrameOfEvents();
+    passed &= leaveSendsEventsPublishedJustBefore();
     passed &= sessionsShareEventsThroughBridges();
 
     if (!passed) {

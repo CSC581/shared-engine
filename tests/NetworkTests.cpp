@@ -872,7 +872,8 @@ int main()
         passed &= expect(Network::decodeRequest(message, decoded, error) && decoded.position.x == coordinate,
                          "finite float coordinate should round trip without precision loss: " + message[5]);
     }
-    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12,5", "0", "0", "0", "0"}, decoded, error),
+    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12,5", "0", "0", "0", "0"}, decoded, error) &&
+                         error == "invalid position update",
                      "comma-decimal wire coordinates must be rejected consistently");
     std::setlocale(LC_NUMERIC, savedNumericLocale.c_str());
     passed &= expect(!Network::decodeRequest({"99", "JOIN", tokenOne}, decoded, error), "unsupported version should fail");
@@ -900,11 +901,13 @@ int main()
                      "POSITION should round-trip a game's own data byte for byte: " + error);
     passed &= expect(!Network::decodeRequest(
                          {version, "POSITION", "1", tokenOne, "1", "1", "2",
-                          std::string(Net::maxPlayerDataLength + 1, 'x')},
-                         decoded, error),
+                          std::string(Net::maxPlayerDataLength + 1, 'x'), "0", "0"},
+                         decoded, error) &&
+                         error == "player data is too large",
                      "player data past the size cap should be rejected");
-    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "1", "2", "", "x"},
-                                             decoded, error),
+    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "1", "2", "", "0", "0", "x"},
+                                             decoded, error) &&
+                         error == "message has trailing fields",
                      "fields past the end of a POSITION should be rejected");
 
     // And the same on the way back out, inside a snapshot.
@@ -926,12 +929,14 @@ int main()
         passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", coordinate, "0", "0", "0", "0"},
                                                  decoded, error) && error == "invalid position update",
                          "invalid x position should fail");
-        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "0", coordinate, "0"},
-                                                 decoded, error), "invalid y position should fail");
+        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "0", coordinate, "0", "0", "0"},
+                                                 decoded, error) && error == "invalid position update",
+                         "invalid y position should fail");
     }
     for (const std::string sequence : {"0", "-1", "18446744073709551616"}) {
-        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, sequence, "1", "2", "0"},
-                                                 decoded, error), "invalid sequence should fail");
+        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, sequence, "1", "2", "0", "0", "0"},
+                                                 decoded, error) && error == "invalid position update",
+                         "invalid sequence should fail");
     }
     passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "5"}, decoded, error),
                      "position messages require both coordinates");

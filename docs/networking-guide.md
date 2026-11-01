@@ -161,6 +161,29 @@ The sequence number is what makes the request/reply honest: the server rejects
 any position whose sequence does not advance, so a duplicated or reordered
 request cannot move a player backwards.
 
+**Events ride on the same exchange** (Milestone 4, protocol version 7). A
+`POSITION` also carries the client's unconfirmed events, numbered 1, 2, 3…,
+and the highest relayed event it has handled. The server gives each new event
+the next server sequence number and the sender's id as its origin, and adds it
+to every *other* player's outbox; an event it has already accepted is
+recognised by its number and not relayed twice. The `SNAPSHOT` reply (or
+property delta) says which events were accepted and carries up to 64 outbox
+events the client has not acknowledged. So each event reaches every other
+client once, in the same order everywhere, even when a request or reply is
+lost. A rejoin with the same session token keeps all of this (the `WELCOME`
+says whether the player was resumed); a client the server timed out starts
+again as a new player, renumbers its waiting events from 1 and loses what was
+relayed while it was gone. Each side holds at most 256 waiting events per
+player and drops the oldest beyond that, so a long outage cannot end in a
+flood of stale events. With send pacing on, a client that has events waiting
+resends its last pose to carry them instead of waiting for the next paced
+send, and `leave()` sends waiting events (for at most about 0.2 s) before
+`LEAVE`. A session's `takeRemoteEvents()` returns only the latest `update()`'s
+events, so a game that never takes them does not pile them up. The server
+never reads an event. On the game side,
+`NetworkEventBridge` connects a session to the game's `EventManager` for the
+event types the game chooses to share. Peer-to-peer mode carries no events.
+
 **In peer-to-peer mode, they genuinely do.** See §3.
 
 ### 2.4 A client leaves

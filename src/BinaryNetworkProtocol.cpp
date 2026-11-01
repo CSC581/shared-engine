@@ -1,5 +1,6 @@
 #include "BinaryNetworkProtocol.hpp"
 
+#include "BinaryPrimitives.hpp"
 #include "EventCodec.hpp"
 #include "WireFormat.hpp"
 
@@ -46,27 +47,10 @@ public:
         u8(static_cast<std::uint8_t>(type));
     }
 
-    void u8(std::uint8_t value) { bytes_.push_back(static_cast<char>(value)); }
-
-    void u16(std::uint16_t value)
-    {
-        u8(static_cast<std::uint8_t>(value >> 8U));
-        u8(static_cast<std::uint8_t>(value));
-    }
-
-    void u32(std::uint32_t value)
-    {
-        u8(static_cast<std::uint8_t>(value >> 24U));
-        u8(static_cast<std::uint8_t>(value >> 16U));
-        u8(static_cast<std::uint8_t>(value >> 8U));
-        u8(static_cast<std::uint8_t>(value));
-    }
-
-    void u64(std::uint64_t value)
-    {
-        u32(static_cast<std::uint32_t>(value >> 32U));
-        u32(static_cast<std::uint32_t>(value));
-    }
+    void u8(std::uint8_t value) { binary::putU8(bytes_, value); }
+    void u16(std::uint16_t value) { binary::putU16(bytes_, value); }
+    void u32(std::uint32_t value) { binary::putU32(bytes_, value); }
+    void u64(std::uint64_t value) { binary::putU64(bytes_, value); }
 
     void f32(float value)
     {
@@ -84,8 +68,7 @@ public:
         if (value.size() > std::numeric_limits<std::uint16_t>::max()) {
             throw std::invalid_argument("binary protocol string is too large");
         }
-        u16(static_cast<std::uint16_t>(value.size()));
-        bytes_.append(value);
+        binary::putString(bytes_, value);
     }
 
     template <class Entry>
@@ -144,49 +127,10 @@ public:
         return true;
     }
 
-    bool u8(std::uint8_t& value)
-    {
-        if (remaining() < 1) {
-            return false;
-        }
-        value = static_cast<std::uint8_t>(static_cast<unsigned char>(bytes_[index_++]));
-        return true;
-    }
-
-    bool u16(std::uint16_t& value)
-    {
-        std::uint8_t high = 0;
-        std::uint8_t low = 0;
-        if (!u8(high) || !u8(low)) {
-            return false;
-        }
-        value = static_cast<std::uint16_t>((static_cast<std::uint16_t>(high) << 8U) | low);
-        return true;
-    }
-
-    bool u32(std::uint32_t& value)
-    {
-        std::uint8_t bytes[4]{};
-        if (!u8(bytes[0]) || !u8(bytes[1]) || !u8(bytes[2]) || !u8(bytes[3])) {
-            return false;
-        }
-        value = (static_cast<std::uint32_t>(bytes[0]) << 24U) |
-                (static_cast<std::uint32_t>(bytes[1]) << 16U) |
-                (static_cast<std::uint32_t>(bytes[2]) << 8U) |
-                static_cast<std::uint32_t>(bytes[3]);
-        return true;
-    }
-
-    bool u64(std::uint64_t& value)
-    {
-        std::uint32_t high = 0;
-        std::uint32_t low = 0;
-        if (!u32(high) || !u32(low)) {
-            return false;
-        }
-        value = (static_cast<std::uint64_t>(high) << 32U) | low;
-        return true;
-    }
+    bool u8(std::uint8_t& value) { return binary::getU8(bytes_, index_, value); }
+    bool u16(std::uint16_t& value) { return binary::getU16(bytes_, index_, value); }
+    bool u32(std::uint32_t& value) { return binary::getU32(bytes_, index_, value); }
+    bool u64(std::uint64_t& value) { return binary::getU64(bytes_, index_, value); }
 
     bool f32(float& value)
     {
@@ -201,13 +145,7 @@ public:
 
     bool string(std::string& value, std::size_t maximum)
     {
-        std::uint16_t size = 0;
-        if (!u16(size) || size > maximum || remaining() < size) {
-            return false;
-        }
-        value.assign(bytes_.data() + index_, size);
-        index_ += size;
-        return true;
+        return binary::getString(bytes_, index_, value, maximum);
     }
 
     template <class Entry>
@@ -603,6 +541,49 @@ bool readResumed(Reader& reader, bool& resumed)
     return true;
 }
 
+// The end of a POSITION in both snapshot strategies: sequence, pose, the
+// game's data, the event acknowledgement and the client's events.
+void writePositionBody(Writer& writer, const Request& request)
+{
+    writer.u64(request.position.sequence);
+    writer.f32(request.position.x);
+    writer.f32(request.position.y);
+    writer.string(request.position.data);
+    writer.u64(request.ackedEventSequence);
+    writer.events(request.events);
+}
+
+// `invalid` is the error for a bad field before the events; the event codec
+// names its own errors.
+bool readPositionBody(Reader& reader, Request& request, const char* invalid, std::string& error)
+{
+    if (!reader.u64(request.position.sequence) || request.position.sequence == 0 ||
+        !reader.f32(request.position.x) || !reader.f32(request.position.y) ||
+        !reader.string(request.position.data, Net::maxPlayerDataLength) ||
+        !reader.u64(request.ackedEventSequence)) {
+        error = invalid;
+        return false;
+    }
+    return reader.events(request.events, error);
+}
+
+// The end of a SNAPSHOT and of a snapshot delta: what the server accepted and
+// the relayed events.
+void writeEventTail(Writer& writer, const Reply& reply)
+{
+    writer.u64(reply.acceptedClientSequence);
+    writer.events(reply.events);
+}
+
+bool readEventTail(Reader& reader, Reply& reply, std::string& error)
+{
+    if (!reader.u64(reply.acceptedClientSequence)) {
+        error = "invalid binary event acceptance";
+        return false;
+    }
+    return reader.events(reply.events, error);
+}
+
 } // namespace
 
 bool hasBinaryMagic(const BinaryMessage& message)
@@ -631,12 +612,7 @@ BinaryMessage encodeBinaryRequest(const Request& request)
         Writer writer(MessageType::Position);
         writer.u32(request.playerId);
         writer.string(request.sessionToken);
-        writer.u64(request.position.sequence);
-        writer.f32(request.position.x);
-        writer.f32(request.position.y);
-        writer.string(request.position.data);
-        writer.u64(request.ackedEventSequence);
-        writer.events(request.events);
+        writePositionBody(writer, request);
         return writer.finish();
     }
     case RequestType::Leave: {
@@ -671,8 +647,7 @@ BinaryMessage encodeBinaryReply(const Reply& reply)
     case ReplyType::Snapshot: {
         Writer writer(MessageType::Snapshot);
         writeSnapshot(writer, reply.snapshot);
-        writer.u64(reply.acceptedClientSequence);
-        writer.events(reply.events);
+        writeEventTail(writer, reply);
         return writer.finish();
     }
     case ReplyType::WorldState: {
@@ -723,12 +698,7 @@ BinaryMessage encodeBinaryRequest(const BinaryRequestEnvelope& envelope)
         writer.string(request.sessionToken);
         writer.u64(envelope.acknowledgedServerTick);
         writer.u8(envelope.forceFullSnapshot ? forceFullSnapshotFlag : 0U);
-        writer.u64(request.position.sequence);
-        writer.f32(request.position.x);
-        writer.f32(request.position.y);
-        writer.string(request.position.data);
-        writer.u64(request.ackedEventSequence);
-        writer.events(request.events);
+        writePositionBody(writer, request);
         return writer.finish();
     }
     throw std::invalid_argument("property-delta envelope supports JOIN and POSITION only");
@@ -754,8 +724,7 @@ BinaryMessage encodeBinaryReply(const BinaryReplyEnvelope& envelope)
         // Events and acceptance ride in envelope.reply, as on a full SNAPSHOT.
         Writer writer(MessageType::SnapshotDelta);
         writeDelta(writer, envelope.delta);
-        writer.u64(envelope.reply.acceptedClientSequence);
-        writer.events(envelope.reply.events);
+        writeEventTail(writer, envelope.reply);
         return writer.finish();
     }
     }
@@ -783,15 +752,11 @@ bool decodeBinaryRequest(const BinaryMessage& message, Request& request, std::st
     case MessageType::Position:
         request.type = RequestType::Position;
         if (!reader.u32(request.playerId) || request.playerId == 0 ||
-            !reader.string(request.sessionToken, 32) || !validSessionToken(request.sessionToken) ||
-            !reader.u64(request.position.sequence) || request.position.sequence == 0 ||
-            !reader.f32(request.position.x) || !reader.f32(request.position.y) ||
-            !reader.string(request.position.data, Net::maxPlayerDataLength) ||
-            !reader.u64(request.ackedEventSequence)) {
+            !reader.string(request.sessionToken, 32) || !validSessionToken(request.sessionToken)) {
             error = "invalid binary POSITION request";
             return false;
         }
-        if (!reader.events(request.events, error)) {
+        if (!readPositionBody(reader, request, "invalid binary POSITION request", error)) {
             return false;
         }
         break;
@@ -836,14 +801,7 @@ bool decodeBinaryReply(const BinaryMessage& message, Reply& reply, std::string& 
         break;
     case MessageType::Snapshot:
         reply.type = ReplyType::Snapshot;
-        if (!readSnapshot(reader, reply.snapshot, error)) {
-            return false;
-        }
-        if (!reader.u64(reply.acceptedClientSequence)) {
-            error = "invalid binary event acceptance";
-            return false;
-        }
-        if (!reader.events(reply.events, error)) {
+        if (!readSnapshot(reader, reply.snapshot, error) || !readEventTail(reader, reply, error)) {
             return false;
         }
         break;
@@ -905,16 +863,11 @@ bool decodeBinaryRequest(const BinaryMessage& message, BinaryRequestEnvelope& en
             !validSessionToken(envelope.request.sessionToken) ||
             !reader.u64(envelope.acknowledgedServerTick) ||
             envelope.acknowledgedServerTick == 0 || !reader.u8(flags) ||
-            (flags & ~forceFullSnapshotFlag) != 0 ||
-            !reader.u64(envelope.request.position.sequence) ||
-            envelope.request.position.sequence == 0 || !reader.f32(envelope.request.position.x) ||
-            !reader.f32(envelope.request.position.y) ||
-            !reader.string(envelope.request.position.data, Net::maxPlayerDataLength) ||
-            !reader.u64(envelope.request.ackedEventSequence)) {
+            (flags & ~forceFullSnapshotFlag) != 0) {
             error = "invalid binary delta POSITION request";
             return false;
         }
-        if (!reader.events(envelope.request.events, error)) {
+        if (!readPositionBody(reader, envelope.request, "invalid binary delta POSITION request", error)) {
             return false;
         }
         envelope.forceFullSnapshot = (flags & forceFullSnapshotFlag) != 0;
@@ -953,14 +906,7 @@ bool decodeBinaryReply(const BinaryMessage& message, BinaryReplyEnvelope& envelo
     }
     if (type == MessageType::SnapshotDelta) {
         envelope.kind = BinaryReplyKind::SnapshotDelta;
-        if (!readDelta(reader, envelope.delta, error)) {
-            return false;
-        }
-        if (!reader.u64(envelope.reply.acceptedClientSequence)) {
-            error = "invalid binary event acceptance";
-            return false;
-        }
-        if (!reader.events(envelope.reply.events, error)) {
+        if (!readDelta(reader, envelope.delta, error) || !readEventTail(reader, envelope.reply, error)) {
             return false;
         }
         return finish(reader, error);

@@ -95,7 +95,7 @@ The input polling and collider callbacks from Milestone 3 still work alongside t
 | -------- | ------- |
 | `NetworkEventBridge(engine.events(), session, {"DeathEvent", ...})` | Shares the listed event types. Local events of those types are sent to every other player; events of other types never leave or enter. Throws in peer-to-peer mode |
 | `bridge.apply()` | Raises the events other players sent. Call once a frame after `session.update()` |
-| `session.publishEvent(event)`, `session.takeRemoteEvents()` | What the bridge uses underneath, for a game that wants to do it by hand |
+| `session.publishEvent(event)`, `session.takeRemoteEvents()` | What the bridge uses underneath, for a game that wants to do it by hand. `takeRemoteEvents()` returns the events from the latest `update()`; ones not taken by the next `update()` are dropped |
 
 A remote event has `origin` set to the sender's player id and is raised with this machine's game time; the sender's time is kept as the value `sentAt`. The sender handles its own event locally at once and never gets it back.
 
@@ -104,7 +104,8 @@ A remote event has `origin` set to the sender's player id and is raised with thi
 | Delivery | Exactly once, in the server's order. Lost requests and replies are resent, and repeats are dropped by number |
 | Events per request or reply | 64; more wait for the next one |
 | Events waiting at the server for one player | 256 (`ServerConfig::eventOutboxLimit`); a player further behind loses its oldest |
-| Events waiting at a client | 256; a full queue drops its oldest unsent event |
+| Events waiting at a client | 256 each way; a full queue drops its oldest unsent (or untaken) event |
+| Leaving | `leave()` sends events published just before it, waiting at most about 0.2 s |
 
 ## Design decisions
 

@@ -85,7 +85,8 @@ public:
     void requestFullSnapshot();
     void leave();
 
-    // Most events queued at once, the same as the server's default outbox.
+    // Most events queued at once in each direction, the same as the server's
+    // default outbox.
     static constexpr std::size_t maxPendingEvents = 256;
 
     // Queues an event for the server to relay to every other player. Each
@@ -98,11 +99,14 @@ public:
     // (EventCodec.hpp) rejects the event.
     void publishEvent(const Event& event);
     // Events from other players since the last call, in the server's order,
-    // each exactly once. origin is the sender's player id.
+    // each exactly once. origin is the sender's player id. At most
+    // maxPendingEvents are kept between calls; older ones are dropped and
+    // counted by droppedEvents().
     std::vector<Event> takeEvents();
     // Events queued and not yet accepted by the server.
     std::size_t pendingEvents() const;
-    // Events dropped from a full queue since this client was created.
+    // Events dropped from a full queue, outgoing or incoming, since this
+    // client was created.
     std::uint64_t droppedEvents() const;
 
     ConnectionState state() const;
