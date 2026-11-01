@@ -35,6 +35,8 @@ public:
     Multiplayer::AuthorityState authorityState() const override { return Multiplayer::AuthorityState::Ready; }
     std::string status() const override { return "fake"; }
     Multiplayer::Mode mode() const override { return Multiplayer::Mode::ClientServer; }
+    void publishEvent(const Event&) override {}
+    std::vector<Event> takeRemoteEvents() override { return {}; }
 };
 
 struct Counts {

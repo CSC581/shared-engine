@@ -92,7 +92,7 @@ bool requestRoundTripsAndGoldenBytes()
     const std::string encodedJoin = Network::encodeBinaryRequest(join);
     passed &= expect(
         hex(encodedJoin) ==
-            "53454e47010006050020"
+            "53454e47020007050020"
             "6161616161616161616161616161616161616161616161616161616161616161"
             "0003416461",
         "delta JOIN golden bytes should remain stable");
@@ -110,9 +110,11 @@ bool requestRoundTripsAndGoldenBytes()
     const std::string encodedPosition = Network::encodeBinaryRequest(position);
     passed &= expect(
         hex(encodedPosition) ==
-            "53454e4701000606112233440020"
+            "53454e4702000706112233440020"
             "6262626262626262626262626262626262626262626262626262626262626262"
-            "0102030405060708010000000000000009bfa00000402000000003780079",
+            "0102030405060708010000000000000009bfa00000402000000003780079"
+            // Event acknowledgement 0, then an empty event list.
+            "00000000000000000000",
         "delta POSITION golden bytes should remain stable");
     passed &= expect(Network::decodeBinaryRequest(encodedPosition, decoded, error) &&
                          decoded.snapshotStrategy == Net::SnapshotStrategy::PropertyDelta &&
@@ -133,7 +135,7 @@ bool replyRoundTripsAndGoldenBytes()
     welcome.reply.snapshot.serverTick = 2;
     const std::string encodedWelcome = Network::encodeBinaryReply(welcome);
     passed &= expect(hex(encodedWelcome) ==
-                         "53454e470100068600000001000000000000000000020000000000000000",
+                         "53454e47020007860000000100000000000000000002000000000000000000",
                      "delta WELCOME golden bytes should remain stable");
 
     Network::BinaryReplyEnvelope decoded;
@@ -159,8 +161,10 @@ bool replyRoundTripsAndGoldenBytes()
     const std::string encodedEmpty = Network::encodeBinaryReply(empty);
     passed &= expect(
         hex(encodedEmpty) ==
-            "53454e4701000687000000000000000100000000000000020000000000000000"
-            "000000000000000000000000000000000000000000000000",
+            "53454e4702000787000000000000000100000000000000020000000000000000"
+            "000000000000000000000000000000000000000000000000"
+            // Accepted client sequence 0, then an empty event list.
+            "00000000000000000000",
         "empty snapshot delta golden bytes should remain stable");
     return passed;
 }
@@ -175,7 +179,7 @@ bool legacyOverloadsRemainCompatible()
     const std::string oldEncoding = Network::encodeBinaryRequest(request);
     passed &= expect(
         hex(oldEncoding) ==
-            "53454e47010006010020"
+            "53454e47020007010020"
             "6161616161616161616161616161616161616161616161616161616161616161"
             "0003416461",
         "legacy binary JOIN bytes must remain unchanged");
@@ -195,7 +199,7 @@ bool legacyOverloadsRemainCompatible()
     reply.snapshot.serverTick = 4;
     const std::string oldReply = Network::encodeBinaryReply(reply);
     passed &= expect(hex(oldReply) ==
-                         "53454e470100068200000000000000040000000000000000",
+                         "53454e47020007820000000000000004000000000000000000000000000000000000",
                      "legacy binary SNAPSHOT bytes must remain unchanged");
     Network::BinaryReplyEnvelope replyEnvelope;
     replyEnvelope.reply = reply;
@@ -280,7 +284,7 @@ bool malformedPacketsAreRejected()
                      "IDs repeated across delta sections should be rejected");
 
     packet = Network::encodeBinaryReply(valid);
-    packet[6] = 7;
+    packet[6] = static_cast<char>(Network::protocolVersion + 1);
     passed &= expect(!Network::decodeBinaryReply(packet, reply, error) &&
                          error == "unsupported protocol version",
                      "incompatible delta protocol versions should be rejected explicitly");

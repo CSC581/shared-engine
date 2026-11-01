@@ -1,11 +1,15 @@
 #include "NetworkClient.hpp"
 
 #include "BinaryNetworkProtocol.hpp"
+#include "EventCodec.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
+#include "WireFormat.hpp"
 #include "ZmqMessage.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <deque>
 #include <iomanip>
 #include <locale>
 #include <random>
@@ -17,6 +21,11 @@ namespace Network {
 namespace {
 
 constexpr std::int64_t retryDelayNs = kNsPerSec;
+
+// A full queue always holds an event that was never sent, because a request
+// carries at most maxEventsPerMessage of them.
+static_assert(NetworkClient::maxPendingEvents > Net::maxEventsPerMessage,
+              "the event queue must outgrow one request");
 
 Message encodeTransportRequest(const Request& request, Net::DataFormat format,
                                Net::SnapshotStrategy strategy, std::uint64_t acknowledgedTick = 0,
@@ -38,7 +47,8 @@ Message encodeTransportRequest(const Request& request, Net::DataFormat format,
     case RequestType::Join:
         return encodeJoin(request.sessionToken, request.playerName);
     case RequestType::Position:
-        return encodePosition(request.playerId, request.sessionToken, request.position);
+        return encodePosition(request.playerId, request.sessionToken, request.position,
+                              request.ackedEventSequence, request.events);
     case RequestType::Leave:
         return encodeLeave(request.playerId, request.sessionToken);
     case RequestType::GetWorld:
@@ -206,6 +216,55 @@ struct NetworkClient::Impl {
         nextRetryAt = clock.now() + retryDelayNs;
     }
 
+    // The server gave this client a new player (the old one timed out, or
+    // the server restarted), so nothing sent or relayed before is known there.
+    // Pending events are numbered again from 1 and go out under the new id.
+    // Events relayed while this client was gone are lost.
+    void restartEvents()
+    {
+        std::uint64_t sequence = 0;
+        for (OutgoingEvent& pending : pendingEvents) {
+            pending.clientSequence = ++sequence;
+        }
+        nextEventSequence = sequence + 1;
+        highestSentEvent = 0;
+        handledEventSequence = 0;
+    }
+
+    // Events up to highestSentEvent went out in a request and may have been
+    // accepted, so they keep their numbers (at most maxEventsPerMessage of
+    // them, since requests always carry the oldest). The oldest event after
+    // them goes, and the rest move down one number so the queue stays
+    // consecutive.
+    void dropOldestUnsentEvent()
+    {
+        auto oldest = std::find_if(pendingEvents.begin(), pendingEvents.end(),
+                                   [this](const OutgoingEvent& pending) {
+                                       return pending.clientSequence > highestSentEvent;
+                                   });
+        for (auto later = pendingEvents.erase(oldest); later != pendingEvents.end(); ++later) {
+            --later->clientSequence;
+        }
+        --nextEventSequence;
+        ++droppedEvents;
+    }
+
+    // A SNAPSHOT says which pending events the server accepted and carries
+    // relayed ones. A relayed event at or below the last one handled was
+    // already passed on, so it is dropped rather than handled twice.
+    void takeReplyEvents(Reply& reply)
+    {
+        while (!pendingEvents.empty() && pendingEvents.front().clientSequence <= reply.acceptedClientSequence) {
+            pendingEvents.pop_front();
+        }
+        for (RelayedEvent& relayed : reply.events) {
+            if (relayed.serverSequence > handledEventSequence) {
+                handledEventSequence = relayed.serverSequence;
+                receivedEvents.push_back(std::move(relayed.event));
+            }
+        }
+    }
+
     void recordSent(const Message& message)
     {
         ++transport.messagesSent;
@@ -245,6 +304,16 @@ struct NetworkClient::Impl {
     bool waitingForReply = false;
     bool forceFullSnapshot = false;
     bool explicitFullSnapshotRequested = false;
+    // Published events not yet accepted, oldest first and numbered
+    // consecutively. They survive reconnects.
+    std::deque<OutgoingEvent> pendingEvents;
+    std::uint64_t nextEventSequence = 1;
+    // Highest clientSequence put in a request since the last renumbering.
+    std::uint64_t highestSentEvent = 0;
+    std::uint64_t droppedEvents = 0;
+    // Highest relayed serverSequence passed on; sent back as the acknowledgement.
+    std::uint64_t handledEventSequence = 0;
+    std::vector<Event> receivedEvents;
     TransportTelemetry transport;
     SnapshotTelemetry snapshotStats;
 };
@@ -338,6 +407,9 @@ void NetworkClient::poll()
             return;
         }
         impl_->playerId = reply.playerId;
+        if (!reply.resumed) {
+            impl_->restartEvents();
+        }
         impl_->error.clear();
         if (!reply.sessionEndpoint.empty() && !impl_->connectSession(reply.sessionEndpoint)) {
             return;
@@ -357,6 +429,9 @@ void NetworkClient::poll()
             impl_->fail("Unexpected property-delta reply");
             return;
         }
+        // Events do not depend on the snapshot baseline, so they count even
+        // if the delta is rejected below.
+        impl_->takeReplyEvents(reply);
         WorldSnapshot next;
         if (!applySnapshotDelta(impl_->snapshot, envelope.delta, next, error)) {
             ++impl_->snapshotStats.baselineMismatches;
@@ -380,6 +455,7 @@ void NetworkClient::poll()
         impl_->fail("Unexpected reply to player request");
         return;
     }
+    impl_->takeReplyEvents(reply);
     impl_->snapshot = std::move(reply.snapshot);
     impl_->forceFullSnapshot = false;
     impl_->explicitFullSnapshotRequested = false;
@@ -415,6 +491,10 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
     request.playerId = impl_->playerId;
     request.sessionToken = impl_->sessionToken;
     request.position = position;
+    request.ackedEventSequence = impl_->handledEventSequence;
+    const std::size_t eventCount = std::min(impl_->pendingEvents.size(), Net::maxEventsPerMessage);
+    request.events.assign(impl_->pendingEvents.begin(),
+                          impl_->pendingEvents.begin() + static_cast<std::ptrdiff_t>(eventCount));
     Message message;
     const bool requestFull = impl_->forceFullSnapshot || impl_->explicitFullSnapshotRequested;
     try {
@@ -431,6 +511,9 @@ void NetworkClient::submitPosition(float x, float y, const std::string& data)
     }
 
     impl_->refusing = false;
+    if (!request.events.empty()) {
+        impl_->highestSentEvent = std::max(impl_->highestSentEvent, request.events.back().clientSequence);
+    }
     impl_->recordSent(message);
     if (requestFull) ++impl_->snapshotStats.resyncRequestsSent;
     impl_->error.clear();
@@ -464,6 +547,35 @@ void NetworkClient::leave()
     }
     impl_->socket.reset();
     impl_->state = ConnectionState::Disconnected;
+}
+
+void NetworkClient::publishEvent(const Event& event)
+{
+    std::string error;
+    if (!validateEvent(event, error)) {
+        throw std::invalid_argument("cannot publish event: " + error);
+    }
+    impl_->pendingEvents.push_back({impl_->nextEventSequence++, event});
+    if (impl_->pendingEvents.size() > maxPendingEvents) {
+        impl_->dropOldestUnsentEvent();
+    }
+}
+
+std::vector<Event> NetworkClient::takeEvents()
+{
+    std::vector<Event> events;
+    events.swap(impl_->receivedEvents);
+    return events;
+}
+
+std::size_t NetworkClient::pendingEvents() const
+{
+    return impl_->pendingEvents.size();
+}
+
+std::uint64_t NetworkClient::droppedEvents() const
+{
+    return impl_->droppedEvents;
 }
 
 ConnectionState NetworkClient::state() const

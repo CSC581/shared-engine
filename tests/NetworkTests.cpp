@@ -853,7 +853,7 @@ int main()
     const auto localePosition = Network::encodePosition(1, tokenOne, {12.5F, 3000.25F, 1});
     passed &= expect(localePosition[5] == "12.5" && localePosition[6] == "3000.25",
                      "wire coordinates should always use dots and no thousands separators");
-    passed &= expect(Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12.5", "3000.25", "0"}, decoded, error) &&
+    passed &= expect(Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12.5", "3000.25", "0", "0", "0"}, decoded, error) &&
                          decoded.position.x == 12.5F && decoded.position.y == 3000.25F,
                      "dot-decimal messages should parse even under a comma locale");
     Network::Reply localeReply;
@@ -872,7 +872,7 @@ int main()
         passed &= expect(Network::decodeRequest(message, decoded, error) && decoded.position.x == coordinate,
                          "finite float coordinate should round trip without precision loss: " + message[5]);
     }
-    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12,5", "0", "0"}, decoded, error),
+    passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "12,5", "0", "0", "0", "0"}, decoded, error),
                      "comma-decimal wire coordinates must be rejected consistently");
     std::setlocale(LC_NUMERIC, savedNumericLocale.c_str());
     passed &= expect(!Network::decodeRequest({"99", "JOIN", tokenOne}, decoded, error), "unsupported version should fail");
@@ -923,7 +923,7 @@ int main()
     passed &= expect(!Network::decodeRequest({version, "NOT_A_COMMAND", "1", tokenOne}, decoded, error) &&
                          error == "unknown request command", "unknown command should fail");
     for (const std::string coordinate : {"nan", "inf", "-inf", "12oops"}) {
-        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", coordinate, "0", "0"},
+        passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", coordinate, "0", "0", "0", "0"},
                                                  decoded, error) && error == "invalid position update",
                          "invalid x position should fail");
         passed &= expect(!Network::decodeRequest({version, "POSITION", "1", tokenOne, "1", "0", coordinate, "0"},

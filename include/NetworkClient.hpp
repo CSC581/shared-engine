@@ -1,12 +1,15 @@
 #pragma once
 
+#include "Event.hpp"
 #include "NetworkDataFormat.hpp"
 #include "NetworkProtocol.hpp"
 #include "NetworkSnapshotStrategy.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 class TimeSource;
 
@@ -81,6 +84,26 @@ public:
     // explicitly exercising recovery; it has no effect in full-snapshot mode.
     void requestFullSnapshot();
     void leave();
+
+    // Most events queued at once, the same as the server's default outbox.
+    static constexpr std::size_t maxPendingEvents = 256;
+
+    // Queues an event for the server to relay to every other player. Each
+    // queued event rides on POSITION requests, oldest first, until a reply
+    // says the server accepted it, and the queue survives reconnects. Events
+    // queued before connecting go once connected. A full queue drops its
+    // oldest event that has not been sent yet (counted by droppedEvents()),
+    // so a long disconnect cannot end in a flood of stale events.
+    // Throws std::invalid_argument, queuing nothing, if validateEvent
+    // (EventCodec.hpp) rejects the event.
+    void publishEvent(const Event& event);
+    // Events from other players since the last call, in the server's order,
+    // each exactly once. origin is the sender's player id.
+    std::vector<Event> takeEvents();
+    // Events queued and not yet accepted by the server.
+    std::size_t pendingEvents() const;
+    // Events dropped from a full queue since this client was created.
+    std::uint64_t droppedEvents() const;
 
     ConnectionState state() const;
     // A request is out and its reply has not been read yet. REQ/REP allows one

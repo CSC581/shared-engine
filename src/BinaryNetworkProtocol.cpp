@@ -1,5 +1,6 @@
 #include "BinaryNetworkProtocol.hpp"
 
+#include "EventCodec.hpp"
 #include "WireFormat.hpp"
 
 #include <cmath>
@@ -85,6 +86,12 @@ public:
         }
         u16(static_cast<std::uint16_t>(value.size()));
         bytes_.append(value);
+    }
+
+    template <class Entry>
+    void events(const std::vector<Entry>& list)
+    {
+        appendEventsBinary(bytes_, list);
     }
 
     BinaryMessage finish()
@@ -201,6 +208,12 @@ public:
         value.assign(bytes_.data() + index_, size);
         index_ += size;
         return true;
+    }
+
+    template <class Entry>
+    bool events(std::vector<Entry>& list, std::string& error)
+    {
+        return readEventsBinary(bytes_, index_, list, error);
     }
 
     std::size_t remaining() const { return bytes_.size() - index_; }
@@ -580,6 +593,16 @@ bool finish(Reader& reader, std::string& error)
     return true;
 }
 
+bool readResumed(Reader& reader, bool& resumed)
+{
+    std::uint8_t flag = 0;
+    if (!reader.u8(flag) || flag > 1U) {
+        return false;
+    }
+    resumed = flag == 1U;
+    return true;
+}
+
 } // namespace
 
 bool hasBinaryMagic(const BinaryMessage& message)
@@ -612,6 +635,8 @@ BinaryMessage encodeBinaryRequest(const Request& request)
         writer.f32(request.position.x);
         writer.f32(request.position.y);
         writer.string(request.position.data);
+        writer.u64(request.ackedEventSequence);
+        writer.events(request.events);
         return writer.finish();
     }
     case RequestType::Leave: {
@@ -640,11 +665,14 @@ BinaryMessage encodeBinaryReply(const Reply& reply)
         writer.u32(reply.playerId);
         writer.string(reply.sessionEndpoint);
         writeSnapshot(writer, reply.snapshot);
+        writer.u8(reply.resumed ? 1U : 0U);
         return writer.finish();
     }
     case ReplyType::Snapshot: {
         Writer writer(MessageType::Snapshot);
         writeSnapshot(writer, reply.snapshot);
+        writer.u64(reply.acceptedClientSequence);
+        writer.events(reply.events);
         return writer.finish();
     }
     case ReplyType::WorldState: {
@@ -699,6 +727,8 @@ BinaryMessage encodeBinaryRequest(const BinaryRequestEnvelope& envelope)
         writer.f32(request.position.x);
         writer.f32(request.position.y);
         writer.string(request.position.data);
+        writer.u64(request.ackedEventSequence);
+        writer.events(request.events);
         return writer.finish();
     }
     throw std::invalid_argument("property-delta envelope supports JOIN and POSITION only");
@@ -717,11 +747,15 @@ BinaryMessage encodeBinaryReply(const BinaryReplyEnvelope& envelope)
         writer.u32(envelope.reply.playerId);
         writer.string(envelope.reply.sessionEndpoint);
         writeSnapshot(writer, envelope.reply.snapshot);
+        writer.u8(envelope.reply.resumed ? 1U : 0U);
         return writer.finish();
     }
     case BinaryReplyKind::SnapshotDelta: {
+        // Events and acceptance ride in envelope.reply, as on a full SNAPSHOT.
         Writer writer(MessageType::SnapshotDelta);
         writeDelta(writer, envelope.delta);
+        writer.u64(envelope.reply.acceptedClientSequence);
+        writer.events(envelope.reply.events);
         return writer.finish();
     }
     }
@@ -752,8 +786,12 @@ bool decodeBinaryRequest(const BinaryMessage& message, Request& request, std::st
             !reader.string(request.sessionToken, 32) || !validSessionToken(request.sessionToken) ||
             !reader.u64(request.position.sequence) || request.position.sequence == 0 ||
             !reader.f32(request.position.x) || !reader.f32(request.position.y) ||
-            !reader.string(request.position.data, Net::maxPlayerDataLength)) {
+            !reader.string(request.position.data, Net::maxPlayerDataLength) ||
+            !reader.u64(request.ackedEventSequence)) {
             error = "invalid binary POSITION request";
+            return false;
+        }
+        if (!reader.events(request.events, error)) {
             return false;
         }
         break;
@@ -789,7 +827,7 @@ bool decodeBinaryReply(const BinaryMessage& message, Reply& reply, std::string& 
         reply.type = ReplyType::Welcome;
         if (!reader.u32(reply.playerId) || reply.playerId == 0 ||
             !reader.string(reply.sessionEndpoint, std::numeric_limits<std::uint16_t>::max()) ||
-            !readSnapshot(reader, reply.snapshot, error)) {
+            !readSnapshot(reader, reply.snapshot, error) || !readResumed(reader, reply.resumed)) {
             if (error.empty()) {
                 error = "invalid binary WELCOME reply";
             }
@@ -799,6 +837,13 @@ bool decodeBinaryReply(const BinaryMessage& message, Reply& reply, std::string& 
     case MessageType::Snapshot:
         reply.type = ReplyType::Snapshot;
         if (!readSnapshot(reader, reply.snapshot, error)) {
+            return false;
+        }
+        if (!reader.u64(reply.acceptedClientSequence)) {
+            error = "invalid binary event acceptance";
+            return false;
+        }
+        if (!reader.events(reply.events, error)) {
             return false;
         }
         break;
@@ -864,8 +909,12 @@ bool decodeBinaryRequest(const BinaryMessage& message, BinaryRequestEnvelope& en
             !reader.u64(envelope.request.position.sequence) ||
             envelope.request.position.sequence == 0 || !reader.f32(envelope.request.position.x) ||
             !reader.f32(envelope.request.position.y) ||
-            !reader.string(envelope.request.position.data, Net::maxPlayerDataLength)) {
+            !reader.string(envelope.request.position.data, Net::maxPlayerDataLength) ||
+            !reader.u64(envelope.request.ackedEventSequence)) {
             error = "invalid binary delta POSITION request";
+            return false;
+        }
+        if (!reader.events(envelope.request.events, error)) {
             return false;
         }
         envelope.forceFullSnapshot = (flags & forceFullSnapshotFlag) != 0;
@@ -895,7 +944,8 @@ bool decodeBinaryReply(const BinaryMessage& message, BinaryReplyEnvelope& envelo
         if (!reader.u32(envelope.reply.playerId) || envelope.reply.playerId == 0 ||
             !reader.string(envelope.reply.sessionEndpoint,
                            std::numeric_limits<std::uint16_t>::max()) ||
-            !readSnapshot(reader, envelope.reply.snapshot, error)) {
+            !readSnapshot(reader, envelope.reply.snapshot, error) ||
+            !readResumed(reader, envelope.reply.resumed)) {
             if (error.empty()) error = "invalid binary delta WELCOME reply";
             return false;
         }
@@ -904,6 +954,13 @@ bool decodeBinaryReply(const BinaryMessage& message, BinaryReplyEnvelope& envelo
     if (type == MessageType::SnapshotDelta) {
         envelope.kind = BinaryReplyKind::SnapshotDelta;
         if (!readDelta(reader, envelope.delta, error)) {
+            return false;
+        }
+        if (!reader.u64(envelope.reply.acceptedClientSequence)) {
+            error = "invalid binary event acceptance";
+            return false;
+        }
+        if (!reader.events(envelope.reply.events, error)) {
             return false;
         }
         return finish(reader, error);

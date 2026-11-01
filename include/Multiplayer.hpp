@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Event.hpp"
 #include "NetworkDataFormat.hpp"
 #include "NetworkSnapshotStrategy.hpp"
 #include "TimeSource.hpp"
@@ -234,6 +235,23 @@ public:
     virtual std::string status() const = 0;
 
     virtual Mode mode() const = 0;
+
+    // --- Events, client-server only. NetworkEventBridge connects these to a
+    // game's EventManager; most games use that rather than calling them. ---
+
+    // Sends an event to every other player through the server. Events are not
+    // dropped or replaced on the way, even across a reconnect to a server
+    // that still holds this player, and every client receives them in the
+    // same order. The sender does not get its own events back. Throws
+    // std::invalid_argument if the event breaks a rule of the wire format
+    // (validateEvent in EventCodec.hpp), and std::logic_error in peer-to-peer
+    // mode, which carries no events.
+    virtual void publishEvent(const Event& event) = 0;
+
+    // Other players' events delivered by update() and not yet taken, oldest
+    // first. origin is the sender's player id. Always empty in peer-to-peer
+    // mode.
+    virtual std::vector<Event> takeRemoteEvents() = 0;
 
 protected:
     Session() = default;

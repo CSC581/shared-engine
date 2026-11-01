@@ -2,9 +2,11 @@
 
 #include "Components.hpp"
 #include "FrameTime.hpp"
+#include "WireFormat.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <utility>
 
@@ -24,7 +26,7 @@ NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
     : clock_(clock),
       config_(std::move(config))
 {
-    if (config_.spawnPoints.empty() || config_.inactivityTimeoutTics <= 0) {
+    if (config_.spawnPoints.empty() || config_.inactivityTimeoutTics <= 0 || config_.eventOutboxLimit == 0) {
         throw std::invalid_argument("NetworkServer configuration is invalid");
     }
 
@@ -136,6 +138,7 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
                 reply.type = ReplyType::Welcome;
                 reply.playerId = existingPlayer->first;
                 reply.snapshot = buildSnapshot();
+                reply.resumed = true;
                 return reply;
             }
             playerIdsByToken_.erase(existingId);
@@ -190,6 +193,22 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
         return errorReply("position sequence must increase");
     }
 
+    // Events at or below the last accepted one were resent before this
+    // player heard they were accepted, so they are dropped, not relayed again.
+    // Checked before anything changes, so a refused request changes nothing.
+    std::uint64_t lastAccepted = player->second.lastAcceptedEvent;
+    std::vector<Event> accepted;
+    for (OutgoingEvent& outgoing : request.events) {
+        if (outgoing.clientSequence <= lastAccepted) {
+            continue;
+        }
+        if (outgoing.clientSequence != lastAccepted + 1) {
+            return errorReply("event sequence skips an event");
+        }
+        accepted.push_back(std::move(outgoing.event));
+        ++lastAccepted;
+    }
+
     Transform& transform = *player->second.object->get<Transform>();
     transform.x = request.position.x;
     transform.y = request.position.y;
@@ -201,9 +220,24 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
     player->second.lastHeard = now;
     ++player->second.acceptedPositions;
     ++serverTick_;
+
+    for (Event& event : accepted) {
+        relayEvent(request.playerId, std::move(event));
+    }
+    ActivePlayer& sender = player->second;
+    sender.lastAcceptedEvent = lastAccepted;
+    sender.acceptedEvents += accepted.size();
+    std::deque<RelayedEvent>& outbox = sender.outbox;
+    while (!outbox.empty() && outbox.front().serverSequence <= request.ackedEventSequence) {
+        outbox.pop_front();
+    }
+
     Reply reply;
     reply.type = ReplyType::Snapshot;
     reply.snapshot = buildSnapshot();
+    reply.acceptedClientSequence = sender.lastAcceptedEvent;
+    const std::size_t count = std::min(outbox.size(), Net::maxEventsPerMessage);
+    reply.events.assign(outbox.begin(), outbox.begin() + static_cast<std::ptrdiff_t>(count));
     return reply;
 }
 
@@ -231,7 +265,8 @@ std::vector<PlayerTraffic> NetworkServer::traffic() const
     std::vector<PlayerTraffic> result;
     result.reserve(players_.size());
     for (const auto& entry : players_) {
-        result.push_back({entry.first, entry.second.name, entry.second.acceptedPositions});
+        result.push_back({entry.first, entry.second.name, entry.second.acceptedPositions,
+                          entry.second.acceptedEvents, entry.second.droppedEvents});
     }
     std::sort(result.begin(), result.end(),
               [](const PlayerTraffic& a, const PlayerTraffic& b) { return a.id < b.id; });
@@ -258,6 +293,25 @@ void NetworkServer::removePlayer(std::unordered_map<PlayerId, ActivePlayer>::ite
     world_.flushDestroyed();
     playerIdsByToken_.erase(player->second.sessionToken);
     players_.erase(player);
+}
+
+void NetworkServer::relayEvent(PlayerId sender, Event event)
+{
+    RelayedEvent relayed;
+    relayed.serverSequence = nextEventSequence_++;
+    relayed.event = std::move(event);
+    relayed.event.origin = sender;
+    for (auto& entry : players_) {
+        if (entry.first == sender) {
+            continue;
+        }
+        std::deque<RelayedEvent>& outbox = entry.second.outbox;
+        outbox.push_back(relayed);
+        if (outbox.size() > config_.eventOutboxLimit) {
+            outbox.pop_front();
+            ++entry.second.droppedEvents;
+        }
+    }
 }
 
 void NetworkServer::advancePlatforms(std::int64_t now)

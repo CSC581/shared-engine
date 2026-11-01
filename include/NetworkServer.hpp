@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -57,6 +58,10 @@ struct ServerConfig {
     std::size_t maxPlayers = 0;
     // In the supplied clock's units; the default assumes real nanoseconds.
     std::int64_t inactivityTimeoutTics = 3 * kNsPerSec;
+    // Relayed events held for one player until it acknowledges them. A player
+    // that falls further behind loses its oldest ones (PlayerTraffic counts
+    // them). At least 1.
+    std::size_t eventOutboxLimit = 256;
 };
 
 // How much one player has sent, as counted by the server. Accepted updates
@@ -66,10 +71,21 @@ struct PlayerTraffic {
     PlayerId id = 0;
     std::string name;
     std::uint64_t acceptedPositions = 0;
+    // Events accepted from this player, and events meant for it that were
+    // dropped because its outbox was full.
+    std::uint64_t acceptedEvents = 0;
+    std::uint64_t droppedEvents = 0;
 };
 
 // Thread-safe session/state store, independent of SDL and ZeroMQ.
 // Positions are trusted client reports, not validated game physics.
+//
+// Events are relayed, never interpreted. Each event a player sends gets the
+// next server sequence number and that player's id as its origin, and goes
+// into every other player's outbox. A POSITION carries the sender's new
+// events and the highest relayed sequence it has handled; its reply says
+// which events were accepted and carries the outbox above that point. A
+// resent event is recognised by its client sequence and relayed only once.
 //
 // The scene is kept in the engine's object model, as on every client: each
 // player and each platform is a GameObject in a World, tagged with a
@@ -128,12 +144,19 @@ private:
         std::uint64_t lastSequence = 0;
         std::int64_t lastHeard = 0;
         std::uint64_t acceptedPositions = 0;
+        // Highest clientSequence accepted from this player.
+        std::uint64_t lastAcceptedEvent = 0;
+        std::uint64_t acceptedEvents = 0;
+        // Other players' events not yet acknowledged, oldest first.
+        std::deque<RelayedEvent> outbox;
+        std::uint64_t droppedEvents = 0;
     };
 
     // Callers must hold mutex_.
     void expireInactivePlayers(std::int64_t now);
     void advancePlatforms(std::int64_t now);
     void removePlayer(std::unordered_map<PlayerId, ActivePlayer>::iterator player);
+    void relayEvent(PlayerId sender, Event event);
     Reply handleLocked(Request request, std::int64_t now);
     WorldSnapshot buildSnapshot() const;
     WorldStateSnapshot buildWorldState() const;
@@ -145,6 +168,7 @@ private:
     PlayerId nextPlayerId_ = 1;
     std::uint64_t serverTick_ = 0;
     std::uint64_t worldRevision_ = 0;
+    std::uint64_t nextEventSequence_ = 1;
     std::int64_t lastPlatformUpdate_ = 0;
     // Clock tics the World has been advanced through, for FrameTime::gameTimeUs.
     std::int64_t worldElapsedTics_ = 0;
