@@ -290,11 +290,12 @@ std::string rewriteTcpEndpointHost(const std::string& endpoint, const std::strin
 }
 
 Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot, const std::string& sessionEndpoint,
-                      bool resumed)
+                      std::uint64_t acceptedClientSequence, std::uint64_t serverInstance)
 {
     Message message{std::to_string(protocolVersion), "WELCOME", std::to_string(playerId), sessionEndpoint};
     appendSnapshot(message, snapshot);
-    message.push_back(resumed ? "1" : "0");
+    message.push_back(std::to_string(acceptedClientSequence));
+    message.push_back(std::to_string(serverInstance));
     return message;
 }
 
@@ -329,7 +330,8 @@ Message encodeReply(const Reply& reply)
 {
     switch (reply.type) {
     case ReplyType::Welcome:
-        return encodeWelcome(reply.playerId, reply.snapshot, reply.sessionEndpoint, reply.resumed);
+        return encodeWelcome(reply.playerId, reply.snapshot, reply.sessionEndpoint, reply.acceptedClientSequence,
+                             reply.serverInstance);
     case ReplyType::Snapshot:
         return encodeSnapshot(reply.snapshot, reply.acceptedClientSequence, reply.events);
     case ReplyType::WorldState:
@@ -382,9 +384,10 @@ bool decodeReply(const Message& message, Reply& reply, std::string& error)
     std::size_t index = 2;
     if (message[1] == "WELCOME") {
         std::uint64_t playerId = 0;
-        // [version, WELCOME, playerId, sessionEndpoint, ...snapshot..., resumed]
+        // [version, WELCOME, playerId, sessionEndpoint, ...snapshot...,
+        //  acceptedClientSequence, serverInstance]
         // Snapshot needs at least tick, playerCount, platformCount.
-        if (message.size() < 8 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
+        if (message.size() < 9 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
             playerId > std::numeric_limits<PlayerId>::max()) {
             error = "invalid WELCOME reply";
             return false;
@@ -404,12 +407,12 @@ bool decodeReply(const Message& message, Reply& reply, std::string& error)
         return false;
     }
     if (reply.type == ReplyType::Welcome) {
-        if (index >= message.size() || (message[index] != "0" && message[index] != "1")) {
+        if (message.size() - index < 2 || !parseUnsigned(message[index], reply.acceptedClientSequence) ||
+            !parseUnsigned(message[index + 1], reply.serverInstance)) {
             error = "invalid WELCOME reply";
             return false;
         }
-        reply.resumed = message[index++] == "1";
-        return finished(message, index, error);
+        return finished(message, index + 2, error);
     }
     // [...snapshot..., acceptedClientSequence, ...events]
     if (index >= message.size() || !parseUnsigned(message[index], reply.acceptedClientSequence)) {

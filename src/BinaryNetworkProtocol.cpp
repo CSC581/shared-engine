@@ -63,13 +63,7 @@ public:
         u32(bits);
     }
 
-    void string(const std::string& value)
-    {
-        if (value.size() > std::numeric_limits<std::uint16_t>::max()) {
-            throw std::invalid_argument("binary protocol string is too large");
-        }
-        binary::putString(bytes_, value);
-    }
+    void string(const std::string& value) { binary::putString(bytes_, value); }
 
     template <class Entry>
     void events(const std::vector<Entry>& list)
@@ -531,14 +525,16 @@ bool finish(Reader& reader, std::string& error)
     return true;
 }
 
-bool readResumed(Reader& reader, bool& resumed)
+// The end of a WELCOME in both snapshot strategies.
+void writeWelcomeTail(Writer& writer, const Reply& reply)
 {
-    std::uint8_t flag = 0;
-    if (!reader.u8(flag) || flag > 1U) {
-        return false;
-    }
-    resumed = flag == 1U;
-    return true;
+    writer.u64(reply.acceptedClientSequence);
+    writer.u64(reply.serverInstance);
+}
+
+bool readWelcomeTail(Reader& reader, Reply& reply)
+{
+    return reader.u64(reply.acceptedClientSequence) && reader.u64(reply.serverInstance);
 }
 
 // The end of a POSITION in both snapshot strategies: sequence, pose, the
@@ -641,7 +637,7 @@ BinaryMessage encodeBinaryReply(const Reply& reply)
         writer.u32(reply.playerId);
         writer.string(reply.sessionEndpoint);
         writeSnapshot(writer, reply.snapshot);
-        writer.u8(reply.resumed ? 1U : 0U);
+        writeWelcomeTail(writer, reply);
         return writer.finish();
     }
     case ReplyType::Snapshot: {
@@ -717,7 +713,7 @@ BinaryMessage encodeBinaryReply(const BinaryReplyEnvelope& envelope)
         writer.u32(envelope.reply.playerId);
         writer.string(envelope.reply.sessionEndpoint);
         writeSnapshot(writer, envelope.reply.snapshot);
-        writer.u8(envelope.reply.resumed ? 1U : 0U);
+        writeWelcomeTail(writer, envelope.reply);
         return writer.finish();
     }
     case BinaryReplyKind::SnapshotDelta: {
@@ -792,7 +788,7 @@ bool decodeBinaryReply(const BinaryMessage& message, Reply& reply, std::string& 
         reply.type = ReplyType::Welcome;
         if (!reader.u32(reply.playerId) || reply.playerId == 0 ||
             !reader.string(reply.sessionEndpoint, std::numeric_limits<std::uint16_t>::max()) ||
-            !readSnapshot(reader, reply.snapshot, error) || !readResumed(reader, reply.resumed)) {
+            !readSnapshot(reader, reply.snapshot, error) || !readWelcomeTail(reader, reply)) {
             if (error.empty()) {
                 error = "invalid binary WELCOME reply";
             }
@@ -898,7 +894,7 @@ bool decodeBinaryReply(const BinaryMessage& message, BinaryReplyEnvelope& envelo
             !reader.string(envelope.reply.sessionEndpoint,
                            std::numeric_limits<std::uint16_t>::max()) ||
             !readSnapshot(reader, envelope.reply.snapshot, error) ||
-            !readResumed(reader, envelope.reply.resumed)) {
+            !readWelcomeTail(reader, envelope.reply)) {
             if (error.empty()) error = "invalid binary delta WELCOME reply";
             return false;
         }

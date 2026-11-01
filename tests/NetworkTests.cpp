@@ -475,8 +475,12 @@ bool typedServerBoundaryMatchesTextProtocol()
             return;
         }
 
-        const Network::Message textReply = textServer.handle(requestMessage);
-        const Network::Message typedReply = Network::encodeReply(typedServer.handle(std::move(request)));
+        Network::Message textReply = textServer.handle(requestMessage);
+        Network::Message typedReply = Network::encodeReply(typedServer.handle(std::move(request)));
+        // Each server picks its own random instance, the last WELCOME field.
+        if (textReply.size() > 1 && textReply[1] == "WELCOME" && typedReply.size() > 1) {
+            textReply.back() = typedReply.back() = "0";
+        }
         passed &= expect(textReply == typedReply, label + ": typed and text paths should encode identically");
     };
 

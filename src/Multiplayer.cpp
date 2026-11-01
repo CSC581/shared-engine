@@ -130,7 +130,8 @@ public:
 
     // Checked here, on the game thread, so a bad event throws to the game
     // instead of on the network thread. Unlike poses, events are never
-    // replaced: every one is handed to the client.
+    // replaced: every one is handed to the client. After leave() nothing
+    // would ever send them, so they are dropped rather than kept.
     void publishEvent(const Event& event) override
     {
         std::string error;
@@ -138,7 +139,9 @@ public:
             throw std::invalid_argument("cannot publish event: " + error);
         }
         const std::lock_guard<std::mutex> lock(mutex_);
-        outgoingEvents_.push_back(event);
+        if (!leaveRequested_) {
+            outgoingEvents_.push_back(event);
+        }
     }
 
     std::vector<Event> takeRemoteEvents() override

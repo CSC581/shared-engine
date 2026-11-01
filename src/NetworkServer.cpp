@@ -1,12 +1,14 @@
 #include "NetworkServer.hpp"
 
 #include "Components.hpp"
+#include "EventCodec.hpp"
 #include "FrameTime.hpp"
 #include "WireFormat.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <random>
 #include <stdexcept>
 #include <utility>
 
@@ -20,11 +22,23 @@ float pathLengthOf(const PlatformPath& path)
     return std::sqrt(dx * dx + dy * dy);
 }
 
+// Tells a client that this server is not the one it knew before a restart.
+std::uint64_t makeInstance()
+{
+    std::random_device random;
+    std::uint64_t instance = 0;
+    while (instance == 0) {
+        instance = (static_cast<std::uint64_t>(random()) << 32U) ^ static_cast<std::uint64_t>(random());
+    }
+    return instance;
+}
+
 } // namespace
 
 NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
     : clock_(clock),
-      config_(std::move(config))
+      config_(std::move(config)),
+      instance_(makeInstance())
 {
     if (config_.spawnPoints.empty() || config_.inactivityTimeoutTics <= 0 || config_.eventOutboxLimit == 0) {
         throw std::invalid_argument("NetworkServer configuration is invalid");
@@ -138,7 +152,8 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
                 reply.type = ReplyType::Welcome;
                 reply.playerId = existingPlayer->first;
                 reply.snapshot = buildSnapshot();
-                reply.resumed = true;
+                reply.acceptedClientSequence = existingPlayer->second.lastAcceptedEvent;
+                reply.serverInstance = instance_;
                 return reply;
             }
             playerIdsByToken_.erase(existingId);
@@ -169,6 +184,7 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
         reply.type = ReplyType::Welcome;
         reply.playerId = id;
         reply.snapshot = buildSnapshot();
+        reply.serverInstance = instance_;
         return reply;
     }
 
@@ -196,9 +212,19 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
     // Events at or below the last accepted one were resent before this
     // player heard they were accepted, so they are dropped, not relayed again.
     // Checked before anything changes, so a refused request changes nothing.
+    // The wire decoders already enforce the event rules; they are checked
+    // again here because handle(Request) can be called directly, and one bad
+    // event in an outbox would make every reply to that player fail.
+    if (request.events.size() > Net::maxEventsPerMessage) {
+        return errorReply("too many events in one message");
+    }
     std::uint64_t lastAccepted = player->second.lastAcceptedEvent;
     std::vector<Event> accepted;
     for (OutgoingEvent& outgoing : request.events) {
+        std::string invalid;
+        if (!validateEvent(outgoing.event, invalid)) {
+            return errorReply(invalid);
+        }
         if (outgoing.clientSequence <= lastAccepted) {
             continue;
         }

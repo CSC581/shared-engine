@@ -81,6 +81,14 @@ std::uint64_t payloadBytes(const Message& message)
     return bytes;
 }
 
+// Either version check can fail first when the two ends were built from
+// different sources: the binary header checks its format byte before the
+// protocol version.
+bool isVersionMismatch(const std::string& error)
+{
+    return error == "unsupported protocol version" || error == "unsupported binary format version";
+}
+
 SessionToken makeSessionToken()
 {
     std::random_device random;
@@ -217,19 +225,29 @@ struct NetworkClient::Impl {
         nextRetryAt = clock.now() + retryDelayNs;
     }
 
-    // The server gave this client a new player (the old one timed out, or
-    // the server restarted), so nothing sent or relayed before is known there.
-    // Pending events are numbered again from 1 and go out under the new id.
-    // Events relayed while this client was gone are lost.
-    void restartEvents()
+    // A WELCOME says how many of this player's events the server has
+    // accepted: all of them for a resumed player, none for a new one (the old
+    // one timed out, or the server restarted). Events up to there are done;
+    // the rest are numbered on from there. No request is in flight during a
+    // JOIN, so this matches the server exactly, even if an earlier WELCOME
+    // was lost. A new server instance numbers relayed events from 1 again, so
+    // what was handled from the old one no longer counts. Events relayed
+    // while this client was away from its player are lost.
+    void rejoinEvents(std::uint64_t accepted, std::uint64_t instance)
     {
-        std::uint64_t sequence = 0;
+        while (!pendingEvents.empty() && pendingEvents.front().clientSequence <= accepted) {
+            pendingEvents.pop_front();
+        }
+        std::uint64_t sequence = accepted;
         for (OutgoingEvent& pending : pendingEvents) {
             pending.clientSequence = ++sequence;
         }
         nextEventSequence = sequence + 1;
-        highestSentEvent = 0;
-        handledEventSequence = 0;
+        highestSentEvent = accepted;
+        if (instance != serverInstance) {
+            serverInstance = instance;
+            handledEventSequence = 0;
+        }
     }
 
     // Events up to highestSentEvent went out in a request and may have been
@@ -318,6 +336,8 @@ struct NetworkClient::Impl {
     std::uint64_t droppedEvents = 0;
     // Highest relayed serverSequence passed on; sent back as the acknowledgement.
     std::uint64_t handledEventSequence = 0;
+    // The server instance handledEventSequence belongs to.
+    std::uint64_t serverInstance = 0;
     // Relayed events not yet taken, oldest first.
     std::deque<Event> receivedEvents;
     TransportTelemetry transport;
@@ -381,7 +401,7 @@ void NetworkClient::poll()
     BinaryReplyEnvelope envelope;
     std::string error;
     if (!decodeTransportReply(message, impl_->format, envelope, error)) {
-        impl_->fail(error == "unsupported protocol version"
+        impl_->fail(isVersionMismatch(error)
                         ? "Protocol version mismatch. Rebuild and restart both server and clients."
                         : "Invalid server reply: " + error);
         return;
@@ -389,7 +409,7 @@ void NetworkClient::poll()
     Reply& reply = envelope.reply;
 
     if (envelope.kind == BinaryReplyKind::Standard && reply.type == ReplyType::Error) {
-        if (reply.error == "unsupported protocol version") {
+        if (isVersionMismatch(reply.error)) {
             impl_->fail("Protocol version mismatch. Rebuild and restart both server and clients.");
         } else {
             impl_->scheduleRetry(reply.error);
@@ -413,9 +433,7 @@ void NetworkClient::poll()
             return;
         }
         impl_->playerId = reply.playerId;
-        if (!reply.resumed) {
-            impl_->restartEvents();
-        }
+        impl_->rejoinEvents(reply.acceptedClientSequence, reply.serverInstance);
         impl_->error.clear();
         if (!reply.sessionEndpoint.empty() && !impl_->connectSession(reply.sessionEndpoint)) {
             return;

@@ -171,6 +171,8 @@ private:
     std::uint64_t serverTick_ = 0;
     std::uint64_t worldRevision_ = 0;
     std::uint64_t nextEventSequence_ = 1;
+    // Random and non-zero, chosen at construction; sent on every WELCOME.
+    const std::uint64_t instance_;
     std::int64_t lastPlatformUpdate_ = 0;
     // Clock tics the World has been advanced through, for FrameTime::gameTimeUs.
     std::int64_t worldElapsedTics_ = 0;

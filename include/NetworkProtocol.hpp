@@ -126,12 +126,17 @@ struct Reply {
     WorldSnapshot snapshot{};
     WorldStateSnapshot worldState{};
     std::string error;
-    // WELCOME only: true when the session token still owned a player, so this
-    // client keeps its id and its event sequence numbers carry on.
-    bool resumed = false;
-    // SNAPSHOT only. The highest clientSequence accepted from this player, and
-    // relayed events above the request's ackedEventSequence, oldest first.
+    // WELCOME and SNAPSHOT: the highest clientSequence accepted from this
+    // player, 0 for a new one. On WELCOME the client drops its events up to
+    // here and numbers the rest from the next one. That is right for a
+    // resumed player, a new one, and one whose first WELCOME was lost.
     std::uint64_t acceptedClientSequence = 0;
+    // WELCOME only: a random number the server picked when it started. When
+    // it changes the server has restarted, so relayed sequence numbers the
+    // client handled before mean nothing there.
+    std::uint64_t serverInstance = 0;
+    // SNAPSHOT only: relayed events above the request's ackedEventSequence,
+    // oldest first.
     std::vector<RelayedEvent> events;
 };
 
@@ -150,7 +155,8 @@ std::string rewriteTcpEndpointHost(const std::string& endpoint, const std::strin
 // sessionEndpoint is the private REQ/REP address for this client after JOIN.
 // Pass empty for in-process / single-socket tests.
 Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot,
-                      const std::string& sessionEndpoint = {}, bool resumed = false);
+                      const std::string& sessionEndpoint = {}, std::uint64_t acceptedClientSequence = 0,
+                      std::uint64_t serverInstance = 0);
 Message encodeSnapshot(const WorldSnapshot& snapshot, std::uint64_t acceptedClientSequence = 0,
                        const std::vector<RelayedEvent>& events = {});
 Message encodeWorldState(const WorldStateSnapshot& snapshot);

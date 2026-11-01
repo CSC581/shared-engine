@@ -302,16 +302,21 @@ bool rejoiningKeepsTheOutboxAndSequences()
     Network::NetworkServer server(clock, serverConfig());
     TestPlayer a{server, token('a')};
     TestPlayer b{server, token('b')};
-    bool passed = expect(!a.join().resumed && !b.join().resumed, "a first JOIN is not a resume");
+    const Network::Reply firstA = a.join();
+    const Network::Reply firstB = b.join();
+    bool passed = expect(firstA.acceptedClientSequence == 0 && firstA.serverInstance != 0 &&
+                             firstB.serverInstance == firstA.serverInstance,
+                         "a first WELCOME has nothing accepted and names the server instance");
     a.send(outgoing(1, 2));
 
     const Network::PlayerId oldId = b.id;
     const Network::Reply welcome = b.join();
-    passed &= expect(welcome.type == Network::ReplyType::Welcome && welcome.resumed && b.id == oldId,
-                     "a JOIN with a live token resumes the same player");
+    passed &= expect(welcome.type == Network::ReplyType::Welcome && b.id == oldId &&
+                         welcome.serverInstance == firstA.serverInstance,
+                     "a JOIN with a live token resumes the same player on the same instance");
     passed &= expect(numbers(b.send({}).events) == std::vector<std::int64_t>{1, 2},
                      "the outbox survives the rejoin");
-    a.join();
+    passed &= expect(a.join().acceptedClientSequence == 2, "a resumed WELCOME says what was accepted");
     passed &= expect(a.send(outgoing(1, 3)).acceptedClientSequence == 3 &&
                          numbers(b.send({}).events) == std::vector<std::int64_t>{1, 2, 3},
                      "the sender's accepted sequence survives its rejoin too");
@@ -320,10 +325,22 @@ bool rejoiningKeepsTheOutboxAndSequences()
     clock.advance(serverConfig().inactivityTimeoutTics);
     server.update();
     const Network::Reply fresh = a.join();
-    passed &= expect(fresh.type == Network::ReplyType::Welcome && !fresh.resumed && a.id != oldId,
-                     "a JOIN after a timeout is a new player");
+    passed &= expect(fresh.type == Network::ReplyType::Welcome && fresh.acceptedClientSequence == 0 &&
+                         a.id != oldId && fresh.serverInstance == firstA.serverInstance,
+                     "a JOIN after a timeout is a new player with nothing accepted");
+    // Its WELCOME was lost, so the client joins again: same new player, and
+    // still nothing accepted, so the client renumbers either way.
+    const Network::PlayerId newId = a.id;
+    const Network::Reply retried = a.join();
+    passed &= expect(retried.acceptedClientSequence == 0 && a.id == newId,
+                     "a retried JOIN for the new player still reports nothing accepted");
     passed &= expect(a.send(outgoing(1, 1)).acceptedClientSequence == 1,
                      "a new player numbers its events from 1 again");
+
+    Network::NetworkServer restarted(clock, serverConfig());
+    TestPlayer c{restarted, token('c')};
+    passed &= expect(c.join().serverInstance != firstA.serverInstance,
+                     "another server (a restart) has another instance");
     return passed;
 }
 
@@ -432,19 +449,27 @@ bool bothFormatsCarryEventsAndAcks()
                          deltaReply.reply.acceptedClientSequence == 5 && sameEvents(reply.events, deltaReply.reply.events),
                      "a snapshot delta carries acceptance and events too: " + error);
 
-    for (const bool resumed : {false, true}) {
-        Network::Reply welcome;
-        welcome.type = Network::ReplyType::Welcome;
-        welcome.playerId = 4;
-        welcome.resumed = resumed;
-        Network::Reply decodedText;
-        Network::Reply decodedBinary;
-        passed &= expect(Network::decodeReply(Network::encodeReply(welcome), decodedText, error) &&
-                             decodedText.resumed == resumed &&
-                             Network::decodeBinaryReply(Network::encodeBinaryReply(welcome), decodedBinary, error) &&
-                             decodedBinary.resumed == resumed,
-                         "WELCOME carries whether the player was resumed: " + error);
-    }
+    Network::Reply welcome;
+    welcome.type = Network::ReplyType::Welcome;
+    welcome.playerId = 4;
+    welcome.acceptedClientSequence = 17;
+    welcome.serverInstance = 0xFEDCBA9876543210ULL;
+    Network::Reply decodedText;
+    Network::Reply decodedBinary;
+    Network::BinaryReplyEnvelope deltaWelcome;
+    deltaWelcome.kind = Network::BinaryReplyKind::DeltaWelcome;
+    deltaWelcome.reply = welcome;
+    Network::BinaryReplyEnvelope decodedDelta;
+    passed &= expect(Network::decodeReply(Network::encodeReply(welcome), decodedText, error) &&
+                         decodedText.acceptedClientSequence == 17 &&
+                         decodedText.serverInstance == welcome.serverInstance &&
+                         Network::decodeBinaryReply(Network::encodeBinaryReply(welcome), decodedBinary, error) &&
+                         decodedBinary.acceptedClientSequence == 17 &&
+                         decodedBinary.serverInstance == welcome.serverInstance &&
+                         Network::decodeBinaryReply(Network::encodeBinaryReply(deltaWelcome), decodedDelta, error) &&
+                         decodedDelta.reply.acceptedClientSequence == 17 &&
+                         decodedDelta.reply.serverInstance == welcome.serverInstance,
+                     "WELCOME carries what was accepted and the server instance in every format: " + error);
     return passed;
 }
 
@@ -479,17 +504,20 @@ bool decodersRejectBrokenEventFields()
     Network::Reply welcome;
     welcome.type = Network::ReplyType::Welcome;
     welcome.playerId = 4;
-    Network::Message badFlag = Network::encodeReply(welcome);
-    badFlag.back() = "2";
-    passed &= expect(!Network::decodeReply(badFlag, reply, error), "a WELCOME resumed flag must be 0 or 1");
+    Network::Message badInstance = Network::encodeReply(welcome);
+    badInstance.back() = "x";
+    passed &= expect(!Network::decodeReply(badInstance, reply, error), "a malformed server instance is refused");
+    Network::Message shortWelcome = Network::encodeReply(welcome);
+    shortWelcome.pop_back();
+    passed &= expect(!Network::decodeReply(shortWelcome, reply, error),
+                     "a WELCOME without its server instance is refused");
 
     const Network::BinaryMessage bytes = Network::encodeBinaryReply(snapshotWithEvents());
     passed &= expect(!Network::decodeBinaryReply(bytes.substr(0, bytes.size() - 1), reply, error),
                      "a truncated binary SNAPSHOT is refused");
-    Network::BinaryMessage binaryWelcome = Network::encodeBinaryReply(welcome);
-    binaryWelcome.back() = 2;
-    passed &= expect(!Network::decodeBinaryReply(binaryWelcome, reply, error),
-                     "a binary WELCOME resumed flag must be 0 or 1");
+    const Network::BinaryMessage binaryWelcome = Network::encodeBinaryReply(welcome);
+    passed &= expect(!Network::decodeBinaryReply(binaryWelcome.substr(0, binaryWelcome.size() - 1), reply, error),
+                     "a truncated binary WELCOME is refused");
 
     // Every shorter prefix of a binary message carrying events is refused.
     Network::BinaryRequestEnvelope deltaRequest;
@@ -568,12 +596,13 @@ bool settle(Network::NetworkClient& client)
         std::chrono::milliseconds(2000));
 }
 
-Network::Reply welcome(Network::PlayerId id, bool resumed)
+Network::Reply welcome(Network::PlayerId id, std::uint64_t accepted = 0, std::uint64_t instance = 1)
 {
     Network::Reply reply;
     reply.type = Network::ReplyType::Welcome;
     reply.playerId = id;
-    reply.resumed = resumed;
+    reply.acceptedClientSequence = accepted;
+    reply.serverInstance = instance;
     return reply;
 }
 
@@ -612,7 +641,7 @@ bool clientResendsUntilAcceptedAndHandlesEachEventOnce()
 
     Network::Request request;
     bool passed = expect(server.receive(request) && request.type == Network::RequestType::Join, "client joins");
-    server.reply(welcome(5, false));
+    server.reply(welcome(5));
     passed &= expect(settle(client) && client.state() == Network::ConnectionState::Connected, "client connects");
 
     client.submitPosition(1.0F, 1.0F);
@@ -646,18 +675,39 @@ bool clientResendsUntilAcceptedAndHandlesEachEventOnce()
     return passed;
 }
 
+// After a rejoin the client follows the WELCOME: it drops what the server
+// accepted, numbers the rest on from there, and forgets relayed sequence
+// numbers only when the server instance changed.
 bool clientKeepsOrRenumbersEventsOnRejoin()
 {
+    struct Case {
+        const char* label;
+        Network::Reply welcome;
+        std::vector<std::uint64_t> resent;
+        std::uint64_t ack;
+        std::uint64_t accepted;
+        std::uint64_t relayed;
+        bool handled;
+    };
+    const Case cases[] = {
+        // Same player: numbers and acknowledgement carry on; relayed 2 is old.
+        {"resumed: ", welcome(5, 1, 1), {2, 3}, 8, 3, 2, false},
+        // New player on the same server, or a retried JOIN after a lost
+        // WELCOME: renumbered, but the same server's sequence numbers stand.
+        {"new player, same server: ", welcome(6, 0, 1), {1, 2}, 8, 2, 9, true},
+        // Restarted server: renumbered, and its numbering starts again.
+        {"restarted server: ", welcome(6, 0, 2), {1, 2}, 0, 2, 2, true},
+    };
     bool passed = true;
-    for (const bool resumed : {true, false}) {
-        const std::string label = resumed ? "resumed: " : "new player: ";
+    for (const Case& test : cases) {
+        const std::string label = test.label;
         ScriptedServer server;
         ManualClock clock;
         Network::NetworkClient client(clock, server.endpoint);
         client.start();
         Network::Request request;
         server.receive(request);
-        server.reply(welcome(5, false));
+        server.reply(welcome(5));
         settle(client);
 
         client.publishEvent(ping(1));
@@ -681,29 +731,19 @@ bool clientKeepsOrRenumbersEventsOnRejoin()
         client.poll();
         passed &= expect(server.receive(request) && request.type == Network::RequestType::Join,
                          label + "the client joins again with its token");
-        server.reply(welcome(resumed ? 5 : 6, resumed));
+        server.reply(test.welcome);
         settle(client);
 
         client.submitPosition(0.0F, 0.0F);
-        passed &= expect(server.receive(request), label + "the client sends a POSITION after rejoining");
-        if (resumed) {
-            passed &= expect(clientSequences(request) == std::vector<std::uint64_t>{2, 3} &&
-                                 request.ackedEventSequence == 8,
-                             label + "pending events keep their numbers and the acknowledgement stands");
-        } else {
-            passed &= expect(clientSequences(request) == std::vector<std::uint64_t>{1, 2} &&
-                                 request.ackedEventSequence == 0 && request.playerId == 6,
-                             label + "pending events are numbered from 1 under the new id");
-        }
-        server.reply(snapshotReply(1, resumed ? 3 : 2, {{2, 20}}));
+        passed &= expect(server.receive(request) && clientSequences(request) == test.resent &&
+                             request.ackedEventSequence == test.ack &&
+                             request.playerId == test.welcome.playerId,
+                         label + "waiting events are numbered and acknowledged as the WELCOME says");
+        server.reply(snapshotReply(1, test.accepted, {{test.relayed, 20}}));
         settle(client);
         const std::vector<Event> received = client.takeEvents();
-        if (resumed) {
-            passed &= expect(received.empty(), label + "an old sequence number is not handled twice");
-        } else {
-            passed &= expect(received.size() == 1 && received[0].getOr<std::int64_t>("n", 0) == 20,
-                             label + "a restarted server's sequence numbers are accepted");
-        }
+        passed &= expect(received.size() == (test.handled ? 1U : 0U),
+                         label + "relayed events are handled once, by the right numbering");
         passed &= expect(client.pendingEvents() == 0, label + "everything was accepted in the end");
     }
     return passed;
@@ -754,7 +794,7 @@ bool fullClientQueueDropsTheOldestUnsentEvents()
     client.start();
     Network::Request request;
     server.receive(request);
-    server.reply(welcome(5, false));
+    server.reply(welcome(5));
     settle(client);
     client.submitPosition(0.0F, 0.0F);
     passed &= expect(server.receive(request) && clientSequences(request) == sequenceRange(1, 64) &&
@@ -791,7 +831,7 @@ bool clientIncomingQueueIsCapped()
     client.start();
     Network::Request request;
     server.receive(request);
-    server.reply(welcome(5, false));
+    server.reply(welcome(5));
     settle(client);
 
     std::uint64_t sequence = 0;

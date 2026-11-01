@@ -135,7 +135,9 @@ bool replyRoundTripsAndGoldenBytes()
     welcome.reply.snapshot.serverTick = 2;
     const std::string encodedWelcome = Network::encodeBinaryReply(welcome);
     passed &= expect(hex(encodedWelcome) ==
-                         "53454e47020007860000000100000000000000000002000000000000000000",
+                         "53454e470200078600000001000000000000000000020000000000000000"
+                         // Accepted client sequence 0, then server instance 0.
+                         "00000000000000000000000000000000",
                      "delta WELCOME golden bytes should remain stable");
 
     Network::BinaryReplyEnvelope decoded;

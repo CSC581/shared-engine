@@ -170,10 +170,14 @@ recognised by its number and not relayed twice. The `SNAPSHOT` reply (or
 property delta) says which events were accepted and carries up to 64 outbox
 events the client has not acknowledged. So each event reaches every other
 client once, in the same order everywhere, even when a request or reply is
-lost. A rejoin with the same session token keeps all of this (the `WELCOME`
-says whether the player was resumed); a client the server timed out starts
-again as a new player, renumbers its waiting events from 1 and loses what was
-relayed while it was gone. Each side holds at most 256 waiting events per
+lost. Every `WELCOME` says how many of the player's events the server has
+accepted and which server instance (a random number picked at startup) sent
+it. The client drops its events up to that number and numbers the rest on
+from there, and forgets the relayed numbers it handled only if the instance
+changed. So a rejoin with the same session token loses and repeats nothing,
+and a client the server timed out (or whose server restarted) starts again
+as a new player, numbering from 1 and losing what was relayed while it was
+gone. This holds even if a `WELCOME` is lost and the `JOIN` is retried. Each side holds at most 256 waiting events per
 player and drops the oldest beyond that, so a long outage cannot end in a
 flood of stale events. With send pacing on, a client that has events waiting
 resends its last pose to carry them instead of waiting for the next paced
