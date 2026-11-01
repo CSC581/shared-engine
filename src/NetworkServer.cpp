@@ -6,6 +6,7 @@
 #include "WireFormat.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <random>
@@ -23,12 +24,16 @@ float pathLengthOf(const PlatformPath& path)
 }
 
 // Tells a client that this server is not the one it knew before a restart.
+// The start time is mixed in because some standard libraries implement
+// std::random_device as a fixed sequence, which would repeat after a restart.
 std::uint64_t makeInstance()
 {
     std::random_device random;
+    const auto started = static_cast<std::uint64_t>(
+        std::chrono::system_clock::now().time_since_epoch().count());
     std::uint64_t instance = 0;
     while (instance == 0) {
-        instance = (static_cast<std::uint64_t>(random()) << 32U) ^ static_cast<std::uint64_t>(random());
+        instance = (static_cast<std::uint64_t>(random()) << 32U) ^ static_cast<std::uint64_t>(random()) ^ started;
     }
     return instance;
 }

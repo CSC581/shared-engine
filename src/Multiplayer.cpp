@@ -258,11 +258,10 @@ private:
                 client_.publishEvent(event);
             }
             if (pose) {
-                client_.submitPosition(pose->x, pose->y, pose->data);
                 lastPose_ = std::move(pose);
-            } else {
-                carryWaitingEvents();
+                poseUnsent_ = true;
             }
+            sendLastPose();
             publishIfChanged();
             std::this_thread::sleep_for(networkInterval);
         }
@@ -283,10 +282,12 @@ private:
         if (lastPublished) {
             lastPose_ = std::move(lastPublished);
         }
+        // Only events are worth delaying LEAVE for; the pose just carries them.
+        poseUnsent_ = false;
         for (int i = 0; client_.state() == Network::ConnectionState::Connected; ++i) {
             const bool eventsWaiting = lastPose_ && client_.pendingEvents() > 0;
             if (i >= (eventsWaiting ? leaveEventPolls : leaveGracePolls) ||
-                (!client_.awaitingReply() && !carryWaitingEvents())) {
+                (!client_.awaitingReply() && !sendLastPose())) {
                 break;
             }
             std::this_thread::sleep_for(networkInterval);
@@ -296,18 +297,20 @@ private:
         publishIfChanged();
     }
 
-    // Events travel on POSITION requests, so with send pacing on (or paused,
-    // between heartbeats) they would wait for the next paced pose. Resending
-    // the last pose carries them now; the server already has it, and REQ
-    // allows one request per round trip. Returns whether events are waiting
-    // that a pose can carry.
-    bool carryWaitingEvents()
+    // Sends the newest pose once the client is free: a pose the game handed
+    // over while a request was in flight (REQ allows one at a time), or the
+    // last pose again to carry waiting events. Events travel on POSITION
+    // requests, so with send pacing on (or paused, between heartbeats) they
+    // would otherwise wait for the next paced pose; the server already has
+    // that pose. Returns whether a pose or events are still waiting to go.
+    bool sendLastPose()
     {
-        if (!lastPose_ || client_.pendingEvents() == 0) {
+        if (!lastPose_ || (!poseUnsent_ && client_.pendingEvents() == 0)) {
             return false;
         }
         if (!client_.awaitingReply()) {
             client_.submitPosition(lastPose_->x, lastPose_->y, lastPose_->data);
+            poseUnsent_ = false;
         }
         return true;
     }
@@ -351,8 +354,10 @@ private:
     Network::ConnectionState lastPublishedState_ = Network::ConnectionState::Disconnected;
     Network::PlayerId lastPublishedPlayerId_ = 0;
     std::string lastPublishedError_;
-    // The last pose handed to the client, resent to carry waiting events.
+    // The newest pose from the game, and whether it still has to go out. It
+    // is resent to carry waiting events.
     std::optional<Pose> lastPose_;
+    bool poseUnsent_ = false;
 
     // The mailbox: shared by both threads, guarded by mutex_.
     std::mutex mutex_;

@@ -1302,6 +1302,52 @@ bool leaveUsesAPosePublishedTheSameFrame()
     return passed;
 }
 
+// With send pacing, a resend that carries events can still be in flight when
+// the game hands over its next paced pose. That pose must go out once the
+// reply arrives, not wait a whole send interval.
+bool aPoseArrivingDuringACarryIsStillSent()
+{
+    ScriptedServer server;
+    RealTimeClock realTime;
+    ManualClock gameTime;
+    Multiplayer::Config config;
+    config.serverEndpoint = server.endpoint;
+    config.sendIntervalGameTics = kGameTicsPerSecond;
+    config.heartbeatIntervalRealTics = 1000 * kNsPerSec;
+    std::unique_ptr<Multiplayer::Session> session = Multiplayer::Session::open(config, realTime, &gameTime);
+
+    Network::Request request;
+    bool passed = expect(server.receive(request) && request.type == Network::RequestType::Join, "session joins");
+    server.reply(welcome(5));
+    passed &= expect(waitFor(
+                         [&] {
+                             session->update();
+                             return session->state() == Multiplayer::State::Ready;
+                         },
+                         std::chrono::milliseconds(2000)),
+                     "session connects");
+
+    session->publishLocalPlayer(10.0F, 0.0F);
+    passed &= expect(server.receive(request) && request.position.x == 10.0F, "the first paced pose goes out");
+    server.reply(snapshotReply(1, 0));
+
+    // An event with no paced pose due: the last pose is resent to carry it,
+    // and the test holds that request unanswered.
+    session->publishEvent(ping(1));
+    passed &= expect(server.receive(request) && request.position.x == 10.0F && request.events.size() == 1,
+                     "the last pose is resent to carry the event");
+    gameTime.advance(kGameTicsPerSecond);
+    session->update();
+    session->publishLocalPlayer(20.0F, 0.0F);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    server.reply(snapshotReply(2, 1));
+
+    passed &= expect(server.receive(request) && request.type == Network::RequestType::Position &&
+                         request.position.x == 20.0F && request.events.empty(),
+                     "the pose handed over during the resend goes out as soon as the reply arrives");
+    return passed;
+}
+
 // The whole path a game uses: EventManager -> bridge -> Session -> host ->
 // Session -> bridge -> EventManager, with a text and a binary session.
 bool sessionsShareEventsThroughBridges()
@@ -1399,6 +1445,7 @@ int main()
     passed &= bridgeSharesOnlyListedLocalEvents();
     passed &= bridgeRefusesWhatCannotWork();
     passed &= pacedSessionSendsEventsWithoutWaiting();
+    passed &= aPoseArrivingDuringACarryIsStillSent();
     passed &= sessionKeepsOnlyTheLatestFrameOfEvents();
     passed &= leaveSendsEventsPublishedJustBefore();
     passed &= leaveUsesAPosePublishedTheSameFrame();
