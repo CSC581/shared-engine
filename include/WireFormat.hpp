@@ -58,9 +58,16 @@ inline bool parseSigned(const std::string& text, std::int64_t& value)
     }
     const bool negative = text.front() == '-';
     std::uint64_t magnitude = 0;
-    if (!parseUnsigned(negative ? text.substr(1) : text, magnitude) ||
-        magnitude > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+    // The negative range is one larger than the positive one: INT64_MIN's
+    // magnitude is INT64_MAX + 1, and it must not be negated as an int64_t.
+    const std::uint64_t largest = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) +
+                                  (negative ? 1U : 0U);
+    if (!parseUnsigned(negative ? text.substr(1) : text, magnitude) || magnitude > largest) {
         return false;
+    }
+    if (negative && magnitude == largest) {
+        value = std::numeric_limits<std::int64_t>::min();
+        return true;
     }
     value = negative ? -static_cast<std::int64_t>(magnitude) : static_cast<std::int64_t>(magnitude);
     return true;
@@ -96,6 +103,88 @@ inline std::string formatFloat(float value)
     output << std::setprecision(std::numeric_limits<double>::max_digits10) << static_cast<double>(value);
     return output.str();
 }
+
+// True when `text` has the shape formatDouble writes: an optional '-', digits
+// with an optional fraction, then an optional exponent. Rejects '+' prefixes,
+// spaces, hex, "inf" and "nan" before the stream sees them, because a stream
+// would accept some of those. `nonZero` reports a non-zero mantissa digit, so
+// a value that underflowed to zero can be told apart from a written zero.
+inline bool scanDecimal(const std::string& text, bool& nonZero)
+{
+    const auto isDigit = [&text](std::size_t i) { return i < text.size() && text[i] >= '0' && text[i] <= '9'; };
+    std::size_t i = 0;
+    std::size_t digits = 0;
+    nonZero = false;
+    if (i < text.size() && text[i] == '-') {
+        ++i;
+    }
+    for (; isDigit(i); ++i, ++digits) {
+        nonZero |= text[i] != '0';
+    }
+    if (i < text.size() && text[i] == '.') {
+        for (++i; isDigit(i); ++i, ++digits) {
+            nonZero |= text[i] != '0';
+        }
+    }
+    if (digits == 0) {
+        return false;
+    }
+    if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
+        ++i;
+        if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+            ++i;
+        }
+        std::size_t exponentDigits = 0;
+        for (; isDigit(i); ++i, ++exponentDigits) {
+        }
+        if (exponentDigits == 0) {
+            return false;
+        }
+    }
+    return i == text.size();
+}
+
+// Parses a double written by formatDouble. Accepts zero (either sign) and
+// finite normal values only. Rejects anything that underflowed to zero, and
+// subnormal values, which some standard libraries cannot read back from text,
+// so text and binary encodings always agree on what a value is.
+inline bool parseDouble(const std::string& text, double& value)
+{
+    bool nonZero = false;
+    if (!scanDecimal(text, nonZero)) {
+        return false;
+    }
+    std::istringstream input(text);
+    input.imbue(std::locale::classic());
+    double parsed = 0.0;
+    input >> std::noskipws >> parsed;
+    if (input.fail() || !input.eof() || !std::isfinite(parsed)) {
+        return false;
+    }
+    if (parsed == 0.0 ? nonZero : !std::isnormal(parsed)) {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
+// Writes a double with enough digits to read back bit-identically.
+inline std::string formatDouble(double value)
+{
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
+    return output.str();
+}
+
+// Limits on event lists (EventCodec.hpp). A list arrives from another machine,
+// so its size is bounded before anything is allocated for it.
+constexpr std::size_t maxEventsPerMessage = 64;
+constexpr std::size_t maxEventArgs = 16;
+// The event type and every argument name.
+constexpr std::size_t maxEventNameLength = 64;
+// Each text argument value; the same cap as a player's own data.
+constexpr std::size_t maxEventTextLength = 512;
 
 // Limits on the text a game controls. These are not style rules: a name
 // arrives from another machine and is drawn on a screen, so it is capped and

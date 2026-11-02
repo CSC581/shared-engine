@@ -13,7 +13,9 @@ using EventValue = std::variant<bool, std::int64_t, double, std::string>;
 namespace Events {
 // Stable names shared by the engine and games. World raises Collision and
 // Engine raises Input. Games raise Death {object, cause} and Spawn, either
-// {object, x, y} to respawn or {kind, x, y} to create.
+// {object, x, y} to respawn or {kind, x, y, request?} to create. A creator
+// given a `request` number replies with "SpawnedEvent" {request, object}, so
+// whoever asked learns which object its request made.
 constexpr const char* Collision = "CollisionEvent";
 constexpr const char* Death = "DeathEvent";
 constexpr const char* Spawn = "SpawnEvent";

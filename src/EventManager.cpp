@@ -1,6 +1,7 @@
 #include "EventManager.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <exception>
 #include <limits>
 #include <stdexcept>
@@ -51,6 +52,10 @@ EventManager::SubscriptionId EventManager::subscribeAll(Handler handler)
 
 void EventManager::unsubscribe(SubscriptionId id)
 {
+    // Owning thread only, like subscribe(). Checked with assert rather than
+    // requireOwner(): EventListener calls this from its destructor, where a
+    // throw would end the program. Debug builds still catch a wrong thread.
+    assert(std::this_thread::get_id() == owner_ && "EventManager::unsubscribe requires the owning thread");
     const auto it = subscriptions_.find(id);
     if (it == subscriptions_.end()) {
         return;

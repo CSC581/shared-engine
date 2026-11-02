@@ -70,6 +70,7 @@ target_link_libraries(engine-threads PUBLIC Threads::Threads)
 # the window engine.
 add_library(network-core STATIC
     src/BinaryNetworkProtocol.cpp
+    src/EventCodec.cpp
     src/NetworkProtocol.cpp
     src/SnapshotDelta.cpp
     src/NetworkServer.cpp
@@ -81,7 +82,8 @@ add_library(network-core STATIC
 target_include_directories(network-core PUBLIC include)
 # engine-geometry for PathMover::pingPong, the bounce rule the server's moving
 # platforms share with the PathMover component.
-target_link_libraries(network-core PUBLIC engine-time engine-geometry cppzmq-static)
+# engine-events for EventCodec, which encodes Event lists in both formats.
+target_link_libraries(network-core PUBLIC engine-time engine-events engine-geometry cppzmq-static)
 
 # SDL-free peer-to-peer module (Section 5): peer protocol and mesh transport.
 # A separate library from network-core rather than an addition to it — the two
@@ -157,6 +159,12 @@ add_test(NAME event-manager-tests COMMAND event-manager-tests)
 add_executable(event-integration-tests tests/EventIntegrationTests.cpp)
 target_link_libraries(event-integration-tests PRIVATE engine)
 add_test(NAME event-integration-tests COMMAND event-integration-tests)
+
+# Milestone 4 Phase 3: event lists in the text and binary formats, their
+# shared validation rules, and decoding of truncated and corrupted input.
+add_executable(event-codec-tests tests/EventCodecTests.cpp)
+target_link_libraries(event-codec-tests PRIVATE network-core)
+add_test(NAME event-codec-tests COMMAND event-codec-tests)
 
 # renderWorld() draw order (Renderable::layer), checked on pixels through SDL's
 # software renderer, so it needs no window.
