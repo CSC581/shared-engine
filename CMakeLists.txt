@@ -127,6 +127,12 @@ target_include_directories(engine-geometry PUBLIC include)
 # Components update on a FrameTime, so the clocks come with the object model.
 target_link_libraries(engine-geometry PUBLIC engine-time engine-events)
 
+# Milestone 4, 1.3: recording frames and events, and playing them back in a
+# separate World. SDL-free, so it is tested headless like the object model.
+add_library(engine-replay STATIC src/ReplaySystem.cpp)
+target_include_directories(engine-replay PUBLIC include)
+target_link_libraries(engine-replay PUBLIC engine-geometry)
+
 # SDL-dependent engine core (window, renderer, main loop, input). Publicly
 # links engine-geometry and SDL3 so any target linking `engine` gets both
 # transitively with a single target_link_libraries call.
@@ -136,7 +142,7 @@ add_library(engine STATIC
 )
 
 target_include_directories(engine PUBLIC include)
-target_link_libraries(engine PUBLIC SDL3::SDL3 engine-geometry engine-threads)
+target_link_libraries(engine PUBLIC SDL3::SDL3 engine-geometry engine-threads engine-replay)
 
 enable_testing()
 
@@ -160,6 +166,10 @@ add_test(NAME event-manager-tests COMMAND event-manager-tests)
 add_executable(event-integration-tests tests/EventIntegrationTests.cpp)
 target_link_libraries(event-integration-tests PRIVATE engine)
 add_test(NAME event-integration-tests COMMAND event-integration-tests)
+
+add_executable(replay-tests tests/ReplayTests.cpp)
+target_link_libraries(replay-tests PRIVATE engine-replay)
+add_test(NAME replay-tests COMMAND replay-tests)
 
 # Milestone 4 Phase 3: event lists in the text and binary formats, their
 # shared validation rules, and decoding of truncated and corrupted input.
@@ -333,6 +343,11 @@ target_link_libraries(multiplayer-demo PRIVATE engine multiplayer)
 # engine.events().
 add_executable(events-demo sandbox/EventsDemo.cpp)
 target_link_libraries(events-demo PRIVATE engine)
+
+# Milestone 4 Phase 5: record, play back at 0.5x/1x/2x and return, all through
+# replay events, in a level whose camera scrolls.
+add_executable(replay-demo sandbox/ReplayDemo.cpp)
+target_link_libraries(replay-demo PRIVATE engine)
 
 # Headless Part 1C comparison. It uses the production client, host, ZeroMQ
 # transport and moving-platform world; no SDL or synthetic codec loop stands
