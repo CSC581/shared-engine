@@ -16,7 +16,7 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 | Part | Milestone Requirements | What we built |
 | ---- | ---------------------- | ------------- |
 | 1.1 | An event manager that queues events with priorities, uses the `Timeline` for timestamps, and handles collision, death, spawn and input events instead of SDL events | An `EventManager` owned by the engine. Raising an event only queues it; the engine hands out queued events twice per frame, ordered by game-time delivery, then priority, then raise order. The engine raises `InputEvent` (keys and chords) and `World` raises `CollisionEvent`; games raise `DeathEvent` and `SpawnEvent` |
-| 1.2 | Events shared across the network, with event data serialized in a protocol of our choice | `EventCodec` turns a list of events into our **text** or **binary** network format and back, with the same rules in both. Client events carry no sender id; the server adds it when it passes an event on, so nobody can pretend to be another player |
+| 1.2 | Events shared across the network, with event data serialized in a protocol of our choice | `EventCodec` turns a list of events into our **text** or **binary** network format and back, with the same rules in both. Events ride on the position updates clients already send. The server numbers each event, adds the sender's id and passes it to every other player exactly once, in the same order everywhere. A game picks which event types to share with `NetworkEventBridge`. Client-server mode only |
 
 ## Files for this milestone
 
@@ -29,9 +29,16 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 ├── include/World.hpp                       src/World.cpp           collision events
 ├── include/Engine.hpp                      src/Engine.cpp          engine.events(), two dispatches per frame
 └── sandbox/EventsDemo.cpp                                          events-demo
-1.2 Event encoding
+1.2 Networked events
 ├── include/EventCodec.hpp                  src/EventCodec.cpp      events in the text and binary formats
-└── include/WireFormat.hpp                                          exact decimal text, event limits
+├── include/WireFormat.hpp                                          exact decimal text, event limits
+├── include/NetworkProtocol.hpp             src/NetworkProtocol.cpp events in requests and replies (text)
+├── include/BinaryNetworkProtocol.hpp       src/BinaryNetworkProtocol.cpp   (binary)
+├── include/NetworkServer.hpp               src/NetworkServer.cpp   numbering, relaying, outboxes
+├── include/NetworkClient.hpp               src/NetworkClient.cpp   pending events, resends, acknowledgements
+├── include/Multiplayer.hpp                 src/Multiplayer.cpp     Session::publishEvent / takeRemoteEvents
+├── include/NetworkEventBridge.hpp          src/NetworkEventBridge.cpp      shared types <-> EventManager
+└── sandbox/MultiplayerDemo.cpp                                     Space pings every window
 ```
 
 ## API reference
@@ -82,6 +89,24 @@ The input polling and collider callbacks from Milestone 3 still work alongside t
 | Text values | 512 bytes |
 | Decimals | Must be finite. Extremely small ones (below 2.2e-308) are sent as 0 |
 
+### Sharing events over the network (`NetworkEventBridge.hpp`)
+
+| Function | Meaning |
+| -------- | ------- |
+| `NetworkEventBridge(engine.events(), session, {"DeathEvent", ...})` | Shares the listed event types. Local events of those types are sent to every other player; events of other types never leave or enter. Throws in peer-to-peer mode |
+| `bridge.apply()` | Raises the events other players sent. Call once a frame after `session.update()` |
+| `session.publishEvent(event)`, `session.takeRemoteEvents()` | What the bridge uses underneath, for a game that wants to do it by hand. `takeRemoteEvents()` returns the events from the latest `update()`; ones not taken by the next `update()` are dropped |
+
+A remote event has `origin` set to the sender's player id and is raised with this machine's game time; the sender's time is kept as the value `sentAt`. The sender handles its own event locally at once and never gets it back.
+
+| Rule | Value |
+| ---- | ----- |
+| Delivery | Exactly once, in the server's order. Lost requests and replies are resent, and repeats are dropped by number |
+| Events per request or reply | 64; more wait for the next one |
+| Events waiting at the server for one player | 256 (`ServerConfig::eventOutboxLimit`); a player further behind loses its oldest |
+| Events waiting at a client | 256 each way; a full queue drops its oldest unsent (or untaken) event |
+| Leaving | `leave()` sends events published just before it, waiting at most about 0.2 s |
+
 ## Design decisions
 
 - **Raising only queues.** Handlers never run inside a collision pass or a loop over objects, so a handler can safely create or destroy objects.
@@ -89,8 +114,11 @@ The input polling and collider callbacks from Milestone 3 still work alongside t
 - **Chains finish in one frame, but cannot run forever.** Events raised by handlers are handled in later rounds of the same dispatch, up to 8 rounds and 1,000 events.
 - **Timestamps use game time,** so a delayed event, like a respawn, waits while the game is paused.
 - **The server decides who sent an event.** Clients never send their own id, so they cannot fake another player's events.
+- **Each client detects, the server orders.** A client raises its own collisions and deaths locally without waiting; the server gives shared events one order and relays them, without reading them.
+- **Events ride on position updates.** No new messages or round trips. With send pacing, a client with events waiting resends its last position so they go at once.
+- **Only listed types cross the network,** in both directions, so another player cannot raise an `InputEvent` on your machine.
 
-**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event.
+**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events.
 
 <div style="page-break-before: always"></div>
 

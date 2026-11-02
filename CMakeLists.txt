@@ -103,6 +103,7 @@ target_link_libraries(peer-core PUBLIC cppzmq-static Threads::Threads)
 # interface twice, once on each; a game links this instead of either.
 add_library(multiplayer STATIC
     src/Multiplayer.cpp
+    src/NetworkEventBridge.cpp
     src/NetworkWorldSync.cpp
     src/SendPacer.cpp
 )
@@ -256,6 +257,14 @@ add_executable(network-world-sync-tests tests/NetworkWorldSyncTests.cpp)
 target_link_libraries(network-world-sync-tests PRIVATE multiplayer)
 
 add_test(NAME network-world-sync-tests COMMAND network-world-sync-tests)
+
+# Milestone 4, 1.2: events relayed through the server. Acceptance, acks,
+# outboxes and resume on a ManualClock; text, binary, mixed and property-delta
+# clients on a real host; and the bridge between a session and an EventManager.
+add_executable(network-event-tests tests/NetworkEventTests.cpp)
+target_link_libraries(network-event-tests PRIVATE multiplayer)
+
+add_test(NAME network-event-tests COMMAND network-event-tests)
 
 # Dear ImGui, for the timeline sandbox and nothing else. Fetched rather than
 # vendored as a submodule: it is a development tool for one target, not a

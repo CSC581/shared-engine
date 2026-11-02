@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Event.hpp"
 #include "NetworkDataFormat.hpp"
 #include "NetworkSnapshotStrategy.hpp"
 #include "TimeSource.hpp"
@@ -201,7 +202,10 @@ public:
     virtual void publishLocalPlayer(float x, float y, const std::string& data = {}) = 0;
 
     // Announce departure. Called by the destructor; call it earlier to leave
-    // without tearing the session down.
+    // without tearing the session down. In client-server mode, events
+    // published before it are sent first, waiting at most about 0.2 s for the
+    // server to accept them. A session that is reconnecting at that moment
+    // cannot send, so its waiting events are lost.
     virtual void leave() = 0;
 
     // This player's id, or 0 before the session is Ready.
@@ -234,6 +238,32 @@ public:
     virtual std::string status() const = 0;
 
     virtual Mode mode() const = 0;
+
+    // --- Events, client-server only. NetworkEventBridge connects these to a
+    // game's EventManager; most games use that rather than calling them. ---
+
+    // Sends an event to every other player through the server, in the same
+    // order on every client. Lost requests and replies are resent and repeats
+    // dropped, so each arrives once, including across a reconnect to a
+    // server that still holds this player. The sender does not get its own
+    // events back. Events travel with this player's position sends, so they
+    // need publishLocalPlayer() to have been called at least once.
+    //
+    // Events can still be lost: when more than 256 wait at this client, at
+    // the server for one receiver, or at a receiver that stops calling
+    // update() (the oldest go); when the server timed this player out; when
+    // leave() is called while reconnecting; and when published after
+    // leave(). None of these losses are counted here. Throws std::invalid_argument if the event
+    // breaks a rule of the wire format (validateEvent in EventCodec.hpp), and
+    // std::logic_error in peer-to-peer mode, which carries no events.
+    virtual void publishEvent(const Event& event) = 0;
+
+    // Other players' events delivered by the last update(), oldest first;
+    // each is returned once. Like remotePlayers(), this is the latest frame
+    // only: events not taken before the next update() are dropped, so a game
+    // that never takes them does not pile them up. origin is the sender's
+    // player id. Always empty in peer-to-peer mode.
+    virtual std::vector<Event> takeRemoteEvents() = 0;
 
 protected:
     Session() = default;

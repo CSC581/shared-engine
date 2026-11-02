@@ -1,10 +1,15 @@
 #include "NetworkServer.hpp"
 
 #include "Components.hpp"
+#include "EventCodec.hpp"
 #include "FrameTime.hpp"
+#include "WireFormat.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <random>
 #include <stdexcept>
 #include <utility>
 
@@ -18,13 +23,29 @@ float pathLengthOf(const PlatformPath& path)
     return std::sqrt(dx * dx + dy * dy);
 }
 
+// Tells a client that this server is not the one it knew before a restart.
+// The start time is mixed in because some standard libraries implement
+// std::random_device as a fixed sequence, which would repeat after a restart.
+std::uint64_t makeInstance()
+{
+    std::random_device random;
+    const auto started = static_cast<std::uint64_t>(
+        std::chrono::system_clock::now().time_since_epoch().count());
+    std::uint64_t instance = 0;
+    while (instance == 0) {
+        instance = (static_cast<std::uint64_t>(random()) << 32U) ^ static_cast<std::uint64_t>(random()) ^ started;
+    }
+    return instance;
+}
+
 } // namespace
 
 NetworkServer::NetworkServer(const TimeSource& clock, ServerConfig config)
     : clock_(clock),
-      config_(std::move(config))
+      config_(std::move(config)),
+      instance_(makeInstance())
 {
-    if (config_.spawnPoints.empty() || config_.inactivityTimeoutTics <= 0) {
+    if (config_.spawnPoints.empty() || config_.inactivityTimeoutTics <= 0 || config_.eventOutboxLimit == 0) {
         throw std::invalid_argument("NetworkServer configuration is invalid");
     }
 
@@ -136,6 +157,8 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
                 reply.type = ReplyType::Welcome;
                 reply.playerId = existingPlayer->first;
                 reply.snapshot = buildSnapshot();
+                reply.acceptedClientSequence = existingPlayer->second.lastAcceptedEvent;
+                reply.serverInstance = instance_;
                 return reply;
             }
             playerIdsByToken_.erase(existingId);
@@ -166,6 +189,7 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
         reply.type = ReplyType::Welcome;
         reply.playerId = id;
         reply.snapshot = buildSnapshot();
+        reply.serverInstance = instance_;
         return reply;
     }
 
@@ -190,6 +214,29 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
         return errorReply("position sequence must increase");
     }
 
+    // Events at or below the last accepted one were resent before this
+    // player heard they were accepted, so they are dropped, not relayed again.
+    // Checked before anything changes, so a refused request changes nothing.
+    // The wire decoders already enforce the event rules; they are checked
+    // again here because handle(Request) can be called directly, and one bad
+    // event in an outbox would make every reply to that player fail.
+    std::string invalid;
+    if (!validateEvents(request.events, invalid)) {
+        return errorReply(invalid);
+    }
+    std::uint64_t lastAccepted = player->second.lastAcceptedEvent;
+    std::vector<Event> accepted;
+    for (OutgoingEvent& outgoing : request.events) {
+        if (outgoing.clientSequence <= lastAccepted) {
+            continue;
+        }
+        if (outgoing.clientSequence != lastAccepted + 1) {
+            return errorReply("event sequence skips an event");
+        }
+        accepted.push_back(std::move(outgoing.event));
+        ++lastAccepted;
+    }
+
     Transform& transform = *player->second.object->get<Transform>();
     transform.x = request.position.x;
     transform.y = request.position.y;
@@ -201,9 +248,27 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
     player->second.lastHeard = now;
     ++player->second.acceptedPositions;
     ++serverTick_;
+
+    for (Event& event : accepted) {
+        relayEvent(request.playerId, std::move(event));
+    }
+    ActivePlayer& sender = player->second;
+    sender.lastAcceptedEvent = lastAccepted;
+    sender.acceptedEvents += accepted.size();
+    auto& outbox = sender.outbox;
+    while (!outbox.empty() && outbox.front()->serverSequence <= request.ackedEventSequence) {
+        outbox.pop_front();
+    }
+
     Reply reply;
     reply.type = ReplyType::Snapshot;
     reply.snapshot = buildSnapshot();
+    reply.acceptedClientSequence = sender.lastAcceptedEvent;
+    const std::size_t count = std::min(outbox.size(), Net::maxEventsPerMessage);
+    reply.events.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        reply.events.push_back(*outbox[i]);
+    }
     return reply;
 }
 
@@ -231,7 +296,8 @@ std::vector<PlayerTraffic> NetworkServer::traffic() const
     std::vector<PlayerTraffic> result;
     result.reserve(players_.size());
     for (const auto& entry : players_) {
-        result.push_back({entry.first, entry.second.name, entry.second.acceptedPositions});
+        result.push_back({entry.first, entry.second.name, entry.second.acceptedPositions,
+                          entry.second.acceptedEvents, entry.second.droppedEvents});
     }
     std::sort(result.begin(), result.end(),
               [](const PlayerTraffic& a, const PlayerTraffic& b) { return a.id < b.id; });
@@ -258,6 +324,26 @@ void NetworkServer::removePlayer(std::unordered_map<PlayerId, ActivePlayer>::ite
     world_.flushDestroyed();
     playerIdsByToken_.erase(player->second.sessionToken);
     players_.erase(player);
+}
+
+void NetworkServer::relayEvent(PlayerId sender, Event event)
+{
+    RelayedEvent relayed;
+    relayed.serverSequence = nextEventSequence_++;
+    relayed.event = std::move(event);
+    relayed.event.origin = sender;
+    const auto shared = std::make_shared<const RelayedEvent>(std::move(relayed));
+    for (auto& entry : players_) {
+        if (entry.first == sender) {
+            continue;
+        }
+        auto& outbox = entry.second.outbox;
+        outbox.push_back(shared);
+        if (outbox.size() > config_.eventOutboxLimit) {
+            outbox.pop_front();
+            ++entry.second.droppedEvents;
+        }
+    }
 }
 
 void NetworkServer::advancePlatforms(std::int64_t now)

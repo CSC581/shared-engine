@@ -10,10 +10,10 @@
 // Big-endian fixed-width values in a byte string, for codecs that append to or
 // read from the middle of a message rather than owning a whole one.
 //
-// Private to the networking sources. The conventions match
-// BinaryNetworkProtocol.cpp (big-endian integers, IEEE-754 bit patterns,
-// u16-length strings), which keeps its own Writer/Reader for now so that the
-// working protocol is not touched while the event codec is new.
+// Private to the networking sources. Both the event codec and the binary
+// client-server protocol (whose Writer/Reader wrap these) use them, so there
+// is one copy of the conventions: big-endian integers, IEEE-754 bit patterns
+// and u16-length strings.
 //
 // Every get* reads at `at`, advances it only on success, and returns false
 // rather than reading past the end.

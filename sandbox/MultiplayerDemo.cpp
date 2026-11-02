@@ -19,14 +19,20 @@
 // including removing a player whose owner disconnects. World positions are
 // arena-local, the same space the network uses; the camera offsets the arena
 // onto the screen.
+//
+// In client-server mode, Space raises a "Ping" event. NetworkEventBridge
+// shares that type, so every window handles it and flashes the player who
+// pinged.
 
 #include "Components.hpp"
 #include "Endpoint.hpp"
 #include "Engine.hpp"
+#include "EventManager.hpp"
 #include "Game.hpp"
 #include "Input.hpp"
 #include "Multiplayer.hpp"
 #include "NetworkDemoConfig.hpp"
+#include "NetworkEventBridge.hpp"
 #include "NetworkServerHost.hpp"
 #include "NetworkWorldSync.hpp"
 #include "WireFormat.hpp"
@@ -37,6 +43,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -46,6 +53,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -54,10 +62,11 @@ namespace {
 // ---------------------------------------------------------------------------
 class MultiplayerDemo final : public Game {
 public:
-    MultiplayerDemo(std::unique_ptr<Multiplayer::Session> session, float spawnX, float spawnY,
-                    const TimeSource& realTime, double secondsUntilQuit)
+    MultiplayerDemo(std::unique_ptr<Multiplayer::Session> session, EventManager& events, float spawnX,
+                    float spawnY, const TimeSource& realTime, double secondsUntilQuit)
         : session_(std::move(session)),
           sync_(world_, makeRemotePlayer, makeRemotePlatform),
+          events_(events),
           realTime_(realTime),
           startedAt_(realTime.now()),
           secondsUntilQuit_(secondsUntilQuit)
@@ -71,7 +80,19 @@ public:
         local_->add<Renderable>(colorFor(1)).layer = playerLayer;
         local_->add<Behavior>([this](GameObject& self, const FrameTime& time) { steer(self, time); });
         local_->setActive(true);
+
+        // Peer-to-peer carries no events, so a ping there flashes only here.
+        if (session_->mode() == Multiplayer::Mode::ClientServer) {
+            bridge_ = std::make_unique<NetworkEventBridge>(events_, *session_, std::vector<std::string>{"Ping"});
+        }
+        pingSubscription_ = events_.subscribe("Ping", [this](const Event& event) {
+            const Multiplayer::PlayerId who = event.origin == 0 ? session_->localPlayerId() : event.origin;
+            flashUntil_[who] = realTime_.now() + flashTics;
+        });
     }
+
+    // engine.events() outlives the game, so the handler capturing `this` goes.
+    ~MultiplayerDemo() override { events_.unsubscribe(pingSubscription_); }
 
     void handleInput(Engine& engine) override
     {
@@ -87,6 +108,9 @@ public:
         }
         if (Input::isKeyJustPressed(SDL_SCANCODE_3)) {
             gameTime.setScale(2.0);
+        }
+        if (Input::isKeyJustPressed(SDL_SCANCODE_SPACE)) {
+            events_.raise(Event("Ping"));
         }
 
         horizontal_ = static_cast<int>(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D));
@@ -106,6 +130,11 @@ public:
         // that stopped being pumped would time out while the game sat still.
         session_->update();
         measureLatency();
+        // Other players' pings join the queue; the engine dispatches them
+        // after this update.
+        if (bridge_) {
+            bridge_->apply();
+        }
 
         // Remote players and platforms into the World, then one frame of it.
         sync_.apply(*session_);
@@ -114,7 +143,12 @@ public:
         Transform& body = *local_->get<Transform>();
         body.x = std::clamp(body.x, 0.0F, NetworkDemo::arenaWidth - NetworkDemo::playerSize);
         body.y = std::clamp(body.y, 0.0F, NetworkDemo::arenaHeight - NetworkDemo::playerSize);
-        local_->get<Renderable>()->color = colorFor(session_->localPlayerId());
+        local_->get<Renderable>()->color = shownColor(session_->localPlayerId());
+        for (const Multiplayer::Player& player : session_->remotePlayers()) {
+            if (GameObject* object = sync_.remotePlayer(player.id)) {
+                object->get<Renderable>()->color = shownColor(player.id);
+            }
+        }
 
         // Every frame, stationary or not: this is also what says "still here".
         session_->publishLocalPlayer(body.x, body.y, encodeOurPlayer());
@@ -168,7 +202,7 @@ public:
 
         SDL_SetRenderDrawColor(renderer, 150, 170, 195, 255);
         SDL_RenderDebugText(renderer, 32.0F, 516.0F,
-                            "WASD/arrows move | P pause | 1/2/3 = 0.5x 1x 2x");
+                            "WASD/arrows move | Space ping | P pause | 1/2/3 = 0.5x 1x 2x");
 
         const Multiplayer::State state = session_->state();
         if (state == Multiplayer::State::Failed) {
@@ -314,6 +348,19 @@ private:
         return {color.red, color.green, color.blue};
     }
 
+    // White for a moment after the player pings. Real time, so a ping still
+    // shows while the game is paused.
+    static constexpr std::int64_t flashTics = 300'000'000;
+
+    Color shownColor(Multiplayer::PlayerId id) const
+    {
+        const auto flash = flashUntil_.find(id);
+        if (flash != flashUntil_.end() && realTime_.now() < flash->second) {
+            return Color{255, 255, 255};
+        }
+        return colorFor(id);
+    }
+
     // What another player is in this game: a coloured square, positioned by
     // NetworkWorldSync. No Motion: where it is belongs to the network.
     static GameObject& makeRemotePlayer(World& world, const Multiplayer::Player& player)
@@ -367,6 +414,11 @@ private:
     std::unique_ptr<Multiplayer::Session> session_;
     World world_;
     NetworkWorldSync sync_;
+    EventManager& events_;
+    // Declared after session_, so it is destroyed first.
+    std::unique_ptr<NetworkEventBridge> bridge_;
+    EventManager::SubscriptionId pingSubscription_ = 0;
+    std::unordered_map<Multiplayer::PlayerId, std::int64_t> flashUntil_;
     // Owned by world_ and never destroyed, so the pointer lives as long as
     // the game.
     GameObject* local_ = nullptr;
@@ -629,8 +681,8 @@ int main(int argc, char* argv[])
         engine.setScaleToggleKey(SDL_SCANCODE_UNKNOWN);
 
         std::cout << "Starting in " << Multiplayer::modeName(config.mode) << " mode\n";
-        MultiplayerDemo game(Multiplayer::Session::open(config, engine.realTime()), spawnX, 48.0F,
-                             engine.realTime(), seconds);
+        MultiplayerDemo game(Multiplayer::Session::open(config, engine.realTime()), engine.events(), spawnX,
+                             48.0F, engine.realTime(), seconds);
         engine.run(game);
         game.printSummary();
     } catch (const std::exception& exception) {

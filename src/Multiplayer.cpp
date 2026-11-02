@@ -1,5 +1,6 @@
 #include "Multiplayer.hpp"
 
+#include "EventCodec.hpp"
 #include "NetworkClient.hpp"
 #include "PeerSession.hpp"
 #include "SendPacer.hpp"
@@ -7,7 +8,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -57,7 +60,8 @@ AuthorityState authorityStateOf(Network::ConnectionState state)
 // The NetworkClient lives on a network thread of its own, as the peer mesh's
 // sockets do, so reading replies and sending poses never share the game loop.
 // The two threads meet only in a small mailbox under mutex_: the game leaves
-// its latest pose there, and the network thread leaves what it last heard.
+// its latest pose and any new events there, and the network thread leaves
+// what it last heard and the events that arrived.
 // The client and its socket are created before that thread starts and
 // destroyed after it is joined; starting and joining a thread are the memory
 // barriers ZeroMQ asks for when a socket changes threads.
@@ -89,6 +93,10 @@ public:
     {
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            // This frame's events replace any the game did not take.
+            remoteEvents_.assign(std::make_move_iterator(incomingEvents_.begin()),
+                                 std::make_move_iterator(incomingEvents_.end()));
+            incomingEvents_.clear();
             if (inbox_.version == view_.version) {
                 return;
             }
@@ -118,6 +126,29 @@ public:
             const std::lock_guard<std::mutex> lock(mutex_);
             outbox_ = Pose{x, y, data};
         }
+    }
+
+    // Checked here, on the game thread, so a bad event throws to the game
+    // instead of on the network thread. Unlike poses, events are never
+    // replaced: every one is handed to the client. After leave() nothing
+    // would ever send them, so they are dropped rather than kept.
+    void publishEvent(const Event& event) override
+    {
+        std::string error;
+        if (!Network::validateEvent(event, error)) {
+            throw std::invalid_argument("cannot publish event: " + error);
+        }
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!leaveRequested_) {
+            outgoingEvents_.push_back(event);
+        }
+    }
+
+    std::vector<Event> takeRemoteEvents() override
+    {
+        std::vector<Event> events;
+        events.swap(remoteEvents_);
+        return events;
     }
 
     void leave() override
@@ -193,6 +224,9 @@ private:
     // send LEAVE until it has one, and without LEAVE the server only notices
     // the departure at its inactivity timeout.
     static constexpr int leaveGracePolls = 20;
+    // On leave with events still waiting, how long they get to be accepted
+    // before LEAVE is sent anyway.
+    static constexpr int leaveEventPolls = 200;
 
     // Network thread only (and the constructor, before that thread exists).
     void copyClient(ClientView& view) const
@@ -208,25 +242,54 @@ private:
     {
         for (;;) {
             std::optional<Pose> pose;
+            std::vector<Event> events;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 if (leaveRequested_) {
                     break;
                 }
                 pose.swap(outbox_);
+                events.swap(outgoingEvents_);
             }
 
             client_.poll();
-            if (pose) {
-                client_.submitPosition(pose->x, pose->y, pose->data);
+            // Queued before the pose is sent, so they ride on the same request.
+            for (const Event& event : events) {
+                client_.publishEvent(event);
             }
+            if (pose) {
+                lastPose_ = std::move(pose);
+                poseUnsent_ = true;
+            }
+            sendLastPose();
             publishIfChanged();
             std::this_thread::sleep_for(networkInterval);
         }
 
-        for (int i = 0; i < leaveGracePolls && client_.awaitingReply() &&
-                        client_.state() == Network::ConnectionState::Connected;
-             ++i) {
+        // Events and a pose published just before leaving still count: hand
+        // them over and keep carrying the events until the server accepts
+        // them. A client that is reconnecting cannot send, so they are lost.
+        std::vector<Event> lastEvents;
+        std::optional<Pose> lastPublished;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            lastEvents.swap(outgoingEvents_);
+            lastPublished.swap(outbox_);
+        }
+        for (const Event& event : lastEvents) {
+            client_.publishEvent(event);
+        }
+        if (lastPublished) {
+            lastPose_ = std::move(lastPublished);
+        }
+        // Only events are worth delaying LEAVE for; the pose just carries them.
+        poseUnsent_ = false;
+        for (int i = 0; client_.state() == Network::ConnectionState::Connected; ++i) {
+            const bool eventsWaiting = lastPose_ && client_.pendingEvents() > 0;
+            if (i >= (eventsWaiting ? leaveEventPolls : leaveGracePolls) ||
+                (!client_.awaitingReply() && !sendLastPose())) {
+                break;
+            }
             std::this_thread::sleep_for(networkInterval);
             client_.poll();
         }
@@ -234,8 +297,39 @@ private:
         publishIfChanged();
     }
 
+    // Sends the newest pose once the client is free: a pose the game handed
+    // over while a request was in flight (REQ allows one at a time), or the
+    // last pose again to carry waiting events. Events travel on POSITION
+    // requests, so with send pacing on (or paused, between heartbeats) they
+    // would otherwise wait for the next paced pose; the server already has
+    // that pose. Returns whether a pose or events are still waiting to go.
+    bool sendLastPose()
+    {
+        if (!lastPose_ || (!poseUnsent_ && client_.pendingEvents() == 0)) {
+            return false;
+        }
+        if (!client_.awaitingReply()) {
+            client_.submitPosition(lastPose_->x, lastPose_->y, lastPose_->data);
+            poseUnsent_ = false;
+        }
+        return true;
+    }
+
     void publishIfChanged()
     {
+        std::vector<Event> arrived = client_.takeEvents();
+        if (!arrived.empty()) {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            incomingEvents_.insert(incomingEvents_.end(), std::make_move_iterator(arrived.begin()),
+                                   std::make_move_iterator(arrived.end()));
+            // A game that stops calling update() keeps only the newest.
+            constexpr std::size_t limit = Network::NetworkClient::maxPendingEvents;
+            if (incomingEvents_.size() > limit) {
+                incomingEvents_.erase(incomingEvents_.begin(),
+                                      incomingEvents_.end() - static_cast<std::ptrdiff_t>(limit));
+            }
+        }
+
         const Network::WorldSnapshot& snapshot = client_.snapshot();
         if (snapshot.serverTick == lastPublishedTick_ && client_.state() == lastPublishedState_ &&
             client_.playerId() == lastPublishedPlayerId_ && client_.error() == lastPublishedError_) {
@@ -260,17 +354,24 @@ private:
     Network::ConnectionState lastPublishedState_ = Network::ConnectionState::Disconnected;
     Network::PlayerId lastPublishedPlayerId_ = 0;
     std::string lastPublishedError_;
+    // The newest pose from the game, and whether it still has to go out. It
+    // is resent to carry waiting events.
+    std::optional<Pose> lastPose_;
+    bool poseUnsent_ = false;
 
     // The mailbox: shared by both threads, guarded by mutex_.
     std::mutex mutex_;
     ClientView inbox_;
     std::optional<Pose> outbox_;
+    std::vector<Event> outgoingEvents_;
+    std::vector<Event> incomingEvents_;
     bool leaveRequested_ = false;
 
     // Game thread only.
     ClientView view_;
     std::vector<Player> remote_;
     std::vector<Platform> platforms_;
+    std::vector<Event> remoteEvents_;
 };
 
 // ---------------------------------------------------------------------------
@@ -437,6 +538,13 @@ public:
     }
 
     Mode mode() const override { return Mode::PeerToPeer; }
+
+    void publishEvent(const Event&) override
+    {
+        throw std::logic_error("events require client-server mode");
+    }
+
+    std::vector<Event> takeRemoteEvents() override { return {}; }
 
 private:
     struct Known {

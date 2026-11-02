@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Event.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -8,7 +10,7 @@
 // of text fields so they never depend on C++ struct layout or byte order.
 namespace Network {
 
-constexpr int protocolVersion = 6;
+constexpr int protocolVersion = 7;
 
 using PlayerId = std::uint32_t;
 using SessionToken = std::string;
@@ -60,6 +62,26 @@ struct WorldStateSnapshot {
     std::vector<PlatformState> platforms;
 };
 
+// Events on the wire (EventCodec.hpp encodes them). An encoded event carries
+// its type, arguments, priority and the sender's timestamp; deliverAt and
+// sequence stay local.
+
+// Client to server. clientSequence starts at 1 and goes up by exactly 1 per
+// event, so the server can drop events it has already accepted. Carries no
+// origin: who sent an event is the server's call.
+struct OutgoingEvent {
+    std::uint64_t clientSequence = 0;
+    Event event;
+};
+
+// Server to client. serverSequence is the server's global order. It strictly
+// increases but may skip, because a client never receives its own events.
+// origin is a player id or Events::ServerOrigin, never 0 ("this machine").
+struct RelayedEvent {
+    std::uint64_t serverSequence = 0;
+    Event event;
+};
+
 enum class ConnectionState {
     Disconnected,
     Connecting,
@@ -81,6 +103,10 @@ struct Request {
     // Supplied on JOIN.
     std::string playerName;
     PositionUpdate position{};
+    // POSITION only. This client's events the server has not yet confirmed,
+    // oldest first, and the highest serverSequence this client has handled.
+    std::vector<OutgoingEvent> events;
+    std::uint64_t ackedEventSequence = 0;
 };
 
 enum class ReplyType {
@@ -100,10 +126,23 @@ struct Reply {
     WorldSnapshot snapshot{};
     WorldStateSnapshot worldState{};
     std::string error;
+    // WELCOME and SNAPSHOT: the highest clientSequence accepted from this
+    // player, 0 for a new one. On WELCOME the client drops its events up to
+    // here and numbers the rest from the next one. That is right for a
+    // resumed player, a new one, and one whose first WELCOME was lost.
+    std::uint64_t acceptedClientSequence = 0;
+    // WELCOME only: a random number the server picked when it started. When
+    // it changes the server has restarted, so relayed sequence numbers the
+    // client handled before mean nothing there.
+    std::uint64_t serverInstance = 0;
+    // SNAPSHOT only: relayed events above the request's ackedEventSequence,
+    // oldest first.
+    std::vector<RelayedEvent> events;
 };
 
 Message encodeJoin(const SessionToken& sessionToken, const std::string& playerName = {});
-Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position);
+Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position,
+                       std::uint64_t ackedEventSequence = 0, const std::vector<OutgoingEvent>& events = {});
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken);
 Message encodeGetWorld();
 bool decodeRequest(const Message& message, Request& request, std::string& error);
@@ -116,8 +155,10 @@ std::string rewriteTcpEndpointHost(const std::string& endpoint, const std::strin
 // sessionEndpoint is the private REQ/REP address for this client after JOIN.
 // Pass empty for in-process / single-socket tests.
 Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot,
-                      const std::string& sessionEndpoint = {});
-Message encodeSnapshot(const WorldSnapshot& snapshot);
+                      const std::string& sessionEndpoint = {}, std::uint64_t acceptedClientSequence = 0,
+                      std::uint64_t serverInstance = 0);
+Message encodeSnapshot(const WorldSnapshot& snapshot, std::uint64_t acceptedClientSequence = 0,
+                       const std::vector<RelayedEvent>& events = {});
 Message encodeWorldState(const WorldStateSnapshot& snapshot);
 Message encodeError(const std::string& error);
 Message encodeGoodbye();

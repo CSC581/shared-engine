@@ -1,6 +1,7 @@
 #include "NetworkProtocol.hpp"
 
 #include "Endpoint.hpp"
+#include "EventCodec.hpp"
 #include "WireFormat.hpp"
 
 #include <utility>
@@ -44,7 +45,8 @@ bool isValidSessionToken(const std::string& token)
     });
 }
 
-bool parsePlatforms(const Message& message, std::size_t index,
+// Reads a platform list starting at `index` and leaves `index` just past it.
+bool parsePlatforms(const Message& message, std::size_t& index,
                     std::vector<PlatformState>& platforms, std::string& error)
 {
     if (index >= message.size()) {
@@ -60,8 +62,7 @@ bool parsePlatforms(const Message& message, std::size_t index,
     ++index;
 
     constexpr std::size_t platformFieldCount = 5;
-    if (platformCount > (std::numeric_limits<std::size_t>::max() - index) / platformFieldCount ||
-        message.size() != index + static_cast<std::size_t>(platformCount) * platformFieldCount) {
+    if (platformCount > (message.size() - index) / platformFieldCount) {
         error = "invalid snapshot platform count";
         return false;
     }
@@ -86,7 +87,8 @@ bool parsePlatforms(const Message& message, std::size_t index,
     return true;
 }
 
-bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& snapshot, std::string& error)
+// Reads a snapshot starting at `index` and leaves `index` just past it.
+bool parseSnapshot(const Message& message, std::size_t& index, WorldSnapshot& snapshot, std::string& error)
 {
     std::uint64_t playerCount = 0;
     if (message.size() < index + 2 || !parseUnsigned(message[index], snapshot.serverTick) ||
@@ -128,6 +130,15 @@ bool parseSnapshot(const Message& message, std::size_t index, WorldSnapshot& sna
     return parsePlatforms(message, index, snapshot.platforms, error);
 }
 
+bool finished(const Message& message, std::size_t index, std::string& error)
+{
+    if (index != message.size()) {
+        error = "message has trailing fields";
+        return false;
+    }
+    return true;
+}
+
 void appendPlatforms(Message& message, const std::vector<PlatformState>& platforms)
 {
     message.push_back(std::to_string(platforms.size()));
@@ -163,12 +174,15 @@ Message encodeJoin(const SessionToken& sessionToken, const std::string& playerNa
     return {std::to_string(protocolVersion), "JOIN", sessionToken, playerName};
 }
 
-Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position)
+Message encodePosition(PlayerId playerId, const SessionToken& sessionToken, const PositionUpdate& position,
+                       std::uint64_t ackedEventSequence, const std::vector<OutgoingEvent>& events)
 {
-    return {std::to_string(protocolVersion), "POSITION",       std::to_string(playerId),
-            sessionToken,                    std::to_string(position.sequence),
-            formatFloat(position.x),         formatFloat(position.y),
-            position.data};
+    Message message{std::to_string(protocolVersion), "POSITION",       std::to_string(playerId),
+                    sessionToken,                    std::to_string(position.sequence),
+                    formatFloat(position.x),         formatFloat(position.y),
+                    position.data,                   std::to_string(ackedEventSequence)};
+    appendEventsText(message, events);
+    return message;
 }
 
 Message encodeLeave(PlayerId playerId, const SessionToken& sessionToken)
@@ -235,7 +249,8 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
         return true;
     }
 
-    if (message[1] != "POSITION" || message.size() != 8) {
+    // [version, POSITION, id, token, sequence, x, y, data, ack, ...events]
+    if (message[1] != "POSITION" || message.size() < 10) {
         error = "unknown request command";
         return false;
     }
@@ -253,6 +268,15 @@ bool decodeRequest(const Message& message, Request& request, std::string& error)
     }
     request.position.data = message[7];
 
+    if (!parseUnsigned(message[8], request.ackedEventSequence)) {
+        error = "invalid event acknowledgement";
+        return false;
+    }
+    std::size_t index = 9;
+    if (!readEventsText(message, index, request.events, error) || !finished(message, index, error)) {
+        return false;
+    }
+
     request.type = RequestType::Position;
     request.position.sequence = sequence;
     return true;
@@ -265,17 +289,23 @@ std::string rewriteTcpEndpointHost(const std::string& endpoint, const std::strin
     return Net::rewriteTcpEndpointHost(endpoint, host);
 }
 
-Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot, const std::string& sessionEndpoint)
+Message encodeWelcome(PlayerId playerId, const WorldSnapshot& snapshot, const std::string& sessionEndpoint,
+                      std::uint64_t acceptedClientSequence, std::uint64_t serverInstance)
 {
     Message message{std::to_string(protocolVersion), "WELCOME", std::to_string(playerId), sessionEndpoint};
     appendSnapshot(message, snapshot);
+    message.push_back(std::to_string(acceptedClientSequence));
+    message.push_back(std::to_string(serverInstance));
     return message;
 }
 
-Message encodeSnapshot(const WorldSnapshot& snapshot)
+Message encodeSnapshot(const WorldSnapshot& snapshot, std::uint64_t acceptedClientSequence,
+                       const std::vector<RelayedEvent>& events)
 {
     Message message{std::to_string(protocolVersion), "SNAPSHOT"};
     appendSnapshot(message, snapshot);
+    message.push_back(std::to_string(acceptedClientSequence));
+    appendEventsText(message, events);
     return message;
 }
 
@@ -300,9 +330,10 @@ Message encodeReply(const Reply& reply)
 {
     switch (reply.type) {
     case ReplyType::Welcome:
-        return encodeWelcome(reply.playerId, reply.snapshot, reply.sessionEndpoint);
+        return encodeWelcome(reply.playerId, reply.snapshot, reply.sessionEndpoint, reply.acceptedClientSequence,
+                             reply.serverInstance);
     case ReplyType::Snapshot:
-        return encodeSnapshot(reply.snapshot);
+        return encodeSnapshot(reply.snapshot, reply.acceptedClientSequence, reply.events);
     case ReplyType::WorldState:
         return encodeWorldState(reply.worldState);
     case ReplyType::Error:
@@ -345,15 +376,18 @@ bool decodeReply(const Message& message, Reply& reply, std::string& error)
             return false;
         }
         reply.type = ReplyType::WorldState;
-        return parsePlatforms(message, 3, reply.worldState.platforms, error);
+        std::size_t index = 3;
+        return parsePlatforms(message, index, reply.worldState.platforms, error) &&
+               finished(message, index, error);
     }
 
-    std::size_t snapshotIndex = 2;
+    std::size_t index = 2;
     if (message[1] == "WELCOME") {
         std::uint64_t playerId = 0;
-        // [version, WELCOME, playerId, sessionEndpoint, ...snapshot...]
+        // [version, WELCOME, playerId, sessionEndpoint, ...snapshot...,
+        //  acceptedClientSequence, serverInstance]
         // Snapshot needs at least tick, playerCount, platformCount.
-        if (message.size() < 7 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
+        if (message.size() < 9 || !parseUnsigned(message[2], playerId) || playerId == 0 ||
             playerId > std::numeric_limits<PlayerId>::max()) {
             error = "invalid WELCOME reply";
             return false;
@@ -361,7 +395,7 @@ bool decodeReply(const Message& message, Reply& reply, std::string& error)
         reply.type = ReplyType::Welcome;
         reply.playerId = static_cast<PlayerId>(playerId);
         reply.sessionEndpoint = message[3];
-        snapshotIndex = 4;
+        index = 4;
     } else if (message[1] == "SNAPSHOT") {
         reply.type = ReplyType::Snapshot;
     } else {
@@ -369,7 +403,24 @@ bool decodeReply(const Message& message, Reply& reply, std::string& error)
         return false;
     }
 
-    return parseSnapshot(message, snapshotIndex, reply.snapshot, error);
+    if (!parseSnapshot(message, index, reply.snapshot, error)) {
+        return false;
+    }
+    if (reply.type == ReplyType::Welcome) {
+        if (message.size() - index < 2 || !parseUnsigned(message[index], reply.acceptedClientSequence) ||
+            !parseUnsigned(message[index + 1], reply.serverInstance)) {
+            error = "invalid WELCOME reply";
+            return false;
+        }
+        return finished(message, index + 2, error);
+    }
+    // [...snapshot..., acceptedClientSequence, ...events]
+    if (index >= message.size() || !parseUnsigned(message[index], reply.acceptedClientSequence)) {
+        error = "invalid event acceptance";
+        return false;
+    }
+    ++index;
+    return readEventsText(message, index, reply.events, error) && finished(message, index, error);
 }
 
 } // namespace Network
