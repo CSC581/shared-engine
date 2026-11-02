@@ -79,7 +79,9 @@ public:
 
     // Call once a frame after the live world updated. Records a frame while
     // recording and does nothing otherwise. A frame at the same live time as
-    // the previous one (the game is paused) replaces it.
+    // the previous one (the game is paused) replaces it. Texture pointers are
+    // borrowed, so a game must keep its textures alive as long as a recording
+    // that uses them may be played.
     void capture(const World& world, float cameraX = 0.0F, float cameraY = 0.0F);
 
     // Called at each capture; its string comes back from currentFrameState()
@@ -146,8 +148,13 @@ private:
     bool recording_ = false;
     std::deque<Frame> frames_;
     std::deque<Event> recordedEvents_;
-    // Tags never change, so each object's tag is kept once, not per frame.
-    std::unordered_map<ObjectId, std::string> tags_;
+    // Tags never change, so each object's tag is kept once, not per frame,
+    // with the last frame time it was seen so the rolling window can drop it.
+    struct Tag {
+        std::string name;
+        std::int64_t lastSeen = 0;
+    };
+    std::unordered_map<ObjectId, Tag> tags_;
     std::function<std::string()> frameStateHook_;
     std::int64_t rollingWindow_ = 0;
 

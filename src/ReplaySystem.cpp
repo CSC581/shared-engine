@@ -111,7 +111,11 @@ void ReplaySystem::capture(const World& world, float cameraX, float cameraY)
         frame.objects.push_back({object->id(), transform->x, transform->y, transform->width,
                                  transform->height, renderable->color, renderable->texture,
                                  renderable->layer, renderable->visible});
-        tags_.emplace(object->id(), object->tag());
+        Tag& tag = tags_[object->id()];
+        if (tag.name.empty()) {
+            tag.name = object->tag();
+        }
+        tag.lastSeen = frame.time;
     }
 
     const std::int64_t now = frame.time;
@@ -237,11 +241,20 @@ void ReplaySystem::trimToWindow(std::int64_t now)
         return;
     }
     const std::int64_t cutoff = now - rollingWindow_;
+    bool dropped = false;
     while (frames_.size() > 1 && frames_.front().time < cutoff) {
         frames_.pop_front();
+        dropped = true;
     }
     while (!recordedEvents_.empty() && recordedEvents_.front().deliverAt < cutoff) {
         recordedEvents_.pop_front();
+    }
+    // An object last seen before the oldest kept frame is in no kept frame.
+    if (dropped) {
+        const std::int64_t oldest = frames_.front().time;
+        for (auto it = tags_.begin(); it != tags_.end();) {
+            it = it->second.lastSeen < oldest ? tags_.erase(it) : std::next(it);
+        }
     }
 }
 
@@ -317,7 +330,7 @@ GameObject& ReplaySystem::standIn(const ObjectFrame& object)
         return *found->second;
     }
     const auto tag = tags_.find(object.id);
-    GameObject& created = world_.create(tag == tags_.end() ? std::string() : tag->second);
+    GameObject& created = world_.create(tag == tags_.end() ? std::string() : tag->second.name);
     created.add<Transform>();
     created.add<Renderable>();
     standIns_.emplace(object.id, &created);

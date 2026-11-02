@@ -133,7 +133,7 @@ A remote event has `origin` set to the sender's player id and is raised with thi
 | `ReplaySpeedEvent` | `speed` | Changes the playback speed, now and for the next playback |
 | `ReplayPauseEvent` | `paused` (optional) | Pauses or resumes playback. Without `paused` it toggles |
 
-A game raises these from whatever it likes, such as a key's `InputEvent` or a `DeathEvent`. While playing, the game should skip its own update.
+A game raises these from whatever it likes, such as a key's `InputEvent` or a `DeathEvent`. While playing, the game should skip its own update. Replay records texture pointers, not copies, so a game must keep its textures alive while a recording that uses them may be played.
 
 ## Design decisions
 
@@ -148,7 +148,7 @@ A game raises these from whatever it likes, such as a key's `InputEvent` or a `D
 - **Replay shows what was recorded and does not simulate again.** Frame times vary, so running the inputs through physics again would not give the same result. Positions and the camera are blended between frames, so slow motion is smooth.
 - **Playback never touches the live game.** It uses its own world, its own event manager and its own timeline on real time. The live game is paused underneath and is left paused afterwards if the player had paused it.
 
-**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events. Replay is local to one machine, and a networked game resumes against the current network state. Time the game spent paused while recording is skipped in the replay. Recording keeps everything until it stops, unless a rolling window is set.
+**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events. Replay is local to one machine, and a networked game resumes against the current network state. Replay follows game time, so time the game spent paused while recording is skipped, and a stretch recorded with the game at 2x plays at half its original pace at replay speed 1. Recording keeps everything until it stops, unless a rolling window is set.
 
 <div style="page-break-before: always"></div>
 

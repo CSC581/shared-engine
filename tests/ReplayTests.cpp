@@ -309,6 +309,35 @@ void rollingWindowKeepsTheLastStretch()
     CHECK((ticks == std::vector<std::int64_t>{7}));
 }
 
+// Tags of objects that left the window are dropped, but an object seen only
+// in the oldest kept frame keeps its tag.
+void rollingWindowKeepsTagsOfKeptObjects()
+{
+    Rig rig;
+    rig.replay.setRollingWindow(300);
+    GameObject& coin = rig.world.create("coin");
+    coin.add<Transform>(50.0F, 50.0F, 4.0F, 4.0F);
+    coin.add<Renderable>(Color{9, 9, 9});
+    coin.setActive(true);
+    GameObject& gem = rig.world.create("gem");
+    gem.add<Transform>(80.0F, 80.0F, 4.0F, 4.0F);
+    gem.add<Renderable>(Color{8, 8, 8});
+
+    rig.control(Events::ReplayRecordStart);
+    for (int i = 0; i <= 10; ++i) {
+        coin.setActive(i < 3);
+        gem.setActive(i == 7);
+        rig.replay.capture(rig.world);
+        rig.advance(100);
+    }
+    rig.control(Events::ReplayRecordStop);
+    CHECK(rig.replay.frameCount() == 4);
+
+    rig.control(Events::ReplayPlayStart);
+    const auto shown = rig.shown();
+    CHECK(shown.size() == 2 && shown[0]->tag() == "box" && shown[1]->tag() == "gem");
+}
+
 void objectsAppearAndDisappear()
 {
     Rig rig;
@@ -427,6 +456,7 @@ int main()
     recordedEventsReachOnlyTheReplayManager();
     aPausedGameStaysPaused();
     rollingWindowKeepsTheLastStretch();
+    rollingWindowKeepsTagsOfKeptObjects();
     objectsAppearAndDisappear();
     controlRules();
     destroyingDuringPlaybackRestoresTheGame();
