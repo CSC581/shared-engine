@@ -23,6 +23,16 @@ constexpr const char* Input = "InputEvent";
 
 // Event::origin of events raised by the server. Player ids start at 1.
 constexpr std::uint32_t ServerOrigin = 0xFFFFFFFF;
+
+// Replay controls, handled by ReplaySystem and never recorded. PlayStart and
+// Speed take an optional/required `speed` (decimal or integer, > 0); Pause
+// takes an optional bool `paused` and toggles without it.
+constexpr const char* ReplayRecordStart = "ReplayRecordStartEvent";
+constexpr const char* ReplayRecordStop = "ReplayRecordStopEvent";
+constexpr const char* ReplayPlayStart = "ReplayPlayStartEvent";
+constexpr const char* ReplayPlayStop = "ReplayPlayStopEvent";
+constexpr const char* ReplaySpeed = "ReplaySpeedEvent";
+constexpr const char* ReplayPause = "ReplayPauseEvent";
 } // namespace Events
 
 namespace EventPriority {

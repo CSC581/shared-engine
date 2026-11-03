@@ -17,6 +17,7 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 | ---- | ---------------------- | ------------- |
 | 1.1 | An event manager that queues events with priorities, uses the `Timeline` for timestamps, and handles collision, death, spawn and input events instead of SDL events | An `EventManager` owned by the engine. Raising an event only queues it; the engine hands out queued events twice per frame, ordered by game-time delivery, then priority, then raise order. The engine raises `InputEvent` (keys and chords) and `World` raises `CollisionEvent`; games raise `DeathEvent` and `SpawnEvent` |
 | 1.2 | Events shared across the network, with event data serialized in a protocol of our choice | `EventCodec` turns a list of events into our **text** or **binary** network format and back, with the same rules in both. Events ride on the position updates clients already send. The server numbers each event, adds the sender's id and passes it to every other player exactly once, in the same order everywhere. A game picks which event types to share with `NetworkEventBridge`. Client-server mode only |
+| 1.3 | A replay system that records and plays back game play, started and controlled through the event system | `ReplaySystem` records every frame's objects, the camera, an optional game-state string and every event. Six replay events start and stop recording, start and stop playback, change the speed (0.5x, 1x, 2x or any other) and pause it. Playback shows the recording in a separate world while the live game waits, paused, and then carries on where it was |
 
 ## Files for this milestone
 
@@ -39,6 +40,10 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 ├── include/Multiplayer.hpp                 src/Multiplayer.cpp     Session::publishEvent / takeRemoteEvents
 ├── include/NetworkEventBridge.hpp          src/NetworkEventBridge.cpp      shared types <-> EventManager
 └── sandbox/MultiplayerDemo.cpp                                     Space pings every window
+1.3 Replay
+├── include/Event.hpp                                               the six replay event names
+├── include/ReplaySystem.hpp                src/ReplaySystem.cpp    recording, playback, replay world
+└── sandbox/ReplayDemo.cpp                                          replay-demo
 ```
 
 ## API reference
@@ -107,6 +112,29 @@ A remote event has `origin` set to the sender's player id and is raised with thi
 | Events waiting at a client | 256 each way; a full queue drops its oldest unsent (or untaken) event |
 | Leaving | `leave()` sends events published just before it, waiting at most about 0.2 s |
 
+### Replay (`ReplaySystem.hpp`)
+
+| Function | Meaning |
+| -------- | ------- |
+| `ReplaySystem replay(engine.events(), engine.gameTime(), engine.realTime())` | Listens for the replay events on the game's event manager |
+| `replay.capture(world, cameraX, cameraY)` | Call every frame after the world updates. Records a frame while recording and does nothing otherwise |
+| `replay.update()` | Call every frame, also while paused. Moves the playback along |
+| `replay.isPlaying()`, `replay.world()`, `replay.cameraX()`, `replay.cameraY()` | While playing, draw `replay.world()` with `renderWorld()` at the replay's camera instead of the live world |
+| `replay.setFrameStateHook(fn)`, `replay.currentFrameState()` | Records a string each frame, such as the score, and gives it back during playback for the HUD |
+| `replay.events()` | A separate event manager on which the recorded events happen again during playback, for visual effects only |
+| `replay.setRollingWindow(tics)` | Keeps only the last stretch of recording, for a "kill cam" after a death |
+
+| Event | Values | Effect |
+| ----- | ------ | ------ |
+| `ReplayRecordStartEvent` | | Starts a new recording |
+| `ReplayRecordStopEvent` | | Stops recording and keeps it |
+| `ReplayPlayStartEvent` | `speed` (optional) | Pauses the live game and plays the recording from the start |
+| `ReplayPlayStopEvent` | | Ends playback. Also raised by the replay itself when the recording ends |
+| `ReplaySpeedEvent` | `speed` | Changes the playback speed, now and for the next playback |
+| `ReplayPauseEvent` | `paused` (optional) | Pauses or resumes playback. Without `paused` it toggles |
+
+A game raises these from whatever it likes, such as a key's `InputEvent` or a `DeathEvent`. While playing, the game should skip its own update. Replay records texture pointers, not copies, so a game must keep its textures alive while a recording that uses them may be played.
+
 ## Design decisions
 
 - **Raising only queues.** Handlers never run inside a collision pass or a loop over objects, so a handler can safely create or destroy objects.
@@ -117,8 +145,10 @@ A remote event has `origin` set to the sender's player id and is raised with thi
 - **Each client detects, the server orders.** A client raises its own collisions and deaths locally without waiting; the server gives shared events one order and relays them, without reading them.
 - **Events ride on position updates.** No new messages or round trips. With send pacing, a client with events waiting resends its last position so they go at once.
 - **Only listed types cross the network,** in both directions, so another player cannot raise an `InputEvent` on your machine.
+- **Replay shows what was recorded and does not simulate again.** Frame times vary, so running the inputs through physics again would not give the same result. Positions and the camera are blended between frames, so slow motion is smooth.
+- **Playback never touches the live game.** It uses its own world, its own event manager and its own timeline on real time. The live game is paused underneath and is left paused afterwards if the player had paused it.
 
-**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events.
+**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events. Replay is local to one machine, and a networked game resumes against the current network state. Replay follows game time, so time the game spent paused while recording is skipped, and a stretch recorded with the game at 2x plays at half its original pace at replay speed 1. Recording keeps everything until it stops, unless a rolling window is set.
 
 <div style="page-break-before: always"></div>
 
