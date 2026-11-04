@@ -151,6 +151,8 @@ private:
         // Other players' events not yet acknowledged, oldest first. Each event
         // is stored once and shared by every outbox that holds it.
         std::deque<std::shared_ptr<const RelayedEvent>> outbox;
+        // Highest serverSequence ever put in a reply to this player.
+        std::uint64_t lastSentEvent = 0;
         std::uint64_t droppedEvents = 0;
     };
 

@@ -181,8 +181,11 @@ player and drops the oldest beyond that, so a long outage cannot end in a
 flood of stale events. With send pacing on, a client that has events waiting
 resends its last pose to carry them instead of waiting for the next paced
 send, and `leave()` sends waiting events (for at most about 0.2 s) before
-`LEAVE` (not if it is reconnecting at that moment). A session's `takeRemoteEvents()` returns only the latest `update()`'s
-events, so a game that never takes them does not pile them up. The server
+`LEAVE` (not if it is reconnecting at that moment). A session's `takeRemoteEvents()` returns events since the last call and keeps
+at most 256, so a game that never takes them does not pile them up;
+`Session::droppedEvents()` counts this client's losses. Delivery is no
+duplicates, bounded best effort: an event is acknowledged when it reaches the
+client, not when a game handles it. The server
 never reads an event. On the game side,
 `NetworkEventBridge` connects a session to the game's `EventManager` for the
 event types the game chooses to share. Peer-to-peer mode carries no events.

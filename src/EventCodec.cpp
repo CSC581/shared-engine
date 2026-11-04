@@ -199,6 +199,11 @@ bool readTextEvent(const Message& in, std::size_t& at, Entry& entry, std::string
         error = "missing event type";
         return false;
     }
+    // Lengths are checked before anything is copied out of the message.
+    if (field->size() > Net::maxEventNameLength) {
+        error = "invalid event type";
+        return false;
+    }
     event.type = *field;
     field = nextField(in, at);
     if (field == nullptr || !Net::parseSigned(*field, priority) ||
@@ -228,6 +233,14 @@ bool readTextEvent(const Message& in, std::size_t& at, Entry& entry, std::string
 
     for (std::uint64_t i = 0; i < argCount; ++i) {
         const std::string& name = in[at];
+        if (name.size() > Net::maxEventNameLength) {
+            error = "invalid event argument name";
+            return false;
+        }
+        if (in[at + 2].size() > Net::maxEventTextLength) {
+            error = "event text value is too long";
+            return false;
+        }
         EventValue value;
         if (!readTextValue(in[at + 1], in[at + 2], value)) {
             error = "invalid event argument";

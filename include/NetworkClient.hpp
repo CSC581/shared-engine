@@ -100,15 +100,16 @@ public:
     // client: events are text-only.
     void publishEvent(const Event& event);
     // Events from other players since the last call, in the server's order,
-    // each exactly once. origin is the sender's player id. At most
+    // with no duplicates. origin is the sender's player id. At most
     // maxPendingEvents are kept between calls; older ones are dropped and
-    // counted by droppedEvents().
+    // counted by droppedEvents(). A relayed event is acknowledged once it
+    // arrives here, not once a game handles it.
     std::vector<Event> takeEvents();
     // Events queued and not yet accepted by the server.
     std::size_t pendingEvents() const;
     // Events dropped from this client's full queues, outgoing or incoming,
-    // since it was created. A Multiplayer::Session drops events in its own
-    // buffers too, and those are not counted here.
+    // since it was created. Multiplayer::Session::droppedEvents() also includes
+    // the session's own buffers.
     std::uint64_t droppedEvents() const;
 
     ConnectionState state() const;

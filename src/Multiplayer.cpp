@@ -7,6 +7,7 @@
 #include "WorldStateClient.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -93,10 +94,12 @@ public:
     {
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            // This frame's events replace any the game did not take.
-            remoteEvents_.assign(std::make_move_iterator(incomingEvents_.begin()),
+            // Kept until taken, so a frame without apply() loses nothing. A
+            // game that never takes them keeps only the newest.
+            remoteEvents_.insert(remoteEvents_.end(), std::make_move_iterator(incomingEvents_.begin()),
                                  std::make_move_iterator(incomingEvents_.end()));
             incomingEvents_.clear();
+            keepNewestEvents(remoteEvents_);
             if (inbox_.version == view_.version) {
                 return;
             }
@@ -158,6 +161,8 @@ public:
         events.swap(remoteEvents_);
         return events;
     }
+
+    std::uint64_t droppedEvents() const override { return clientDropped_ + sessionDropped_; }
 
     void leave() override
     {
@@ -323,19 +328,25 @@ private:
         return true;
     }
 
+    void keepNewestEvents(std::vector<Event>& events)
+    {
+        constexpr std::size_t limit = Network::NetworkClient::maxPendingEvents;
+        if (events.size() > limit) {
+            sessionDropped_ += events.size() - limit;
+            events.erase(events.begin(), events.end() - static_cast<std::ptrdiff_t>(limit));
+        }
+    }
+
     void publishIfChanged()
     {
         std::vector<Event> arrived = client_.takeEvents();
+        clientDropped_ = client_.droppedEvents();
         if (!arrived.empty()) {
             const std::lock_guard<std::mutex> lock(mutex_);
             incomingEvents_.insert(incomingEvents_.end(), std::make_move_iterator(arrived.begin()),
                                    std::make_move_iterator(arrived.end()));
             // A game that stops calling update() keeps only the newest.
-            constexpr std::size_t limit = Network::NetworkClient::maxPendingEvents;
-            if (incomingEvents_.size() > limit) {
-                incomingEvents_.erase(incomingEvents_.begin(),
-                                      incomingEvents_.end() - static_cast<std::ptrdiff_t>(limit));
-            }
+            keepNewestEvents(incomingEvents_);
         }
 
         const Network::WorldSnapshot& snapshot = client_.snapshot();
@@ -374,6 +385,8 @@ private:
     std::vector<Event> outgoingEvents_;
     std::vector<Event> incomingEvents_;
     bool leaveRequested_ = false;
+    std::atomic<std::uint64_t> clientDropped_{0};
+    std::atomic<std::uint64_t> sessionDropped_{0};
 
     // Game thread only.
     ClientView view_;

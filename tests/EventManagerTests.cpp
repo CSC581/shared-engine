@@ -328,8 +328,52 @@ void listenerLifetime()
 }
 }
 
+void badRemoteArgumentsDoNotStopTheGame()
+{
+    ManualClock clock;
+    EventManager manager(clock);
+    int ran = 0;
+    manager.subscribe("Hit", [&](const Event& event) {
+        ++ran;
+        event.get<std::int64_t>("damage");
+    });
+
+    Event remote("Hit");
+    remote.origin = 7;
+    manager.raise(remote);
+    remote.set("damage", "lots");
+    manager.raise(remote);
+    manager.dispatch();
+    CHECK(ran == 2);
+    CHECK(manager.remoteHandlerErrors() == 2);
+
+    // The same mistake on a local event is this game's bug and still surfaces.
+    manager.raise(Event("Hit"));
+    bool threw = false;
+    try {
+        manager.dispatch();
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(manager.remoteHandlerErrors() == 2);
+
+    // Only bad data is forgiven: a remote event cannot hide other failures.
+    manager.subscribe("Boom", [](const Event&) { throw std::runtime_error("bug"); });
+    remote.type = "Boom";
+    manager.raise(remote);
+    threw = false;
+    try {
+        manager.dispatch();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 int main()
 {
+    badRemoteArgumentsDoNotStopTheGame();
     representationAndOrder();
     chainsAndChanges();
     timelineAndThreads();

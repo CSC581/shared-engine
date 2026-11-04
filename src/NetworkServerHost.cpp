@@ -9,6 +9,7 @@
 #include <zmq.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <future>
 #include <iomanip>
 #include <locale>
@@ -23,6 +24,10 @@
 
 namespace Network {
 namespace {
+
+// shortcut: limits each frame, not a message's frame count, upgrade if a
+// server faces untrusted networks (recv_multipart has no total limit).
+constexpr std::int64_t maxRequestFrameBytes = static_cast<std::int64_t>(maxBinaryMessageSize);
 
 struct DeliveryState {
     std::mutex mutex;
@@ -311,6 +316,7 @@ struct NetworkServerHost::Impl {
             zmq::socket_t socket(context, zmq::socket_type::rep);
             socket.set(zmq::sockopt::linger, 0);
             socket.set(zmq::sockopt::rcvtimeo, static_cast<int>(config.pollInterval.count()));
+            socket.set(zmq::sockopt::maxmsgsize, maxRequestFrameBytes);
             // All interfaces; WELCOME advertises config.advertiseHost instead.
             socket.bind("tcp://0.0.0.0:*");
             const std::string endpoint = socket.get(zmq::sockopt::last_endpoint);
@@ -597,6 +603,7 @@ void NetworkServerHost::start()
         socket = zmq::socket_t(impl_->context, zmq::socket_type::rep);
         socket.set(zmq::sockopt::linger, 0);
         socket.set(zmq::sockopt::rcvtimeo, static_cast<int>(impl_->config.pollInterval.count()));
+        socket.set(zmq::sockopt::maxmsgsize, maxRequestFrameBytes);
         socket.bind(impl_->config.bindEndpoint);
         bound = socket.get(zmq::sockopt::last_endpoint);
     } catch (const zmq::error_t& error) {

@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <tuple>
 #include <utility>
+#include <variant>
 
 EventManager::EventManager(const TimeSource& clock)
     : clock_(clock), owner_(std::this_thread::get_id())
@@ -92,6 +93,16 @@ void EventManager::raise(Event event, std::int64_t delayTics)
     queue_.push(std::move(event));
 }
 
+// Called from inside a catch block: a local event's error goes on to the caller.
+void EventManager::countRemoteHandlerError(const Event& event)
+{
+    if (event.origin == 0) {
+        throw;
+    }
+    const std::lock_guard<std::mutex> lock(queueMutex_);
+    ++remoteHandlerErrors_;
+}
+
 void EventManager::deliver(const Event& event, std::exception_ptr& firstError)
 {
     std::vector<std::shared_ptr<Subscription>> listeners;
@@ -106,7 +117,15 @@ void EventManager::deliver(const Event& event, std::exception_ptr& firstError)
             continue;
         }
         try {
-            listener->handler(event);
+            // Another player chooses a remote event's arguments, so a missing
+            // or wrongly typed one must not stop this game.
+            try {
+                listener->handler(event);
+            } catch (const std::out_of_range&) {
+                countRemoteHandlerError(event);
+            } catch (const std::bad_variant_access&) {
+                countRemoteHandlerError(event);
+            }
         } catch (...) {
             if (!firstError) {
                 firstError = std::current_exception();
@@ -192,6 +211,12 @@ std::uint64_t EventManager::droppedByLimit() const
 {
     const std::lock_guard<std::mutex> lock(queueMutex_);
     return droppedByLimit_;
+}
+
+std::uint64_t EventManager::remoteHandlerErrors() const
+{
+    const std::lock_guard<std::mutex> lock(queueMutex_);
+    return remoteHandlerErrors_;
 }
 
 std::size_t EventManager::pending() const

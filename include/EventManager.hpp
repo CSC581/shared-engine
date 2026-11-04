@@ -41,7 +41,10 @@ public:
     // by priority, then delivery time, then raise order. The budget takes the
     // oldest due events first, so a backlog can delay even a High event. A
     // handler may raise another event, which is eligible in the next round of
-    // this call. Returns events handled.
+    // this call. Returns events handled. A handler's exception is rethrown
+    // after the rest have run, except std::out_of_range and
+    // std::bad_variant_access from a remote event (origin != 0), which only
+    // count in remoteHandlerErrors().
     std::size_t dispatch();
     // Discards every queued event, due or not.
     void clearPending();
@@ -49,6 +52,7 @@ public:
     // Must be positive. Applies to every queued event, due or delayed.
     void setMaxPending(std::size_t maxPending);
     std::uint64_t droppedByLimit() const;
+    std::uint64_t remoteHandlerErrors() const;
     std::size_t pending() const;
     std::uint64_t deferredByLimits() const;
 
@@ -64,6 +68,7 @@ private:
 
     void requireOwner() const;
     void deliver(const Event& event, std::exception_ptr& firstError);
+    void countRemoteHandlerError(const Event& event);
 
     const TimeSource& clock_;
     const std::thread::id owner_;
@@ -72,6 +77,7 @@ private:
     std::uint64_t nextSequence_ = 1;
     std::uint64_t deferredByLimits_ = 0;
     std::uint64_t droppedByLimit_ = 0;
+    std::uint64_t remoteHandlerErrors_ = 0;
     // At the 1,000 default budget, a High event waits at most about ten
     // dispatches behind a full queue.
     std::size_t maxPending_ = 10000;

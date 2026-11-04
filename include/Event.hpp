@@ -52,7 +52,11 @@ struct Event {
     std::int64_t deliverAt = 0;
     int priority = EventPriority::Normal;
     std::uint64_t sequence = 0;
-    std::uint32_t origin = 0; // 0 = this machine, else a remote player id or ServerOrigin.
+    // 0 = this machine, else a remote player id or ServerOrigin. Object IDs are
+    // local to each machine, so NetworkEventBridge removes `object`, `a` and `b`
+    // from a remote Death, Spawn or Collision event. Find its subject with
+    // NetworkWorldSync::remotePlayer(origin).
+    std::uint32_t origin = 0;
 
     Event& set(std::string name, bool value)
     {
