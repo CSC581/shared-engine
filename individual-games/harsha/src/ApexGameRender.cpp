@@ -202,26 +202,21 @@ void ApexGame::render(SDL_Renderer* renderer) const
     }
 
     if (playing) {
-        char replayHud[96];
-        constexpr double secondsPerTic = 1.0 / static_cast<double>(kGameTicsPerSecond);
-        std::snprintf(replayHud, sizeof(replayHud), "REPLAY %.1fx%s  %.1f / %.1f s  F5 restart  F6 pause  F7 skip  F8 speed",
-                      replay_.speed(), replay_.isPlaybackPaused() ? " paused" : "",
-                      static_cast<double>(replay_.playbackPosition()) * secondsPerTic,
-                      static_cast<double>(replay_.recordedDuration()) * secondsPerTic);
-        SDL_SetRenderDrawColor(renderer, 255, 120, 120, 255);
-        SDL_RenderDebugText(renderer, (viewWidth_ - 8.0F * static_cast<float>(std::strlen(replayHud))) * 0.5F, 110.0F,
-                            replayHud);
+        drawReplayOverlay(renderer);
     }
+    // The recorded death itself, or the moment after it ends the kill cam.
     if (engine_.realTime().now() < replayFlashUntil_) {
-        SDL_SetRenderDrawColor(renderer, 230, 40, 40, 255);
-        const SDL_FRect border{4.0F, 4.0F, viewWidth_ - 8.0F, viewHeight_ - 8.0F};
-        SDL_RenderRect(renderer, &border);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer, 255, 40, 40, 120);
+        SDL_RenderFillRect(renderer, nullptr);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     }
 
     if (noticeSecondsLeft_ > 0.0F) {
         SDL_SetRenderDrawColor(renderer, 255, 225, 150, 255);
-        SDL_RenderDebugText(renderer, (viewWidth_ - 8.0F * static_cast<float>(notice_.size())) * 0.5F, 130.0F,
-                            notice_.c_str());
+        // Below the replay banner while one plays.
+        SDL_RenderDebugText(renderer, (viewWidth_ - 8.0F * static_cast<float>(notice_.size())) * 0.5F,
+                            playing ? 205.0F : 130.0F, notice_.c_str());
     }
 
     // In the wind: which way it is pushing right now.
@@ -296,6 +291,70 @@ void ApexGame::render(SDL_Renderer* renderer) const
         }
         SDL_RenderDebugText(renderer, 20.0F, 100.0F, ("Peers: " + status).c_str());
     }
+}
+
+// Readable from across a room: a tint, a thick pulsing border, a record light
+// and a large title. Red for the kill cam, amber for a replay asked for with F5.
+void ApexGame::drawReplayOverlay(SDL_Renderer* renderer) const
+{
+    constexpr float bandTop = 112.0F;
+    constexpr float bandHeight = 80.0F;
+    constexpr float borderThickness = 16.0F;
+    constexpr float titleScale = 6.0F;
+    constexpr float debugFontSize = 8.0F;
+
+    const Color accent = killCamPlaying_ ? Color{235, 45, 45} : Color{240, 170, 50};
+    const char* title = killCamPlaying_ ? "KILL CAM" : "REPLAY";
+    const double seconds = static_cast<double>(engine_.realTime().now()) / 1e9;
+    const float pulse = 0.5F + 0.5F * static_cast<float>(std::sin(seconds * 2.0 * 3.14159265358979 * 1.5));
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, accent.red, accent.green, accent.blue, 45);
+    SDL_RenderFillRect(renderer, nullptr);
+
+    SDL_SetRenderDrawColor(renderer, accent.red, accent.green, accent.blue, static_cast<Uint8>(140.0F + 115.0F * pulse));
+    const SDL_FRect border[4] = {
+        {0.0F, 0.0F, viewWidth_, borderThickness},
+        {0.0F, viewHeight_ - borderThickness, viewWidth_, borderThickness},
+        {0.0F, borderThickness, borderThickness, viewHeight_ - 2.0F * borderThickness},
+        {viewWidth_ - borderThickness, borderThickness, borderThickness, viewHeight_ - 2.0F * borderThickness},
+    };
+    SDL_RenderFillRects(renderer, border, 4);
+
+    SDL_SetRenderDrawColor(renderer, 10, 8, 12, 215);
+    const SDL_FRect band{borderThickness, bandTop, viewWidth_ - 2.0F * borderThickness, bandHeight};
+    SDL_RenderFillRect(renderer, &band);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+
+    const float titleWidth = debugFontSize * titleScale * static_cast<float>(std::strlen(title));
+    const float titleX = (viewWidth_ - titleWidth) * 0.5F;
+    constexpr float titleY = bandTop + 9.0F;
+
+    // Solid while paused, so a blink always means it is playing.
+    if (replay_.isPlaybackPaused() || pulse > 0.5F) {
+        SDL_SetRenderDrawColor(renderer, accent.red, accent.green, accent.blue, 255);
+        const SDL_FRect light{titleX - 56.0F, titleY + 6.0F, 36.0F, 36.0F};
+        SDL_RenderFillRect(renderer, &light);
+    }
+
+    // SDL's debug font only grows through the render scale.
+    float scaleX = 1.0F;
+    float scaleY = 1.0F;
+    SDL_GetRenderScale(renderer, &scaleX, &scaleY);
+    SDL_SetRenderScale(renderer, scaleX * titleScale, scaleY * titleScale);
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_RenderDebugText(renderer, titleX / titleScale, titleY / titleScale, title);
+    SDL_SetRenderScale(renderer, scaleX, scaleY);
+
+    char info[96];
+    constexpr double secondsPerTic = 1.0 / static_cast<double>(kGameTicsPerSecond);
+    std::snprintf(info, sizeof(info), "%.1fx%s  %.1f / %.1f s  F5 restart  F6 pause  F7 skip  F8 speed",
+                  replay_.speed(), replay_.isPlaybackPaused() ? " paused" : "",
+                  static_cast<double>(replay_.playbackPosition()) * secondsPerTic,
+                  static_cast<double>(replay_.recordedDuration()) * secondsPerTic);
+    SDL_SetRenderDrawColor(renderer, 235, 225, 225, 255);
+    SDL_RenderDebugText(renderer, (viewWidth_ - debugFontSize * static_cast<float>(std::strlen(info))) * 0.5F,
+                        bandTop + bandHeight - 16.0F, info);
 }
 
 void ApexGame::drawRecordedClimbers(SDL_Renderer* renderer, float camera) const

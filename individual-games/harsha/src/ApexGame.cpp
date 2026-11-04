@@ -53,6 +53,7 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     // A stale stop can arrive for a playback that restarted, hence the check.
     subscriptions_.push_back(engine_.events().subscribe(Events::ReplayPlayStop, [this](const Event&) {
         if (!replay_.isPlaying()) {
+            killCamPlaying_ = false;
             engine_.events().raise(Event{Events::ReplayRecordStart});
         }
     }));
@@ -583,6 +584,7 @@ void ApexGame::onDeath(const Event& event)
     // The spawn is on game time, which the replay pauses, so the climber comes
     // back after the kill cam, not under it.
     raiseSpawnAt(*checkpoint_, respawnDelayTics);
+    killCamPlaying_ = true;
     engine_.events().raise(Event{Events::ReplayPlayStart});
 }
 

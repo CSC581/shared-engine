@@ -24,8 +24,9 @@ keeps whatever speed the jump had. Steering can change direction but never
 adds height. The dash is the same: it is a short sideways burst that neither
 adds height nor stops a fall.
 
-Dying plays the last 5 seconds back as a kill cam (F7 skips it), then you
-respawn at your checkpoint. Input, collisions, deaths and respawns all run
+Dying plays the last 5 seconds back as a kill cam, with a large red `KILL CAM`
+banner and pulsing border (F7 skips it), then you respawn at your checkpoint. A
+replay asked for with F5 looks the same in amber, labelled `REPLAY`. Input, collisions, deaths and respawns all run
 through the engine's event system.
 
 ## The tower

@@ -100,6 +100,7 @@ private:
     // The climbers drawn outside renderWorld(), as text for the replay.
     std::string recordClimbers() const;
     void drawRecordedClimbers(SDL_Renderer* renderer, float camera) const;
+    void drawReplayOverlay(SDL_Renderer* renderer) const;
     void updateOnlineCues(float deltaTime);
     void spawnDebris(const Rect& ledge);
 
@@ -111,6 +112,8 @@ private:
     ReplaySystem replay_;
     // Red border until this real time, when a replay reaches a death.
     std::int64_t replayFlashUntil_ = 0;
+    // The playback in progress came from a death, not from F5.
+    bool killCamPlaying_ = false;
 
     // Every object in the scene: platforms, the local player and, online,
     // the remote players and server-owned platforms NetworkWorldSync mirrors.
