@@ -28,7 +28,9 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
 {
     ApexLevel::buildLevel(world_, worldWidth_, worldHeight_, viewHeight_, session_ != nullptr);
 
+    world_.setEventManager(&engine_.events());
     subscriptions_.push_back(engine_.events().subscribe(Events::Input, [this](const Event& event) { onInput(event); }));
+    subscriptions_.push_back(engine_.events().subscribe(Events::Collision, [this](const Event& event) { onCollision(event); }));
 
     player_ = &ApexLevel::makePlayer(world_, 0.0F, 0.0F, playerWidth, playerHeight, gravity);
     playerTransform_ = player_->get<Transform>();
@@ -37,11 +39,6 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     const std::vector<GameObject*> windZones = world_.findAllWith<WindZone>();
     windZoneObject_ = windZones.empty() ? nullptr : windZones.front();
     crumbles_ = world_.findAllWith<Crumble>();
-
-    Collider& playerCollider = *player_->get<Collider>();
-    playerCollider.onCollide = [this](GameObject&, GameObject& other) { onPlayerCollide(other); };
-    playerCollider.onEnter = [this](GameObject&, GameObject& other) { onPlayerEnter(other); };
-    playerCollider.onExit = [this](GameObject&, GameObject& other) { onPlayerExit(other); };
 
     // Start on room 0's first slot (online, the real slot follows once the
     // server assigns an id).
@@ -340,9 +337,14 @@ void ApexGame::handleCollisions()
     isOnGround_ = false;
     groundedPlatformId_ = 0;
 
+    const auto overlapsHorizontally = [](const Rect& a, const Rect& b) {
+        return a.x < b.x + b.width && a.x + a.width > b.x;
+    };
+
     // Landing pass first, over every platform: snap onto any top the feet
     // crossed this frame.
-    for (GameObject* platform : world_.findAllByTag("platform")) {
+    const std::vector<GameObject*> platforms = world_.findAllByTag("platform");
+    for (GameObject* platform : platforms) {
         // findAllByTag also returns switched-off objects: a crumbled ledge.
         if (!platform->isActive()) {
             continue;
@@ -350,15 +352,11 @@ void ApexGame::handleCollisions()
         const Rect playerBounds = playerTransform_->bounds();
         const Rect platformBounds = platform->get<Transform>()->bounds();
 
-        // Land when the foot crosses the top (avoids wrong-axis MTV near edges).
-        const bool overlapsHorizontally =
-            playerBounds.x < platformBounds.x + platformBounds.width &&
-            playerBounds.x + playerBounds.width > platformBounds.x;
-
         // vy >= 0 (not only > 0): resting contact has vy == 0 and feet on the
         // surface with no AABB overlap, so MTV never fires; requiring a fall
         // made isOnGround_ flicker every other frame (anim Land/air twitch).
-        if (playerMotion_->velocityY >= 0.0F && overlapsHorizontally &&
+        // Land when the foot crosses the top (avoids wrong-axis MTV near edges).
+        if (playerMotion_->velocityY >= 0.0F && overlapsHorizontally(playerBounds, platformBounds) &&
             previousPlayerBottom_ <= platformBounds.y + landingTolerance &&
             playerBounds.y + playerBounds.height >= platformBounds.y) {
             playerTransform_->y = platformBounds.y - playerHeight;
@@ -369,13 +367,25 @@ void ApexGame::handleCollisions()
     }
 
     // Then the engine's pass: pushes the player out of walls and ceilings
-    // (MTV), and calls collider callbacks. A push that leaves the player on
-    // top of a platform counts as a landing; see onPlayerCollide.
+    // (MTV), and queues the collision events onCollision() handles later.
     world_.resolveCollisions();
 
-    // A death zone was touched: back to the checkpoint. Done here, after the
-    // pass, rather than inside the callback, so every other callback this
-    // frame saw the same climber position.
+    // A push that left the feet on a top counts as a landing. Checked here, not
+    // from an event, because crumbles and animation read it this frame.
+    const Rect playerBounds = playerTransform_->bounds();
+    for (GameObject* platform : platforms) {
+        if (!platform->isActive()) {
+            continue;
+        }
+        const Rect platformBounds = platform->get<Transform>()->bounds();
+        if (playerMotion_->velocityY >= 0.0F && overlapsHorizontally(playerBounds, platformBounds) &&
+            std::fabs(playerBounds.y + playerBounds.height - platformBounds.y) <= pushLandingTolerance) {
+            isOnGround_ = true;
+            groundedPlatformId_ = platform->id();
+        }
+    }
+
+    // A death zone was touched: back to the checkpoint.
     if (pendingRespawn_) {
         pendingRespawn_ = false;
         ++deaths_;
@@ -383,38 +393,56 @@ void ApexGame::handleCollisions()
     }
 }
 
-// Player's onCollide. World calls it after all pushes, so the player's
-// position is settled: if its feet now rest on this platform's top, the MTV
-// pushed it up onto it (the old "pushY < 0" landing case).
-void ApexGame::onPlayerCollide(GameObject& other)
+// The climber's contacts, at the engine's dispatch after update(). Movers
+// overlapping level geometry raise events too, so anything else is ignored.
+void ApexGame::onCollision(const Event& event)
 {
+    const std::int64_t a = event.get<std::int64_t>("a");
+    const std::int64_t b = event.get<std::int64_t>("b");
+    const auto playerId = static_cast<std::int64_t>(player_->id());
+    if (a != playerId && b != playerId) {
+        return;
+    }
+    GameObject* other = world_.find(static_cast<ObjectId>(a == playerId ? b : a));
+    if (other == nullptr) {
+        return;
+    }
+    const std::string phase = event.get<std::string>("phase");
+
+    if (const WindZone* zone = other->get<WindZone>()) {
+        if (phase == "enter") {
+            wind_ = zone;
+        } else if (phase == "exit" && wind_ == zone) {
+            wind_ = nullptr;
+        }
+        return;
+    }
+    if (phase == "exit") {
+        return;
+    }
+    if (other->has<DeathZone>()) {
+        if (phase == "enter") {
+            pendingRespawn_ = true;
+        }
+        return;
+    }
     // Standing in a higher room's checkpoint marker makes it the respawn
     // point. Grounded only: jumping through one on the way past does not count.
-    if (const SpawnMarker* marker = other.get<SpawnMarker>()) {
+    if (const SpawnMarker* marker = other->get<SpawnMarker>()) {
         if (isOnGround_ && marker->room > checkpointRoom_) {
             checkpointRoom_ = marker->room;
-            checkpoint_ = other.get<Transform>();
+            checkpoint_ = other->get<Transform>();
         }
         return;
     }
     // Room-snap camera: show the room whose zone holds the climber's centre.
     // A climber straddling two rooms overlaps both zones; the centre decides.
-    if (const RoomZone* room = other.get<RoomZone>()) {
-        const Transform& zone = *other.get<Transform>();
+    if (const RoomZone* room = other->get<RoomZone>()) {
+        const Transform& zone = *other->get<Transform>();
         const float centreY = playerTransform_->y + playerHeight * 0.5F;
         if (centreY >= zone.y && centreY < zone.y + zone.height) {
             cameraRoom_ = room->room;
         }
-        return;
-    }
-    if (other.tag() != "platform") {
-        return;
-    }
-    const float playerBottom = playerTransform_->y + playerHeight;
-    const float platformTop = other.get<Transform>()->y;
-    if (playerMotion_->velocityY >= 0.0F && std::fabs(playerBottom - platformTop) <= landingTolerance) {
-        isOnGround_ = true;
-        groundedPlatformId_ = other.id();
     }
 }
 
@@ -443,24 +471,6 @@ const Transform* ApexGame::findSpawnMarker(int room, int slot)
         }
     }
     return nullptr;
-}
-
-// Player's onEnter / onExit: hidden trigger zones the climber moves through.
-void ApexGame::onPlayerEnter(GameObject& other)
-{
-    if (other.has<DeathZone>()) {
-        pendingRespawn_ = true;
-    }
-    if (const WindZone* zone = other.get<WindZone>()) {
-        wind_ = zone;
-    }
-}
-
-void ApexGame::onPlayerExit(GameObject& other)
-{
-    if (other.get<WindZone>() == wind_) {
-        wind_ = nullptr;
-    }
 }
 
 // Which room a world y is in (0 = bottom), clamped to the tower.

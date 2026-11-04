@@ -47,6 +47,9 @@ private:
     static constexpr float slingshotVerticalShare = 0.5F;
     // Slop for the direction-aware landing check (float drift on the surface).
     static constexpr float landingTolerance = 4.0F;
+    // Feet this close to a top after the collision pass were pushed onto it.
+    // Far tighter than landingTolerance, or a falling climber would hover.
+    static constexpr float pushLandingTolerance = 0.01F;
 
     static constexpr float playerWidth = 50.0F;
     static constexpr float playerHeight = 70.0F;
@@ -59,14 +62,12 @@ private:
     void onInput(const Event& event);
     bool isHeld(SDL_Scancode key) const { return keysHeld_[key]; }
     void applyHeldKeys();
+    void onCollision(const Event& event);
     void handleCollisions();
-    void onPlayerCollide(GameObject& other);
     void applySlingshotFling();
     // Puts the climber standing at a spawn marker, at rest, camera snapped.
     void placeAt(const Transform& marker);
     const Transform* findSpawnMarker(int room, int slot);
-    void onPlayerEnter(GameObject& other);
-    void onPlayerExit(GameObject& other);
     void updateCamera(float deltaTime);
     float cameraTarget() const;
     int roomAt(float worldY) const;
@@ -102,8 +103,8 @@ private:
     float walkIntent_ = 0.0F;
     // Surface::friction of the platform underfoot, refreshed each frame.
     float groundFriction_ = Surface::ground;
-    // Wind zone the climber is inside, set and cleared by the player's
-    // trigger callbacks (main thread); read by the player worker.
+    // Wind zone the climber is inside, set and cleared by onCollision() (main
+    // thread, between frames' worker runs); read by the player worker.
     const WindZone* wind_ = nullptr;
     // For drawing the wind cue: the (only) wind zone, its push this frame,
     // and how far the streaks have drifted.
@@ -144,7 +145,7 @@ private:
     int checkpointRoom_ = 0;
     // Online: moved to slot (id - 1) % 4 once, when the server assigns an id.
     bool onlineSlotPlaced_ = false;
-    // Set by a death zone's onEnter, acted on once the collision pass ends.
+    // Set by onCollision() on a death zone, acted on in handleCollisions().
     bool pendingRespawn_ = false;
     int deaths_ = 0;
 
