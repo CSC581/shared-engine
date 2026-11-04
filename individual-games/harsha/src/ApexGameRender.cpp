@@ -148,7 +148,9 @@ void ApexGame::render(SDL_Renderer* renderer) const
         }
     }
 
-    if (playerAnim_.isLoaded()) {
+    if (isDead_) {
+        // Hidden until the delayed SpawnEvent.
+    } else if (playerAnim_.isLoaded()) {
         playerAnim_.draw(renderer, playerTransform_->x, playerTransform_->y, camera_, playerWidth,
                          playerHeight);
     } else {

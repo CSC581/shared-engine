@@ -17,6 +17,7 @@
 #include <SDL3/SDL.h>
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -56,6 +57,9 @@ private:
 
     static constexpr int roomCount = 6;
 
+    // On game time, so a pause holds it. Lets the death read on screen.
+    static constexpr std::int64_t respawnDelayTics = kGameTicsPerSecond * 2 / 5;
+
     // Dark brown a crumbling moss ledge fades toward; also half its debris.
     static constexpr Color crumbledColor{110, 80, 45};
 
@@ -65,8 +69,12 @@ private:
     void onCollision(const Event& event);
     void handleCollisions();
     void applySlingshotFling();
-    // Puts the climber standing at a spawn marker, at rest, camera snapped.
-    void placeAt(const Transform& marker);
+    void onDeath(const Event& event);
+    void onSpawn(const Event& event);
+    // Raises the SpawnEvent that stands the climber on a spawn marker.
+    void raiseSpawnAt(const Transform& marker, std::int64_t delayTics = 0);
+    // Puts the climber at rest at this position, camera snapped.
+    void placeAt(float x, float y);
     const Transform* findSpawnMarker(int room, int slot);
     void updateCamera(float deltaTime);
     float cameraTarget() const;
@@ -145,8 +153,8 @@ private:
     int checkpointRoom_ = 0;
     // Online: moved to slot (id - 1) % 4 once, when the server assigns an id.
     bool onlineSlotPlaced_ = false;
-    // Set by onCollision() on a death zone, acted on in handleCollisions().
-    bool pendingRespawn_ = false;
+    // Between a DeathEvent and its delayed SpawnEvent: switched off and hidden.
+    bool isDead_ = false;
     int deaths_ = 0;
 
     // Vertical scroll: world Y minus camera_ is screen Y. It eases toward the

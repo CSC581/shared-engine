@@ -31,6 +31,8 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     world_.setEventManager(&engine_.events());
     subscriptions_.push_back(engine_.events().subscribe(Events::Input, [this](const Event& event) { onInput(event); }));
     subscriptions_.push_back(engine_.events().subscribe(Events::Collision, [this](const Event& event) { onCollision(event); }));
+    subscriptions_.push_back(engine_.events().subscribe(Events::Death, [this](const Event& event) { onDeath(event); }));
+    subscriptions_.push_back(engine_.events().subscribe(Events::Spawn, [this](const Event& event) { onSpawn(event); }));
 
     player_ = &ApexLevel::makePlayer(world_, 0.0F, 0.0F, playerWidth, playerHeight, gravity);
     playerTransform_ = player_->get<Transform>();
@@ -43,7 +45,7 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     // Start on room 0's first slot (online, the real slot follows once the
     // server assigns an id).
     checkpoint_ = findSpawnMarker(0, 0);
-    placeAt(*checkpoint_);
+    raiseSpawnAt(*checkpoint_);
 
     // Online: other climbers and server-owned platforms become objects in the
     // same World, created, moved and removed from session snapshots.
@@ -126,8 +128,8 @@ void ApexGame::applyHeldKeys()
     // Walking is recomputed from the keys every frame; nothing held, no walk.
     walkIntent_ = 0.0F;
 
-    // Paused: freeze the climber.
-    if (gameTimePaused_) {
+    // Paused or dead: freeze the climber.
+    if (gameTimePaused_ || isDead_) {
         return;
     }
 
@@ -240,7 +242,7 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
             if (checkpointRoom_ == 0 && highestRoomReached_ == 0 && isOnGround_ && !isCharging_) {
                 if (const Transform* slot = findSpawnMarker(0, static_cast<int>((id - 1) % 4))) {
                     checkpoint_ = slot;
-                    placeAt(*slot);
+                    raiseSpawnAt(*slot);
                 }
             }
         }
@@ -337,6 +339,13 @@ void ApexGame::handleCollisions()
     isOnGround_ = false;
     groundedPlatformId_ = 0;
 
+    // Still run the engine's pass, so switching the climber off reports its
+    // exits (the wind zone). There is no one to land.
+    if (isDead_) {
+        world_.resolveCollisions();
+        return;
+    }
+
     const auto overlapsHorizontally = [](const Rect& a, const Rect& b) {
         return a.x < b.x + b.width && a.x + a.width > b.x;
     };
@@ -384,13 +393,6 @@ void ApexGame::handleCollisions()
             groundedPlatformId_ = platform->id();
         }
     }
-
-    // A death zone was touched: back to the checkpoint.
-    if (pendingRespawn_) {
-        pendingRespawn_ = false;
-        ++deaths_;
-        placeAt(*checkpoint_);
-    }
 }
 
 // The climber's contacts, at the engine's dispatch after update(). Movers
@@ -420,9 +422,10 @@ void ApexGame::onCollision(const Event& event)
     if (phase == "exit") {
         return;
     }
-    if (other->has<DeathZone>()) {
+    if (const DeathZone* death = other->get<DeathZone>()) {
         if (phase == "enter") {
-            pendingRespawn_ = true;
+            engine_.events().raise(Event{Events::Death}.set("object", player_->id())
+                                                       .set("cause", death->spikes ? "spikes" : "fall"));
         }
         return;
     }
@@ -446,13 +449,53 @@ void ApexGame::onCollision(const Event& event)
     }
 }
 
-void ApexGame::placeAt(const Transform& marker)
+void ApexGame::onDeath(const Event& event)
 {
-    playerTransform_->x = marker.x + (marker.width - playerWidth) * 0.5F;
-    playerTransform_->y = marker.y;
+    // Touching two death zones in one frame is still one death.
+    if (event.origin != 0 || isDead_) {
+        return;
+    }
+    isDead_ = true;
+    ++deaths_;
+    isCharging_ = false;
+    chargePower_ = 0.0F;
+    isOnGround_ = false;
+    groundedPlatformId_ = 0;
+    player_->setActive(false);
+    raiseSpawnAt(*checkpoint_, respawnDelayTics);
+}
+
+void ApexGame::onSpawn(const Event& event)
+{
+    if (event.origin != 0) {
+        return;
+    }
+    const auto x = static_cast<float>(event.get<double>("x"));
+    const auto y = static_cast<float>(event.get<double>("y"));
+    if (event.getOr<std::string>("kind", "") == "debris") {
+        spawnDebris(Rect{x, y, static_cast<float>(event.get<double>("width")), 0.0F});
+        return;
+    }
+    placeAt(x, y);
+    isDead_ = false;
+    player_->setActive(true);
+}
+
+void ApexGame::raiseSpawnAt(const Transform& marker, std::int64_t delayTics)
+{
+    engine_.events().raise(Event{Events::Spawn}.set("object", player_->id())
+                                               .set("x", static_cast<double>(marker.x + (marker.width - playerWidth) * 0.5F))
+                                               .set("y", static_cast<double>(marker.y)),
+                           delayTics);
+}
+
+void ApexGame::placeAt(float x, float y)
+{
+    playerTransform_->x = x;
+    playerTransform_->y = y;
     playerMotion_->velocityX = 0.0F;
     playerMotion_->velocityY = 0.0F;
-    previousPlayerBottom_ = marker.y + playerHeight;
+    previousPlayerBottom_ = y + playerHeight;
     isCharging_ = false;
     chargePower_ = 0.0F;
     // The landing pass grounds the climber on the next frame: its feet are on
@@ -535,7 +578,10 @@ void ApexGame::updateCrumbles(float deltaTime)
             if (crumble.timer >= Crumble::breakAfterSeconds) {
                 transform.x = crumble.homeX;
                 renderable.color = moss;
-                spawnDebris(transform.bounds());
+                engine_.events().raise(Event{Events::Spawn}.set("kind", "debris")
+                                                           .set("x", static_cast<double>(transform.x))
+                                                           .set("y", static_cast<double>(transform.y))
+                                                           .set("width", static_cast<double>(transform.width)));
                 ledge->setActive(false);
                 crumble.state = Crumble::State::Broken;
                 crumble.timer = 0.0F;
