@@ -8,8 +8,8 @@
 #include <string>
 #include <vector>
 
-// Event lists on the wire, in both client-server formats: the multipart text
-// format (one string per field) and the one-frame binary format.
+// Event lists on the wire, in the client-server multipart text format (one
+// string per field). Events are text-only; binary sessions carry none.
 //
 // OutgoingEvent and RelayedEvent are in NetworkProtocol.hpp. Client-to-server
 // events carry no origin and decode with origin 0, while server-to-client
@@ -17,8 +17,8 @@
 //
 // These functions place a list at a position inside a larger message instead
 // of owning a whole message, so the protocol can carry events alongside the
-// fields it already has. The rules are the same in both formats (see
-// validateEvent); limits are in WireFormat.hpp.
+// fields it already has. The rules are in validateEvent; limits are in
+// WireFormat.hpp.
 namespace Network {
 
 // True when `event` can be encoded: a type and argument names of 1 to
@@ -26,7 +26,7 @@ namespace Network {
 // arguments, text values of at most maxEventTextLength bytes, finite decimals,
 // and a timestamp of 0 or more. Otherwise sets `error` to the rule that failed.
 // Subnormal decimals (below about 2.2e-308) are valid and travel as zero of
-// the same sign, so both formats always carry the same value.
+// the same sign.
 bool validateEvent(const Event& event, std::string& error);
 
 // True when a client-to-server list can be encoded: at most
@@ -40,19 +40,13 @@ bool validateEvents(const std::vector<OutgoingEvent>& events, std::string& error
 // maxEventsPerMessage events, or sequences out of order.
 void appendEventsText(Message& out, const std::vector<OutgoingEvent>& events);
 void appendEventsText(Message& out, const std::vector<RelayedEvent>& events);
-void appendEventsBinary(std::string& out, const std::vector<OutgoingEvent>& events);
-void appendEventsBinary(std::string& out, const std::vector<RelayedEvent>& events);
 
-// Read a list starting at field (text) or byte (binary) `cursor`. On success,
+// Read a list starting at field `cursor`. On success,
 // replace `out` and leave `cursor` just past the list; whatever follows is the
 // caller's to check. On failure, set `error` and change neither.
 bool readEventsText(const Message& in, std::size_t& cursor,
                     std::vector<OutgoingEvent>& out, std::string& error);
 bool readEventsText(const Message& in, std::size_t& cursor,
                     std::vector<RelayedEvent>& out, std::string& error);
-bool readEventsBinary(const std::string& in, std::size_t& cursor,
-                      std::vector<OutgoingEvent>& out, std::string& error);
-bool readEventsBinary(const std::string& in, std::size_t& cursor,
-                      std::vector<RelayedEvent>& out, std::string& error);
 
 } // namespace Network

@@ -132,8 +132,16 @@ public:
     // instead of on the network thread. Unlike poses, events are never
     // replaced: every one is handed to the client. After leave() nothing
     // would ever send them, so they are dropped rather than kept.
+    bool supportsEvents() const override
+    {
+        return config_.clientServerDataFormat == Net::DataFormat::TextMultipart;
+    }
+
     void publishEvent(const Event& event) override
     {
+        if (!supportsEvents()) {
+            throw std::logic_error("events require the text format");
+        }
         std::string error;
         if (!Network::validateEvent(event, error)) {
             throw std::invalid_argument("cannot publish event: " + error);
@@ -538,6 +546,8 @@ public:
     }
 
     Mode mode() const override { return Mode::PeerToPeer; }
+
+    bool supportsEvents() const override { return false; }
 
     void publishEvent(const Event&) override
     {

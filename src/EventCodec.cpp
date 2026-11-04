@@ -1,6 +1,5 @@
 #include "EventCodec.hpp"
 
-#include "BinaryPrimitives.hpp"
 #include "WireFormat.hpp"
 
 #include <algorithm>
@@ -22,12 +21,8 @@ constexpr const char* textInt = "i";
 constexpr const char* textDouble = "d";
 constexpr const char* textString = "s";
 
-enum class Kind : std::uint8_t { Bool = 0, Int = 1, Double = 2, String = 3 };
-
-// The smallest argument: a one-character name, its kind and a one-byte value
-// (binary), or name, kind and value fields (text). Used to reject a count
-// that cannot fit before anything is allocated for it.
-constexpr std::size_t minimumArgBytes = 2 + 1 + 1 + 1;
+// Name, kind and value fields. Used to reject a count that cannot fit before
+// anything is allocated for it.
 constexpr std::size_t argFields = 3;
 
 // What differs between the two directions.
@@ -39,8 +34,6 @@ struct Direction<OutgoingEvent> {
     static constexpr bool carriesOrigin = false;
     // sequence, type, priority, timestamp, argument count.
     static constexpr std::size_t minimumFields = 5;
-    // u64 sequence, u16 + 1 type, i32 priority, i64 timestamp, u8 count.
-    static constexpr std::size_t minimumBytes = 8 + 2 + 1 + 4 + 8 + 1;
 
     static std::uint64_t sequence(const OutgoingEvent& entry) { return entry.clientSequence; }
     static void setSequence(OutgoingEvent& entry, std::uint64_t value) { entry.clientSequence = value; }
@@ -52,7 +45,6 @@ template <>
 struct Direction<RelayedEvent> {
     static constexpr bool carriesOrigin = true;
     static constexpr std::size_t minimumFields = Direction<OutgoingEvent>::minimumFields + 1;
-    static constexpr std::size_t minimumBytes = Direction<OutgoingEvent>::minimumBytes + 4;
 
     static std::uint64_t sequence(const RelayedEvent& entry) { return entry.serverSequence; }
     static void setSequence(RelayedEvent& entry, std::uint64_t value) { entry.serverSequence = value; }
@@ -72,16 +64,10 @@ bool isValidName(const std::string& name)
 // The value a decimal travels as. Subnormals (below about 2.2e-308) become
 // zero of the same sign: some standard libraries cannot read them back from
 // text, and a value decaying toward zero passes through that range, so
-// sending zero keeps the formats in agreement without refusing the event.
+// sending zero keeps every machine in agreement without refusing the event.
 double wireDecimal(double value)
 {
     return std::fpclassify(value) == FP_SUBNORMAL ? std::copysign(0.0, value) : value;
-}
-
-// What a decoder accepts: exactly what an encoder can produce.
-bool isWireDecimal(double value)
-{
-    return value == 0.0 || std::isnormal(value);
 }
 
 template <class Entry>
@@ -286,157 +272,6 @@ bool readText(const Message& in, std::size_t& cursor, std::vector<Entry>& out, s
     return true;
 }
 
-// --- Binary ------------------------------------------------------------------
-
-void appendBinaryValue(std::string& out, const EventValue& value)
-{
-    if (const auto* flag = std::get_if<bool>(&value)) {
-        binary::putU8(out, static_cast<std::uint8_t>(Kind::Bool));
-        binary::putU8(out, *flag ? 1U : 0U);
-    } else if (const auto* integer = std::get_if<std::int64_t>(&value)) {
-        binary::putU8(out, static_cast<std::uint8_t>(Kind::Int));
-        binary::putI64(out, *integer);
-    } else if (const auto* decimal = std::get_if<double>(&value)) {
-        binary::putU8(out, static_cast<std::uint8_t>(Kind::Double));
-        binary::putF64(out, wireDecimal(*decimal));
-    } else {
-        binary::putU8(out, static_cast<std::uint8_t>(Kind::String));
-        binary::putString(out, std::get<std::string>(value));
-    }
-}
-
-template <class Entry>
-void appendBinary(std::string& out, const std::vector<Entry>& events)
-{
-    std::string error;
-    if (!validateList(events, error)) {
-        throw std::invalid_argument(error);
-    }
-    binary::putU16(out, static_cast<std::uint16_t>(events.size()));
-    for (const Entry& entry : events) {
-        const Event& event = entry.event;
-        binary::putU64(out, Direction<Entry>::sequence(entry));
-        binary::putString(out, event.type);
-        binary::putI32(out, event.priority);
-        if (Direction<Entry>::carriesOrigin) {
-            binary::putU32(out, event.origin);
-        }
-        binary::putI64(out, event.timestamp);
-        binary::putU8(out, static_cast<std::uint8_t>(event.args.size()));
-        for (const auto& [name, value] : event.args) {
-            binary::putString(out, name);
-            appendBinaryValue(out, value);
-        }
-    }
-}
-
-bool readBinaryValue(const std::string& in, std::size_t& at, EventValue& value)
-{
-    std::uint8_t kind = 0;
-    if (!binary::getU8(in, at, kind)) {
-        return false;
-    }
-    switch (static_cast<Kind>(kind)) {
-    case Kind::Bool: {
-        std::uint8_t flag = 0;
-        if (!binary::getU8(in, at, flag) || flag > 1U) {
-            return false;
-        }
-        value = flag == 1U;
-        return true;
-    }
-    case Kind::Int: {
-        std::int64_t integer = 0;
-        if (!binary::getI64(in, at, integer)) {
-            return false;
-        }
-        value = integer;
-        return true;
-    }
-    case Kind::Double: {
-        double decimal = 0.0;
-        // NaN, infinities and subnormals never come from an encoder.
-        if (!binary::getF64(in, at, decimal) || !isWireDecimal(decimal)) {
-            return false;
-        }
-        value = decimal;
-        return true;
-    }
-    case Kind::String: {
-        std::string text;
-        if (!binary::getString(in, at, text, Net::maxEventTextLength)) {
-            return false;
-        }
-        value = std::move(text);
-        return true;
-    }
-    }
-    return false;
-}
-
-template <class Entry>
-bool readBinaryEvent(const std::string& in, std::size_t& at, Entry& entry, std::string& error)
-{
-    Event& event = entry.event;
-    std::uint64_t sequence = 0;
-    std::int32_t priority = 0;
-    std::uint8_t argCount = 0;
-
-    if (!binary::getU64(in, at, sequence) || !binary::getString(in, at, event.type, Net::maxEventNameLength) ||
-        !binary::getI32(in, at, priority) ||
-        (Direction<Entry>::carriesOrigin && !binary::getU32(in, at, event.origin)) ||
-        !binary::getI64(in, at, event.timestamp) || !binary::getU8(in, at, argCount)) {
-        error = "invalid or truncated event";
-        return false;
-    }
-    if (argCount > Net::maxEventArgs || argCount > (in.size() - at) / minimumArgBytes) {
-        error = "invalid event argument count";
-        return false;
-    }
-
-    for (std::uint8_t i = 0; i < argCount; ++i) {
-        std::string name;
-        EventValue value;
-        if (!binary::getString(in, at, name, Net::maxEventNameLength) || !readBinaryValue(in, at, value)) {
-            error = "invalid event argument";
-            return false;
-        }
-        if (!event.args.emplace(std::move(name), std::move(value)).second) {
-            error = "duplicate event argument name";
-            return false;
-        }
-    }
-
-    Direction<Entry>::setSequence(entry, sequence);
-    event.priority = priority;
-    return true;
-}
-
-template <class Entry>
-bool readBinary(const std::string& in, std::size_t& cursor, std::vector<Entry>& out, std::string& error)
-{
-    std::size_t at = cursor;
-    std::uint16_t count = 0;
-    if (!binary::getU16(in, at, count) || count > Net::maxEventsPerMessage ||
-        count > (in.size() - at) / Direction<Entry>::minimumBytes) {
-        error = "invalid event count";
-        return false;
-    }
-
-    std::vector<Entry> events(count);
-    for (Entry& entry : events) {
-        if (!readBinaryEvent(in, at, entry, error)) {
-            return false;
-        }
-    }
-    if (!validateList(events, error)) {
-        return false;
-    }
-    out = std::move(events);
-    cursor = at;
-    return true;
-}
-
 } // namespace
 
 bool validateEvent(const Event& event, std::string& error)
@@ -487,16 +322,6 @@ void appendEventsText(Message& out, const std::vector<RelayedEvent>& events)
     appendText(out, events);
 }
 
-void appendEventsBinary(std::string& out, const std::vector<OutgoingEvent>& events)
-{
-    appendBinary(out, events);
-}
-
-void appendEventsBinary(std::string& out, const std::vector<RelayedEvent>& events)
-{
-    appendBinary(out, events);
-}
-
 bool readEventsText(const Message& in, std::size_t& cursor, std::vector<OutgoingEvent>& out, std::string& error)
 {
     return readText(in, cursor, out, error);
@@ -505,18 +330,6 @@ bool readEventsText(const Message& in, std::size_t& cursor, std::vector<Outgoing
 bool readEventsText(const Message& in, std::size_t& cursor, std::vector<RelayedEvent>& out, std::string& error)
 {
     return readText(in, cursor, out, error);
-}
-
-bool readEventsBinary(const std::string& in, std::size_t& cursor, std::vector<OutgoingEvent>& out,
-                      std::string& error)
-{
-    return readBinary(in, cursor, out, error);
-}
-
-bool readEventsBinary(const std::string& in, std::size_t& cursor, std::vector<RelayedEvent>& out,
-                      std::string& error)
-{
-    return readBinary(in, cursor, out, error);
 }
 
 } // namespace Network

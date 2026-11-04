@@ -1,4 +1,3 @@
-#include "BinaryNetworkProtocol.hpp"
 #include "EventCodec.hpp"
 #include "EventManager.hpp"
 #include "Multiplayer.hpp"
@@ -401,7 +400,7 @@ bool sameEvents(const std::vector<Network::RelayedEvent>& a, const std::vector<N
            });
 }
 
-bool bothFormatsCarryEventsAndAcks()
+bool textCarriesEventsAndAcks()
 {
     std::string error;
     const Network::Request request = positionWithEvents();
@@ -414,40 +413,12 @@ bool bothFormatsCarryEventsAndAcks()
                                                 text, error) &&
                              sameRequest(request, text),
                          "a text POSITION round-trips its acknowledgement and events: " + error);
-    Network::Request binary;
-    passed &= expect(Network::decodeBinaryRequest(Network::encodeBinaryRequest(request), binary, error) &&
-                         sameRequest(request, binary),
-                     "a binary POSITION round-trips its acknowledgement and events: " + error);
-    Network::BinaryRequestEnvelope deltaRequest;
-    deltaRequest.request = request;
-    deltaRequest.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
-    deltaRequest.acknowledgedServerTick = 3;
-    Network::BinaryRequestEnvelope deltaDecoded;
-    passed &= expect(Network::decodeBinaryRequest(Network::encodeBinaryRequest(deltaRequest), deltaDecoded, error) &&
-                         sameRequest(request, deltaDecoded.request),
-                     "a property-delta POSITION round-trips its events: " + error);
 
     Network::Reply textReply;
     passed &= expect(Network::decodeReply(Network::encodeReply(reply), textReply, error) &&
                          textReply.acceptedClientSequence == 5 && sameEvents(reply.events, textReply.events) &&
                          textReply.snapshot.platforms.size() == 1,
                      "a text SNAPSHOT round-trips acceptance and events: " + error);
-    Network::Reply binaryReply;
-    passed &= expect(Network::decodeBinaryReply(Network::encodeBinaryReply(reply), binaryReply, error) &&
-                         binaryReply.acceptedClientSequence == 5 && sameEvents(reply.events, binaryReply.events),
-                     "a binary SNAPSHOT round-trips acceptance and events: " + error);
-
-    Network::BinaryReplyEnvelope delta;
-    delta.kind = Network::BinaryReplyKind::SnapshotDelta;
-    delta.reply = reply;
-    Network::WorldSnapshot base = reply.snapshot;
-    base.serverTick = 11;
-    delta.delta = Network::makeSnapshotDelta(base, reply.snapshot);
-    Network::BinaryReplyEnvelope deltaReply;
-    passed &= expect(Network::decodeBinaryReply(Network::encodeBinaryReply(delta), deltaReply, error) &&
-                         deltaReply.kind == Network::BinaryReplyKind::SnapshotDelta &&
-                         deltaReply.reply.acceptedClientSequence == 5 && sameEvents(reply.events, deltaReply.reply.events),
-                     "a snapshot delta carries acceptance and events too: " + error);
 
     Network::Reply welcome;
     welcome.type = Network::ReplyType::Welcome;
@@ -455,21 +426,10 @@ bool bothFormatsCarryEventsAndAcks()
     welcome.acceptedClientSequence = 17;
     welcome.serverInstance = 0xFEDCBA9876543210ULL;
     Network::Reply decodedText;
-    Network::Reply decodedBinary;
-    Network::BinaryReplyEnvelope deltaWelcome;
-    deltaWelcome.kind = Network::BinaryReplyKind::DeltaWelcome;
-    deltaWelcome.reply = welcome;
-    Network::BinaryReplyEnvelope decodedDelta;
     passed &= expect(Network::decodeReply(Network::encodeReply(welcome), decodedText, error) &&
                          decodedText.acceptedClientSequence == 17 &&
-                         decodedText.serverInstance == welcome.serverInstance &&
-                         Network::decodeBinaryReply(Network::encodeBinaryReply(welcome), decodedBinary, error) &&
-                         decodedBinary.acceptedClientSequence == 17 &&
-                         decodedBinary.serverInstance == welcome.serverInstance &&
-                         Network::decodeBinaryReply(Network::encodeBinaryReply(deltaWelcome), decodedDelta, error) &&
-                         decodedDelta.reply.acceptedClientSequence == 17 &&
-                         decodedDelta.reply.serverInstance == welcome.serverInstance,
-                     "WELCOME carries what was accepted and the server instance in every format: " + error);
+                         decodedText.serverInstance == welcome.serverInstance,
+                     "WELCOME carries what was accepted and the server instance: " + error);
     return passed;
 }
 
@@ -511,42 +471,6 @@ bool decodersRejectBrokenEventFields()
     shortWelcome.pop_back();
     passed &= expect(!Network::decodeReply(shortWelcome, reply, error),
                      "a WELCOME without its server instance is refused");
-
-    const Network::BinaryMessage bytes = Network::encodeBinaryReply(snapshotWithEvents());
-    passed &= expect(!Network::decodeBinaryReply(bytes.substr(0, bytes.size() - 1), reply, error),
-                     "a truncated binary SNAPSHOT is refused");
-    const Network::BinaryMessage binaryWelcome = Network::encodeBinaryReply(welcome);
-    passed &= expect(!Network::decodeBinaryReply(binaryWelcome.substr(0, binaryWelcome.size() - 1), reply, error),
-                     "a truncated binary WELCOME is refused");
-
-    // Every shorter prefix of a binary message carrying events is refused.
-    Network::BinaryRequestEnvelope deltaRequest;
-    deltaRequest.request = positionWithEvents();
-    deltaRequest.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
-    deltaRequest.acknowledgedServerTick = 3;
-    Network::BinaryReplyEnvelope deltaReply;
-    deltaReply.kind = Network::BinaryReplyKind::SnapshotDelta;
-    deltaReply.reply = snapshotWithEvents();
-    Network::WorldSnapshot base = deltaReply.reply.snapshot;
-    base.serverTick = 11;
-    deltaReply.delta = Network::makeSnapshotDelta(base, deltaReply.reply.snapshot);
-    const Network::BinaryMessage whole[] = {
-        Network::encodeBinaryRequest(positionWithEvents()),
-        Network::encodeBinaryRequest(deltaRequest),
-        Network::encodeBinaryReply(snapshotWithEvents()),
-        Network::encodeBinaryReply(deltaReply),
-    };
-    bool everyPrefixRefused = true;
-    for (std::size_t kind = 0; kind < 4; ++kind) {
-        for (std::size_t length = 0; length < whole[kind].size(); ++length) {
-            const Network::BinaryMessage prefix = whole[kind].substr(0, length);
-            Network::BinaryRequestEnvelope requestEnvelope;
-            Network::BinaryReplyEnvelope replyEnvelope;
-            everyPrefixRefused &= kind < 2 ? !Network::decodeBinaryRequest(prefix, requestEnvelope, error)
-                                           : !Network::decodeBinaryReply(prefix, replyEnvelope, error);
-        }
-    }
-    passed &= expect(everyPrefixRefused, "every truncated binary message carrying events is refused");
 
     // A relayed event decoded from a client's request would let a client
     // choose its own origin; the direction of each list is fixed.
@@ -925,10 +849,9 @@ Network::HostConfig hostConfig()
     return config;
 }
 
-// Text, binary and property-delta clients on one server. A and B send; every
-// client receives everyone else's events once, and the two that only listen
-// see the same order.
-bool mixedClientsExchangeEventsThroughTheHost()
+// Events are text-only. On one server, two text clients exchange events, while
+// binary and property-delta clients stay connected, get none and may not send.
+bool textClientsExchangeEventsBesideBinaryClients()
 {
     Network::NetworkServerHost host(serverConfig(), hostConfig());
     host.start();
@@ -970,28 +893,41 @@ bool mixedClientsExchangeEventsThroughTheHost()
                              std::chrono::milliseconds(3000)),
                          "all four clients connect");
 
+    for (const std::size_t binaryClient : {std::size_t{1}, std::size_t{2}}) {
+        bool threw = false;
+        try {
+            clients[binaryClient]->publishEvent(ping(1));
+        } catch (const std::logic_error&) {
+            threw = true;
+        }
+        passed &= expect(threw && clients[binaryClient]->pendingEvents() == 0,
+                         "a binary client refuses to publish an event");
+    }
+
     constexpr std::int64_t perSender = 40;
     for (std::int64_t n = 0; n < perSender; ++n) {
         clients[0]->publishEvent(ping(n));
-        clients[1]->publishEvent(ping(100 + n));
+        clients[3]->publishEvent(ping(100 + n));
     }
-    const auto complete = [&] {
-        return received[0].size() == perSender && received[1].size() == perSender &&
-               received[2].size() == 2 * perSender && received[3].size() == 2 * perSender;
-    };
+    const auto complete = [&] { return received[0].size() == perSender && received[3].size() == perSender; };
     passed &= expect(waitFor(
                          [&] {
                              pump();
                              return complete();
                          },
                          std::chrono::milliseconds(5000)),
-                     "every client receives every other client's events");
+                     "each text client receives the other's events");
     // Give any duplicate a chance to show up.
     for (int i = 0; i < 20; ++i) {
         pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     passed &= expect(complete(), "no event arrives twice");
+    passed &= expect(received[1].empty() && received[2].empty(), "binary and property-delta clients get no events");
+    passed &= expect(clients[1]->state() == Network::ConnectionState::Connected &&
+                         clients[2]->state() == Network::ConnectionState::Connected &&
+                         clients[2]->snapshot().players.size() == clients.size(),
+                     "binary and property-delta clients keep working beside them");
 
     const auto values = [](const std::vector<Event>& events) {
         std::vector<std::int64_t> result;
@@ -1000,20 +936,18 @@ bool mixedClientsExchangeEventsThroughTheHost()
         }
         return result;
     };
-    std::vector<std::int64_t> fromA;
-    std::vector<std::int64_t> fromB;
+    std::vector<std::int64_t> fromFirst;
+    std::vector<std::int64_t> fromLast;
     for (std::int64_t n = 0; n < perSender; ++n) {
-        fromA.push_back(n);
-        fromB.push_back(100 + n);
+        fromFirst.push_back(n);
+        fromLast.push_back(100 + n);
     }
-    passed &= expect(values(received[1]) == fromA && values(received[0]) == fromB,
+    passed &= expect(values(received[3]) == fromFirst && values(received[0]) == fromLast,
                      "each sender's events arrive in the order they were sent, and never back at the sender");
-    passed &= expect(values(received[2]) == values(received[3]),
-                     "text and property-delta clients see the same global order");
     passed &= expect(std::all_of(received[0].begin(), received[0].end(),
-                                 [&](const Event& event) { return event.origin == clients[1]->playerId(); }),
+                                 [&](const Event& event) { return event.origin == clients[3]->playerId(); }),
                      "relayed events carry the sender's id");
-    passed &= expect(clients[0]->pendingEvents() == 0 && clients[1]->pendingEvents() == 0,
+    passed &= expect(clients[0]->pendingEvents() == 0 && clients[3]->pendingEvents() == 0,
                      "every published event was accepted");
     return passed;
 }
@@ -1023,6 +957,7 @@ bool mixedClientsExchangeEventsThroughTheHost()
 class FakeSession final : public Multiplayer::Session {
 public:
     Multiplayer::Mode sessionMode = Multiplayer::Mode::ClientServer;
+    bool carriesEvents = true;
     std::vector<Event> published;
     std::vector<Event> incoming;
 
@@ -1036,6 +971,7 @@ public:
     Multiplayer::AuthorityState authorityState() const override { return Multiplayer::AuthorityState::Ready; }
     std::string status() const override { return "fake"; }
     Multiplayer::Mode mode() const override { return sessionMode; }
+    bool supportsEvents() const override { return carriesEvents; }
     void publishEvent(const Event& event) override { published.push_back(event); }
     std::vector<Event> takeRemoteEvents() override
     {
@@ -1118,6 +1054,29 @@ bool bridgeRefusesWhatCannotWork()
         threw = true;
     }
     passed &= expect(threw, "a type that is not a valid event name is refused");
+
+    session.carriesEvents = false;
+    threw = false;
+    try {
+        NetworkEventBridge bridge(events, session, {"Ping"});
+    } catch (const std::logic_error&) {
+        threw = true;
+    }
+    passed &= expect(threw, "a bridge over a session without events fails at once");
+    session.carriesEvents = true;
+
+    Multiplayer::Config binaryConfig;
+    binaryConfig.serverEndpoint = "tcp://127.0.0.1:1";
+    binaryConfig.clientServerDataFormat = Net::DataFormat::Binary;
+    RealTimeClock binaryClock;
+    std::unique_ptr<Multiplayer::Session> binary = Multiplayer::Session::open(binaryConfig, binaryClock);
+    threw = false;
+    try {
+        binary->publishEvent(ping(1));
+    } catch (const std::logic_error&) {
+        threw = true;
+    }
+    passed &= expect(threw && !binary->supportsEvents(), "a binary session refuses to publish");
 
     Multiplayer::Config config;
     config.mode = Multiplayer::Mode::PeerToPeer;
@@ -1349,7 +1308,7 @@ bool aPoseArrivingDuringACarryIsStillSent()
 }
 
 // The whole path a game uses: EventManager -> bridge -> Session -> host ->
-// Session -> bridge -> EventManager, with a text and a binary session.
+// Session -> bridge -> EventManager.
 bool sessionsShareEventsThroughBridges()
 {
     Network::NetworkServerHost host(serverConfig(), hostConfig());
@@ -1367,7 +1326,6 @@ bool sessionsShareEventsThroughBridges()
     for (int i = 0; i < 2; ++i) {
         Multiplayer::Config config;
         config.serverEndpoint = host.boundEndpoint();
-        config.clientServerDataFormat = i == 0 ? Net::DataFormat::TextMultipart : Net::DataFormat::Binary;
         games[i].session = Multiplayer::Session::open(config, realTime);
         games[i].bridge = std::make_unique<NetworkEventBridge>(games[i].events, *games[i].session,
                                                                std::vector<std::string>{"Ping"});
@@ -1434,14 +1392,14 @@ int main()
     passed &= fullOutboxDropsTheOldestAndCountsThem();
     passed &= aSkippedEventIsRefused();
     passed &= rejoiningKeepsTheOutboxAndSequences();
-    passed &= bothFormatsCarryEventsAndAcks();
+    passed &= textCarriesEventsAndAcks();
     passed &= decodersRejectBrokenEventFields();
     passed &= clientResendsUntilAcceptedAndHandlesEachEventOnce();
     passed &= clientKeepsOrRenumbersEventsOnRejoin();
     passed &= fullClientQueueDropsTheOldestUnsentEvents();
     passed &= lateOldRequestStillMatchesAfterRejoin();
     passed &= clientIncomingQueueIsCapped();
-    passed &= mixedClientsExchangeEventsThroughTheHost();
+    passed &= textClientsExchangeEventsBesideBinaryClients();
     passed &= bridgeSharesOnlyListedLocalEvents();
     passed &= bridgeRefusesWhatCannotWork();
     passed &= pacedSessionSendsEventsWithoutWaiting();

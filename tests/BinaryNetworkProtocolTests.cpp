@@ -209,7 +209,7 @@ bool usesStableNetworkByteOrder()
     Network::Request world;
     world.type = Network::RequestType::GetWorld;
     const Network::BinaryMessage header = Network::encodeBinaryRequest(world);
-    bool passed = expect(header == std::string("SENG\x02\x00\x07\x04", 8),
+    bool passed = expect(header == std::string("SENG\x01\x00\x06\x04", 8),
                          "binary header should contain magic, codec version, semantic version and type");
     passed &= expect(Network::hasBinaryMagic(header) && !Network::hasBinaryMagic("SEN"),
                      "binary magic detection should require the complete marker");

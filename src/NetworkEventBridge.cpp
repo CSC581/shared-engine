@@ -14,6 +14,9 @@ NetworkEventBridge::NetworkEventBridge(EventManager& events, Multiplayer::Sessio
     if (session_.mode() != Multiplayer::Mode::ClientServer) {
         throw std::logic_error("events require client-server mode");
     }
+    if (!session_.supportsEvents()) {
+        throw std::logic_error("events require the text format");
+    }
     for (const std::string& type : sharedTypes_) {
         std::string error;
         if (!Network::validateEvent(Event(type), error)) {

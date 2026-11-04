@@ -255,8 +255,12 @@ public:
     // leave() is called while reconnecting; and when published after
     // leave(). None of these losses are counted here. Throws std::invalid_argument if the event
     // breaks a rule of the wire format (validateEvent in EventCodec.hpp), and
-    // std::logic_error in peer-to-peer mode, which carries no events.
+    // std::logic_error in peer-to-peer mode or the binary format, which carry
+    // no events.
     virtual void publishEvent(const Event& event) = 0;
+
+    // False in peer-to-peer mode and the binary format.
+    virtual bool supportsEvents() const { return true; }
 
     // Other players' events delivered by the last update(), oldest first;
     // each is returned once. Like remotePlayers(), this is the latest frame

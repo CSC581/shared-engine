@@ -96,7 +96,8 @@ public:
     // oldest event that has not been sent yet (counted by droppedEvents()),
     // so a long disconnect cannot end in a flood of stale events.
     // Throws std::invalid_argument, queuing nothing, if validateEvent
-    // (EventCodec.hpp) rejects the event.
+    // (EventCodec.hpp) rejects the event, and std::logic_error on a binary
+    // client: events are text-only.
     void publishEvent(const Event& event);
     // Events from other players since the last call, in the server's order,
     // each exactly once. origin is the sender's player id. At most

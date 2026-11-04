@@ -166,8 +166,7 @@ request cannot move a player backwards.
 and the highest relayed event it has handled. The server gives each new event
 the next server sequence number and the sender's id as its origin, and adds it
 to every *other* player's outbox; an event it has already accepted is
-recognised by its number and not relayed twice. The `SNAPSHOT` reply (or
-property delta) says which events were accepted and carries up to 64 outbox
+recognised by its number and not relayed twice. The `SNAPSHOT` reply says which events were accepted and carries up to 64 outbox
 events the client has not acknowledged. So each event reaches every other
 client once, in the same order everywhere, even when a request or reply is
 lost. Every `WELCOME` says how many of the player's events the server has
@@ -309,6 +308,12 @@ baseline; subsequent replies contain changed fields and membership. The client
 still exposes a complete `WorldSnapshot`, and requests a complete resync when
 its acknowledged baseline does not match the host. Binary and property deltas
 are rejected in peer-to-peer mode.
+
+Binary carries no events. It keeps its Milestone 3 layout for the benchmarks
+that compare it with text; `publishEvent()` and a `NetworkEventBridge` on a
+binary session throw `std::logic_error`, and a binary client on a server where
+text clients use events simply receives none. Use text for any game that shares
+events.
 
 Pass `engine.realTime()`, never `engine.gameTime()`. A session running on a
 pausable clock could never reconnect, and could never report the unpause.

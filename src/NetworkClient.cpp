@@ -456,9 +456,6 @@ void NetworkClient::poll()
             impl_->fail("Unexpected property-delta reply");
             return;
         }
-        // Events do not depend on the snapshot baseline, so they count even
-        // if the delta is rejected below.
-        impl_->takeReplyEvents(reply);
         WorldSnapshot next;
         if (!applySnapshotDelta(impl_->snapshot, envelope.delta, next, error)) {
             ++impl_->snapshotStats.baselineMismatches;
@@ -581,6 +578,9 @@ void NetworkClient::leave()
 
 void NetworkClient::publishEvent(const Event& event)
 {
+    if (impl_->format != Net::DataFormat::TextMultipart) {
+        throw std::logic_error("events require the text format");
+    }
     std::string error;
     if (!validateEvent(event, error)) {
         throw std::invalid_argument("cannot publish event: " + error);

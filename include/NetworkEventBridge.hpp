@@ -26,8 +26,8 @@
 // The bridge must not outlive the manager or the session.
 class NetworkEventBridge {
 public:
-    // Throws std::logic_error for a peer-to-peer session, which carries no
-    // events, and std::invalid_argument for a type that is not a valid event
+    // Throws std::logic_error for a peer-to-peer or binary session, which
+    // carry no events, and std::invalid_argument for a type that is not a valid event
     // name (see validateEvent in EventCodec.hpp).
     NetworkEventBridge(EventManager& events, Multiplayer::Session& session,
                        std::vector<std::string> sharedTypes);

@@ -16,7 +16,7 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 | Part | Milestone Requirements | What we built |
 | ---- | ---------------------- | ------------- |
 | 1.1 | An event manager that queues events with priorities, uses the `Timeline` for timestamps, and handles collision, death, spawn and input events instead of SDL events | An `EventManager` owned by the engine. Raising an event only queues it; the engine hands out queued events twice per frame, ordered by game-time delivery, then priority, then raise order. The engine raises `InputEvent` (keys and chords) and `World` raises `CollisionEvent`; games raise `DeathEvent` and `SpawnEvent` |
-| 1.2 | Events shared across the network, with event data serialized in a protocol of our choice | `EventCodec` turns a list of events into our **text** or **binary** network format and back, with the same rules in both. Events ride on the position updates clients already send. The server numbers each event, adds the sender's id and passes it to every other player exactly once, in the same order everywhere. A game picks which event types to share with `NetworkEventBridge`. Client-server mode only |
+| 1.2 | Events shared across the network, with event data serialized in a protocol of our choice | `EventCodec` turns a list of events into our multipart **text** network format and back. Events are text-only: Milestone 3's binary transport remains for its benchmarks, carries no events, and refuses them with an error. Events ride on the position updates clients already send. The server numbers each event, adds the sender's id and passes it to every other player exactly once, in the same order everywhere. A game picks which event types to share with `NetworkEventBridge`. Client-server mode only |
 | 1.3 | A replay system that records and plays back game play, started and controlled through the event system | `ReplaySystem` records every frame's objects, the camera, an optional game-state string and every event. Six replay events start and stop recording, start and stop playback, change the speed (0.5x, 1x, 2x or any other) and pause it. Playback shows the recording in a separate world while the live game waits, paused, and then carries on where it was |
 
 ## Files for this milestone
@@ -31,10 +31,10 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 ├── include/Engine.hpp                      src/Engine.cpp          engine.events(), two dispatches per frame
 └── sandbox/EventsDemo.cpp                                          events-demo
 1.2 Networked events
-├── include/EventCodec.hpp                  src/EventCodec.cpp      events in the text and binary formats
+├── include/EventCodec.hpp                  src/EventCodec.cpp      events in the text format
 ├── include/WireFormat.hpp                                          exact decimal text, event limits
 ├── include/NetworkProtocol.hpp             src/NetworkProtocol.cpp events in requests and replies (text)
-├── include/BinaryNetworkProtocol.hpp       src/BinaryNetworkProtocol.cpp   (binary)
+├── include/BinaryNetworkProtocol.hpp       src/BinaryNetworkProtocol.cpp   Milestone 3 binary, no events
 ├── include/NetworkServer.hpp               src/NetworkServer.cpp   numbering, relaying, outboxes
 ├── include/NetworkClient.hpp               src/NetworkClient.cpp   pending events, resends, acknowledgements
 ├── include/Multiplayer.hpp                 src/Multiplayer.cpp     Session::publishEvent / takeRemoteEvents
@@ -80,8 +80,8 @@ The input polling and collider callbacks from Milestone 3 still work alongside t
 
 | Function | Meaning |
 | -------- | ------- |
-| `appendEventsText(message, events)`, `appendEventsBinary(bytes, events)` | Adds a list of events to a message being built. Throws if an event breaks a rule |
-| `readEventsText(message, cursor, events, error)`, `readEventsBinary(bytes, cursor, events, error)` | Reads a list starting at `cursor`. On failure, returns false and changes nothing |
+| `appendEventsText(message, events)` | Adds a list of events to a message being built. Throws if an event breaks a rule |
+| `readEventsText(message, cursor, events, error)` | Reads a list starting at `cursor`. On failure, returns false and changes nothing |
 | `validateEvent(event, error)` | Checks an event against the rules below |
 
 `OutgoingEvent` (client to server) is numbered 1, 2, 3… by the client and carries no sender id. `RelayedEvent` (server to client) is numbered by the server and carries the sender's id. An encoded event carries its type, values, priority and the sender's timestamp.
