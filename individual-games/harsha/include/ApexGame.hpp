@@ -44,6 +44,9 @@ private:
     static constexpr float horizontalJumpRatio = 0.55F;
 
     static constexpr float walkSpeed = 300.0F;
+    // Air dash: sideways only, so it adds no height (design 12.5).
+    static constexpr float dashSpeed = 900.0F;
+    static constexpr float dashSeconds = 0.15F;
     // Share of a slingshot rail's vertical velocity added to a jump off it.
     static constexpr float slingshotVerticalShare = 0.5F;
     // Slop for the direction-aware landing check (float drift on the surface).
@@ -65,7 +68,9 @@ private:
 
     void onInput(const Event& event);
     bool isHeld(SDL_Scancode key) const { return keysHeld_[key]; }
-    void applyHeldKeys();
+    void applyHeldKeys(float deltaTime);
+    void tryDash(float direction);
+    void updateDash(float deltaTime);
     void onCollision(const Event& event);
     void handleCollisions();
     void applySlingshotFling();
@@ -169,6 +174,11 @@ private:
 
     bool isCharging_ = false;
     bool isOnGround_ = false;
+
+    // One dash per airtime; time left in the current one.
+    bool dashUsed_ = false;
+    float dashDirection_ = 0.0F;
+    float dashTimeLeft_ = 0.0F;
 
     int highestRoomReached_ = 0;
 

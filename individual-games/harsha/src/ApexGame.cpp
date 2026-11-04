@@ -29,6 +29,10 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     ApexLevel::buildLevel(world_, worldWidth_, worldHeight_, viewHeight_, session_ != nullptr);
 
     world_.setEventManager(&engine_.events());
+    engine_.registerChord("dash-left", {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_A});
+    engine_.registerChord("dash-left", {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_LEFT});
+    engine_.registerChord("dash-right", {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_D});
+    engine_.registerChord("dash-right", {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_RIGHT});
     subscriptions_.push_back(engine_.events().subscribe(Events::Input, [this](const Event& event) { onInput(event); }));
     subscriptions_.push_back(engine_.events().subscribe(Events::Collision, [this](const Event& event) { onCollision(event); }));
     subscriptions_.push_back(engine_.events().subscribe(Events::Death, [this](const Event& event) { onDeath(event); }));
@@ -68,10 +72,12 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     if (session_) {
         std::cout << "Apex Ascent (" << Multiplayer::modeName(session_->mode())
                   << "): peers are animated ghosts; moving platform is authority-owned.\n"
-                     "A/D aim, Space charge. P pause, 1/2/3 = 0.5x/1x/2x game time. Esc quit.\n";
+                     "A/D aim, Space charge, Left Shift + direction dashes in the air. "
+                     "P pause, 1/2/3 = 0.5x/1x/2x game time. Esc quit.\n";
     } else {
         std::cout << "Apex Ascent: A/D to aim, hold Space to charge a jump, "
-                     "release to leap. P pause, 1/2/3 = 0.5x/1x/2x game time. "
+                     "release to leap, Left Shift + direction to dash in the air. "
+                     "P pause, 1/2/3 = 0.5x/1x/2x game time. "
                      "F1 to toggle scaling, Esc to quit.\n"
                      "Optional: ./apex-ascent --join [tcp://host:port]\n";
     }
@@ -88,7 +94,10 @@ ApexGame::~ApexGame()
 // while paused, so P can unpause and a release during a pause is not missed.
 void ApexGame::onInput(const Event& event)
 {
-    if (event.get<std::string>("kind") != "key") {
+    if (event.get<std::string>("kind") == "chord") {
+        if (event.get<std::string>("state") == "pressed") {
+            tryDash(event.get<std::string>("name") == "dash-left" ? -1.0F : 1.0F);
+        }
         return;
     }
     const auto key = static_cast<SDL_Scancode>(event.get<std::int64_t>("key"));
@@ -123,7 +132,7 @@ void ApexGame::onInput(const Event& event)
 
 // What the held keys mean this frame. At the start of update(), not in
 // handleInput(), which runs before the dispatch that delivers this frame's keys.
-void ApexGame::applyHeldKeys()
+void ApexGame::applyHeldKeys(float deltaTime)
 {
     // Walking is recomputed from the keys every frame; nothing held, no walk.
     walkIntent_ = 0.0F;
@@ -132,6 +141,8 @@ void ApexGame::applyHeldKeys()
     if (gameTimePaused_ || isDead_) {
         return;
     }
+
+    updateDash(deltaTime);
 
     float aim = 0.0F;
     if (isHeld(SDL_SCANCODE_A) || isHeld(SDL_SCANCODE_LEFT)) {
@@ -148,7 +159,7 @@ void ApexGame::applyHeldKeys()
         // On the ground the player worker turns this into speed, because how
         // fast you get going depends on the surface (ice).
         walkIntent_ = aim;
-    } else if (!isCharging_ && aim != 0.0F) {
+    } else if (!isCharging_ && aim != 0.0F && dashTimeLeft_ <= 0.0F) {
         // Air control (the user's choice over design §3's "none"): holding a
         // direction mid-air sets sideways speed to walk speed. It cannot add
         // height, which is what room 3's vertical slingshot relies on.
@@ -167,6 +178,32 @@ void ApexGame::applyHeldKeys()
 
         chargePower_ = 0.0F;
         isOnGround_ = false;
+    }
+}
+
+void ApexGame::tryDash(float direction)
+{
+    if (engine_.gameTime().isPaused() || isDead_ || isOnGround_ || isCharging_ || dashUsed_) {
+        return;
+    }
+    dashUsed_ = true;
+    dashDirection_ = direction;
+    dashTimeLeft_ = dashSeconds;
+    playerMotion_->velocityX = direction * dashSpeed;
+}
+
+void ApexGame::updateDash(float deltaTime)
+{
+    if (dashTimeLeft_ > 0.0F) {
+        dashTimeLeft_ = isOnGround_ ? 0.0F : dashTimeLeft_ - deltaTime;
+        // There is no air drag, so without this it would keep flying at dash
+        // speed, or slide off an ice ledge after landing mid-dash.
+        if (dashTimeLeft_ <= 0.0F) {
+            playerMotion_->velocityX = dashDirection_ * walkSpeed;
+        }
+    }
+    if (isOnGround_) {
+        dashUsed_ = false;
     }
 }
 
@@ -223,7 +260,7 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     gameTimePaused_ = gameTime.isPaused();
     gameTimeScale_ = gameTime.scale();
 
-    applyHeldKeys();
+    applyHeldKeys(deltaTime);
 
     // Refresh snapshots, then mirror them into the World (server platform
     // poses, remote players) before anything reads positions this frame.
@@ -496,6 +533,8 @@ void ApexGame::placeAt(float x, float y)
     playerMotion_->velocityX = 0.0F;
     playerMotion_->velocityY = 0.0F;
     previousPlayerBottom_ = y + playerHeight;
+    dashUsed_ = false;
+    dashTimeLeft_ = 0.0F;
     isCharging_ = false;
     chargePower_ = 0.0F;
     // The landing pass grounds the climber on the next frame: its feet are on

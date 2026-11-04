@@ -168,6 +168,10 @@ void ApexGame::render(SDL_Renderer* renderer) const
     const SDL_FRect meterFill{20.0F, viewHeight_ - 40.0F, filled, 16.0F};
     SDL_RenderFillRect(renderer, &meterFill);
 
+    SDL_SetRenderDrawColor(renderer, 170, 230, 240, 255);
+    SDL_RenderDebugText(renderer, 20.0F, viewHeight_ - 60.0F,
+                        dashUsed_ ? "Dash: used (land to refill)" : "Dash: ready (Left Shift + direction, in the air)");
+
     // Standing on the summit: the climb is done.
     const GameObject* grounded = groundedPlatformId_ != 0 ? world_.find(groundedPlatformId_) : nullptr;
     const ApexPlatform* groundKind = grounded != nullptr ? grounded->get<ApexPlatform>() : nullptr;
