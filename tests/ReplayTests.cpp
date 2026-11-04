@@ -539,6 +539,21 @@ void aStaleStopDoesNotEndARestart()
     CHECK(!rig.replay.isPlaying());
 }
 
+// A full live queue must not leave playback running forever.
+void playbackEndsWithAFullLiveQueue()
+{
+    Rig rig;
+    rig.recordMovingBox(2);
+    rig.control(Events::ReplayPlayStart);
+    rig.events.setMaxPending(1);
+    rig.events.raise(Event("Filler"));
+    rig.advance(100);
+    rig.replay.update();
+    rig.replay.update();
+    rig.events.dispatch();
+    CHECK(!rig.replay.isPlaying());
+}
+
 void destroyingDuringPlaybackRestoresTheGame()
 {
     ManualClock real;
@@ -581,6 +596,7 @@ int main()
     theLastFrameIsRendered();
     delayedReplayEffectsEndWithTheirPlayback();
     aStaleStopDoesNotEndARestart();
+    playbackEndsWithAFullLiveQueue();
     destroyingDuringPlaybackRestoresTheGame();
 
     if (failures != 0) {

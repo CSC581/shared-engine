@@ -33,14 +33,22 @@ public:
     void unsubscribe(SubscriptionId id);
 
     // Stamp and queue an event. Delay is in the clock's tics and must be >= 0.
+    // With maxPending events already queued, an event less urgent than
+    // EventPriority::High is dropped and counted by droppedByLimit().
     void raise(Event event, std::int64_t delayTics = 0);
 
-    // Process due events in bounded rounds. A handler may raise another event,
-    // which is eligible in the next round of this call. Returns events handled.
+    // Process due events in bounded rounds. Everything taken in one round runs
+    // by priority, then delivery time, then raise order. The budget takes the
+    // oldest due events first, so a backlog can delay even a High event. A
+    // handler may raise another event, which is eligible in the next round of
+    // this call. Returns events handled.
     std::size_t dispatch();
     // Discards every queued event, due or not.
     void clearPending();
     void setLimits(std::size_t maxRounds, std::size_t maxEventsPerDispatch);
+    // Must be positive. Applies to every queued event, due or delayed.
+    void setMaxPending(std::size_t maxPending);
+    std::uint64_t droppedByLimit() const;
     std::size_t pending() const;
     std::uint64_t deferredByLimits() const;
 
@@ -63,6 +71,10 @@ private:
     std::priority_queue<Event, std::vector<Event>, LaterFirst> queue_;
     std::uint64_t nextSequence_ = 1;
     std::uint64_t deferredByLimits_ = 0;
+    std::uint64_t droppedByLimit_ = 0;
+    // At the 1,000 default budget, a High event waits at most about ten
+    // dispatches behind a full queue.
+    std::size_t maxPending_ = 10000;
     std::size_t maxRounds_ = 8;
     std::size_t maxEventsPerDispatch_ = 1000;
     bool dispatching_ = false;

@@ -83,6 +83,11 @@ void EventManager::raise(Event event, std::int64_t delayTics)
     event.timestamp = now;
     event.deliverAt = now + delayTics;
     const std::lock_guard<std::mutex> lock(queueMutex_);
+    // High is exempt, so an urgent event is never lost to a runaway chain.
+    if (queue_.size() >= maxPending_ && event.priority > EventPriority::High) {
+        ++droppedByLimit_;
+        return;
+    }
     event.sequence = nextSequence_++;
     queue_.push(std::move(event));
 }
@@ -137,6 +142,10 @@ std::size_t EventManager::dispatch()
         if (ready.empty()) {
             break;
         }
+        // Raises in one frame get different microsecond stamps, so priority
+        // only means something across everything due at this point.
+        std::stable_sort(ready.begin(), ready.end(),
+                         [](const Event& a, const Event& b) { return a.priority < b.priority; });
         for (const Event& event : ready) {
             deliver(event, firstError);
             ++handled;
@@ -168,6 +177,21 @@ void EventManager::setLimits(std::size_t maxRounds, std::size_t maxEventsPerDisp
     }
     maxRounds_ = maxRounds;
     maxEventsPerDispatch_ = maxEventsPerDispatch;
+}
+
+void EventManager::setMaxPending(std::size_t maxPending)
+{
+    if (maxPending == 0) {
+        throw std::invalid_argument("EventManager pending limit must be positive");
+    }
+    const std::lock_guard<std::mutex> lock(queueMutex_);
+    maxPending_ = maxPending;
+}
+
+std::uint64_t EventManager::droppedByLimit() const
+{
+    const std::lock_guard<std::mutex> lock(queueMutex_);
+    return droppedByLimit_;
 }
 
 std::size_t EventManager::pending() const

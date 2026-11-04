@@ -156,7 +156,11 @@ void ReplaySystem::update()
     if (endShown_) {
         if (!endRaised_ && !playbackPaused_) {
             endRaised_ = true;
-            liveEvents_.raise(Event(Events::ReplayPlayStop).set("run", run_));
+            // High, so a full live queue cannot leave playback running forever.
+            Event stop(Events::ReplayPlayStop);
+            stop.priority = EventPriority::High;
+            stop.set("run", run_);
+            liveEvents_.raise(std::move(stop));
         }
         return;
     }
