@@ -78,9 +78,11 @@ void Engine::run(Game& game)
         // Ticked after the game has read its input, so a pause pressed this
         // frame takes effect this frame rather than one frame late.
         //
-        // Events, input and rendering above and below deliberately run on real
-        // time and never consult gameTime_: a loop that waited on a paused
-        // timeline could never read the key that unpauses it.
+        // SDL events, input polling and rendering deliberately run on real
+        // time: a loop that waited on a paused timeline could never read the
+        // key that unpauses it. The EventManager stamps events on gameTime_,
+        // but dispatch still runs every frame, so immediate events are handled
+        // while paused and only delayed ones wait.
         const std::int64_t deltaTics = frameTimer_.tick();
         const FrameTime frameTime{
             static_cast<double>(deltaTics) / static_cast<double>(kGameTicsPerSecond),
