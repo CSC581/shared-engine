@@ -11,6 +11,9 @@ mode.
 | --- | --- |
 | A / D or Left / Right | Walk on the ground, aim while charging, steer in the air |
 | Space (hold / release) | Charge jump / leap |
+| Left Shift + A / D or Left / Right | Air dash, once per jump; refills on landing |
+| F5 | Replay the last 5 seconds (restarts a replay) |
+| F6 / F7 / F8 | During a replay: pause / skip / cycle 0.5×, 1×, 2× |
 | P | Pause / unpause this client's game time (movement and jumps are ignored while paused) |
 | 1 / 2 / 3 | 0.5× / 1× / 2× game time |
 | F1 | Toggle `Proportional` / `Constant` scale |
@@ -18,7 +21,12 @@ mode.
 
 Holding A / D in the air sets your sideways speed to walking speed; letting go
 keeps whatever speed the jump had. Steering can change direction but never
-adds height.
+adds height. The dash is the same: it is a short sideways burst that neither
+adds height nor stops a fall.
+
+Dying plays the last 5 seconds back as a kill cam (F7 skips it), then you
+respawn at your checkpoint. Input, collisions, deaths and respawns all run
+through the engine's event system.
 
 ## The tower
 
@@ -82,13 +90,27 @@ server-authored. Every client mirrors them into its own `World` through
 offline. Ice, wind, air steering and the throw are applied by each client
 to its own climber. Pause and scale only affect your local climb.
 
+Three things are shared as networked events, relayed by the server:
+
+- **Crumbling moss:** when anyone lands on a moss ledge, it shakes and breaks for
+  every climber, including one standing on it. Regrowth is timed per client, so
+  ledges can briefly disagree, and a climber joining late misses a crumble already
+  under way.
+- **Deaths:** other screens show "Climber #N fell" and flash that ghost.
+- **Reaching the summit:** other screens show "Climber #N reached the Apex!".
+
+The server only relays these, so it cannot stop a modified client from claiming
+any of them. A kill cam or replay keeps the session running, and shows other
+climbers as they were recorded.
+
 `./build/apex-network-server --rates` logs each climber's accepted
 POSITION/s once a second, so a client at 2x shows up at the server at twice
 the rate of one at 1x.
 
 ## Online co-climb — peer-to-peer
 
-Player poses and animation state travel directly between peers. The dedicated
+Player poses and animation state travel directly between peers. Networked events
+are client-server only, so moss, deaths and summits stay local here. The dedicated
 server remains authoritative only for the moving platform:
 
 ```bash
@@ -118,9 +140,9 @@ Peer ids and base ports must be unique. Across machines, every peer also needs
 | Path | Role |
 | --- | --- |
 | [apexAscent.cpp](src/apexAscent.cpp) | `main()`: options, optional `--host` listen-server, engine + session |
-| [ApexGame.hpp](include/ApexGame.hpp) / [ApexGame.cpp](src/ApexGame.cpp) | Gameplay on a `World`: frame order across the two workers, input, charge jump, landing pass, carry, slingshot throw, ice, wind, checkpoints, respawn, room-snap camera, pose publishing |
-| [ApexGameRender.cpp](src/ApexGameRender.cpp) | `renderWorld` for platforms, rail track and orbit guides, spikes, wind streaks, ghosts, charge meter, HUD |
-| [ApexComponents.hpp](include/ApexComponents.hpp) / [ApexComponents.cpp](src/ApexComponents.cpp) | Apex components: `ApexPlatform`, `Surface`, `Carrier`, `SpawnMarker`, `DeathZone`, `RoomZone`, `WindZone` |
+| [ApexGame.hpp](include/ApexGame.hpp) / [ApexGame.cpp](src/ApexGame.cpp) | Gameplay on a `World`: frame order across the two workers, event handlers (input, dash, collision, death, spawn, shared moss and summit), kill cam and replay, charge jump, landing pass, carry, slingshot throw, ice, wind, checkpoints, room-snap camera, pose publishing |
+| [ApexGameRender.cpp](src/ApexGameRender.cpp) | `renderWorld` for platforms, rail track and orbit guides, spikes, wind streaks, ghosts, charge meter, HUD, and the replay's recorded world and climbers |
+| [ApexComponents.hpp](include/ApexComponents.hpp) / [ApexComponents.cpp](src/ApexComponents.cpp) | Apex components: `ApexPlatform`, `Surface`, `Carrier`, `SpawnMarker`, `DeathZone`, `RoomZone`, `WindZone`, `Crumble` |
 | [ApexLevel.hpp](include/ApexLevel.hpp) / [ApexLevel.cpp](src/ApexLevel.cpp) | Factory per object kind (platforms, movers, player, online objects, hidden triggers) and one function per room |
 | [ApexOptions.hpp](include/ApexOptions.hpp) / [ApexOptions.cpp](src/ApexOptions.cpp) | Command line (`--join`, `--mode`, `--host`, …) |
 | [ApexPresence.hpp](include/ApexPresence.hpp) / [ApexPresence.cpp](src/ApexPresence.cpp) | Online presentation: HUD labels, ghost tints, animation hint encode/decode |
