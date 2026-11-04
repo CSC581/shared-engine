@@ -10,6 +10,7 @@
 #include "Game.hpp"
 #include "GameObject.hpp"
 #include "Multiplayer.hpp"
+#include "NetworkEventBridge.hpp"
 #include "NetworkWorldSync.hpp"
 #include "World.hpp"
 #include "animation/PlayerAnimation.hpp"
@@ -19,6 +20,8 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 class ApexGame : public Game {
@@ -88,6 +91,10 @@ private:
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
     void updateCrumbles(float deltaTime);
+    void onLedgeCrumble(const Event& event);
+    void onSummit(const Event& event);
+    void showNotice(std::string text);
+    void updateOnlineCues(float deltaTime);
     void spawnDebris(const Rect& ledge);
 
     Engine& engine_;
@@ -145,6 +152,14 @@ private:
     // Optional online presence. The game uses the same surface for either
     // client-server or peer-to-peer deployment.
     std::unique_ptr<Multiplayer::Session> session_;
+    // Shares crumbles, deaths and summits. Client-server only. Declared after
+    // session_, which must outlive it.
+    std::unique_ptr<NetworkEventBridge> bridge_;
+    // What other climbers just did: a line of text, and ghosts flashing.
+    std::string notice_;
+    float noticeSecondsLeft_ = 0.0F;
+    std::unordered_map<Multiplayer::PlayerId, float> ghostFlashLeft_;
+    bool summitAnnounced_ = false;
 
     float viewWidth_;
     float viewHeight_;

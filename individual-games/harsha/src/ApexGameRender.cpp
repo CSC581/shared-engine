@@ -114,6 +114,12 @@ void ApexGame::render(SDL_Renderer* renderer) const
         Uint8 green = 0;
         Uint8 blue = 0;
         ApexPresence::ghostColor(id, red, green, blue);
+        // This climber just died: a shared DeathEvent, not its pose, says so.
+        if (ghostFlashLeft_.count(id) != 0) {
+            red = 255;
+            green = 60;
+            blue = 60;
+        }
 
         const float screenTop = transform.y - camera_;
         const float screenBottom = screenTop + playerHeight;
@@ -181,6 +187,12 @@ void ApexGame::render(SDL_Renderer* renderer) const
         const float bannerX = (viewWidth_ - 8.0F * static_cast<float>(std::strlen(banner))) * 0.5F;
         SDL_SetRenderDrawColor(renderer, 240, 200, 70, 255);
         SDL_RenderDebugText(renderer, bannerX, viewHeight_ * 0.5F, banner);
+    }
+
+    if (noticeSecondsLeft_ > 0.0F) {
+        SDL_SetRenderDrawColor(renderer, 255, 225, 150, 255);
+        SDL_RenderDebugText(renderer, (viewWidth_ - 8.0F * static_cast<float>(notice_.size())) * 0.5F, 130.0F,
+                            notice_.c_str());
     }
 
     // In the wind: which way it is pushing right now.

@@ -9,8 +9,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <utility>
+
+namespace {
+constexpr const char* LedgeCrumbleEvent = "LedgeCrumbleEvent";
+constexpr const char* SummitEvent = "SummitEvent";
+constexpr float noticeSeconds = 4.0F;
+constexpr float ghostFlashSeconds = 0.6F;
+} // namespace
 
 ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session)
     : engine_(engine),
@@ -37,6 +45,13 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     subscriptions_.push_back(engine_.events().subscribe(Events::Collision, [this](const Event& event) { onCollision(event); }));
     subscriptions_.push_back(engine_.events().subscribe(Events::Death, [this](const Event& event) { onDeath(event); }));
     subscriptions_.push_back(engine_.events().subscribe(Events::Spawn, [this](const Event& event) { onSpawn(event); }));
+    subscriptions_.push_back(engine_.events().subscribe(LedgeCrumbleEvent, [this](const Event& event) { onLedgeCrumble(event); }));
+    subscriptions_.push_back(engine_.events().subscribe(SummitEvent, [this](const Event& event) { onSummit(event); }));
+    if (session_ && session_->supportsEvents()) {
+        bridge_ = std::make_unique<NetworkEventBridge>(
+            engine_.events(), *session_,
+            std::vector<std::string>{LedgeCrumbleEvent, Events::Death, SummitEvent});
+    }
 
     player_ = &ApexLevel::makePlayer(world_, 0.0F, 0.0F, playerWidth, playerHeight, gravity);
     playerTransform_ = player_->get<Transform>();
@@ -267,6 +282,9 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     // NetworkClient uses realTime, so pause/scale never freezes the link.
     if (session_) {
         session_->update();
+        if (bridge_) {
+            bridge_->apply();
+        }
         if (sync_) {
             sync_->apply(*session_);
         }
@@ -338,7 +356,16 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     if (!gameTimePaused_) {
         handleCollisions();
         updateCrumbles(deltaTime);
+        if (!summitAnnounced_ && isOnGround_) {
+            const GameObject* grounded = world_.find(groundedPlatformId_);
+            const ApexPlatform* kind = grounded != nullptr ? grounded->get<ApexPlatform>() : nullptr;
+            if (kind != nullptr && kind->kind == ApexPlatform::Kind::Summit) {
+                summitAnnounced_ = true;
+                engine_.events().raise(Event{SummitEvent});
+            }
+        }
     }
+    updateOnlineCues(deltaTime);
     // Online ghosts that disconnected were queued for removal by sync_.
     world_.flushDestroyed();
 
@@ -488,8 +515,18 @@ void ApexGame::onCollision(const Event& event)
 
 void ApexGame::onDeath(const Event& event)
 {
+    // Another climber's death is only news: it never touches this climber. The
+    // cause is compared, not shown, because another player chooses the text.
+    if (event.origin != 0) {
+        const char* where = event.getOr<std::string>("cause", "") == "spikes" ? " on the spikes" : "";
+        showNotice("Climber #" + std::to_string(event.origin) + " fell" + where);
+        if (sync_ && sync_->remotePlayer(event.origin) != nullptr) {
+            ghostFlashLeft_[event.origin] = ghostFlashSeconds;
+        }
+        return;
+    }
     // Touching two death zones in one frame is still one death.
-    if (event.origin != 0 || isDead_) {
+    if (isDead_) {
         return;
     }
     isDead_ = true;
@@ -591,16 +628,18 @@ void ApexGame::updateCrumbles(float deltaTime)
     const Color moss = ApexLevel::colorFor(ApexPlatform::Kind::Moss);
     const Color rotten = crumbledColor;
 
-    for (GameObject* ledge : crumbles_) {
+    for (std::size_t index = 0; index < crumbles_.size(); ++index) {
+        GameObject* ledge = crumbles_[index];
         Crumble& crumble = *ledge->get<Crumble>();
         Transform& transform = *ledge->get<Transform>();
         Renderable& renderable = *ledge->get<Renderable>();
 
         switch (crumble.state) {
         case Crumble::State::Intact:
+            // Only onLedgeCrumble() starts the shake, so a landing here and one
+            // on another client's screen take the same path.
             if (isOnGround_ && groundedPlatformId_ == ledge->id()) {
-                crumble.state = Crumble::State::Shaking;
-                crumble.timer = 0.0F;
+                engine_.events().raise(Event{LedgeCrumbleEvent}.set("ledge", static_cast<std::int64_t>(index)));
             }
             break;
 
@@ -665,6 +704,45 @@ void ApexGame::updateCrumbles(float deltaTime)
     }
     debris_.erase(std::remove_if(debris_.begin(), debris_.end(), [](const Debris& bit) { return bit.life <= 0.0F; }),
                   debris_.end());
+}
+
+// The ledge is its position in crumbles_: creation order, the same on every
+// client. Another player chooses the number, so it is checked. Not guarded
+// during a replay: this is live state, and its timer waits for the replay's end.
+void ApexGame::onLedgeCrumble(const Event& event)
+{
+    const std::int64_t index = event.get<std::int64_t>("ledge");
+    if (index < 0 || index >= static_cast<std::int64_t>(crumbles_.size())) {
+        return;
+    }
+    Crumble& crumble = *crumbles_[static_cast<std::size_t>(index)]->get<Crumble>();
+    if (crumble.state == Crumble::State::Intact) {
+        crumble.state = Crumble::State::Shaking;
+        crumble.timer = 0.0F;
+    }
+}
+
+// This climber's own summit already shows the banner.
+void ApexGame::onSummit(const Event& event)
+{
+    if (event.origin != 0) {
+        showNotice("Climber #" + std::to_string(event.origin) + " reached the Apex!");
+    }
+}
+
+void ApexGame::showNotice(std::string text)
+{
+    notice_ = std::move(text);
+    noticeSecondsLeft_ = noticeSeconds;
+}
+
+void ApexGame::updateOnlineCues(float deltaTime)
+{
+    noticeSecondsLeft_ = std::max(0.0F, noticeSecondsLeft_ - deltaTime);
+    for (auto it = ghostFlashLeft_.begin(); it != ghostFlashLeft_.end();) {
+        it->second -= deltaTime;
+        it = it->second <= 0.0F ? ghostFlashLeft_.erase(it) : std::next(it);
+    }
 }
 
 // Eight chunks spread along the ledge, kicked up and outward from its middle.
