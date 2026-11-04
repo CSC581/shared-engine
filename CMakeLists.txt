@@ -167,6 +167,10 @@ add_executable(event-integration-tests tests/EventIntegrationTests.cpp)
 target_link_libraries(event-integration-tests PRIVATE engine)
 add_test(NAME event-integration-tests COMMAND event-integration-tests)
 
+add_executable(engine-loop-tests tests/EngineLoopTests.cpp)
+target_link_libraries(engine-loop-tests PRIVATE engine)
+add_test(NAME engine-loop-tests COMMAND engine-loop-tests)
+
 add_executable(replay-tests tests/ReplayTests.cpp)
 target_link_libraries(replay-tests PRIVATE engine-replay)
 add_test(NAME replay-tests COMMAND replay-tests)
