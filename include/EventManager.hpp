@@ -38,6 +38,8 @@ public:
     // Process due events in bounded rounds. A handler may raise another event,
     // which is eligible in the next round of this call. Returns events handled.
     std::size_t dispatch();
+    // Discards every queued event, due or not.
+    void clearPending();
     void setLimits(std::size_t maxRounds, std::size_t maxEventsPerDispatch);
     std::size_t pending() const;
     std::uint64_t deferredByLimits() const;

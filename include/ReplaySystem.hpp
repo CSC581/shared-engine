@@ -19,8 +19,18 @@ struct SDL_Texture;
 
 // Records frames and events and plays them back in a separate world(),
 // controlled only by the replay events in Event.hpp. While isPlaying(), the
-// game skips its own update and draws world() instead. Use on the thread that
-// owns liveEvents, which must outlive this object.
+// game skips its world update and draws world() instead. A networked game must
+// keep calling session.update(), bridge.apply() and publishLocalPlayer(), or
+// the server times the player out during a long replay.
+//
+// The live manager keeps dispatching during playback, so input and remote
+// events still reach gameplay handlers. Handlers that change the live world
+// should return early while isPlaying(). A ReplayPlayStop can arrive for a
+// playback that has already restarted; check isPlaying() before reacting to it.
+//
+// Events a replay handler raises with a delay on events() are dropped when
+// playback stops or restarts. Use on the thread that owns liveEvents, which
+// must outlive this object.
 class ReplaySystem {
 public:
     // A recorded object as it was in one frame.
@@ -122,7 +132,9 @@ private:
     bool playing_ = false;
     bool playbackPaused_ = false;
     bool liveWasPaused_ = false;
+    bool endShown_ = false;
     bool endRaised_ = false;
+    std::int64_t run_ = 0;
     double speed_ = 1.0;
     std::int64_t playBase_ = 0;
     std::int64_t position_ = 0;

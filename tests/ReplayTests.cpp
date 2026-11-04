@@ -118,7 +118,11 @@ void playbackFollowsTheRecording()
     CHECK(rig.replay.playbackPosition() == 1000);
     shown = rig.shown();
     CHECK(shown.size() == 1 && near(shown[0]->get<Transform>()->x, 100.0F));
+    // The engine dispatches before it renders, so the last frame must survive
+    // this dispatch. The stop comes with the next update.
+    rig.events.dispatch();
     CHECK(rig.replay.isPlaying());
+    rig.replay.update();
     rig.events.dispatch();
     CHECK(!rig.replay.isPlaying());
     CHECK(!rig.game.isPaused());
@@ -142,6 +146,7 @@ void frameStateComesBackInOrder()
         states.push_back(rig.replay.currentFrameState());
     }
     CHECK((states == std::vector<std::string>{"score 0", "score 1", "score 2", "score 3"}));
+    rig.replay.update();
     rig.events.dispatch();
     CHECK(rig.replay.currentFrameState().empty());
 }
@@ -160,6 +165,7 @@ void speedAndPauseControlPlayback()
     rig.advance(1);
     rig.replay.update();
     CHECK(rig.replay.playbackPosition() == 1000);
+    rig.replay.update();
     rig.events.dispatch();
     CHECK(!rig.replay.isPlaying());
 
@@ -264,6 +270,7 @@ void recordedEventsReachOnlyTheReplayManager()
     CHECK(seen.size() == 3 && positions.back() == 250);
     CHECK(liveHits == 2);
     rig.advance(50);
+    rig.replay.update();
     rig.replay.update();
     rig.events.dispatch();
     CHECK(!rig.replay.isPlaying());
@@ -420,6 +427,118 @@ void controlRules()
     CHECK(rig.replay.isRecording() && rig.replay.frameCount() == 0);
 }
 
+// The engine's order is dispatch, update, dispatch, render. Counts the renders
+// that show the given x while playing.
+int rendersShowing(Rig& rig, float x, int frames, std::int64_t ticsPerFrame)
+{
+    int shown = 0;
+    for (int i = 0; i < frames; ++i) {
+        rig.events.dispatch();
+        rig.advance(ticsPerFrame);
+        rig.replay.update();
+        rig.events.dispatch();
+        if (rig.replay.isPlaying()) {
+            const auto objects = rig.shown();
+            shown += objects.size() == 1 && near(objects[0]->get<Transform>()->x, x) ? 1 : 0;
+        }
+    }
+    return shown;
+}
+
+void theLastFrameIsRendered()
+{
+    // A one-frame recording started before the update, as an input handler does.
+    Rig single;
+    single.recordMovingBox(1);
+    single.events.raise(Event(Events::ReplayPlayStart));
+    CHECK(rendersShowing(single, 0.0F, 4, 10) >= 1);
+    CHECK(!single.replay.isPlaying());
+    CHECK(!single.game.isPaused());
+
+    // A longer recording ends on its exact last position.
+    Rig longer;
+    longer.recordMovingBox(11);
+    longer.events.raise(Event(Events::ReplayPlayStart));
+    CHECK(rendersShowing(longer, 100.0F, 40, 30) >= 1);
+    CHECK(!longer.replay.isPlaying());
+
+    // Paused on the last frame, playback holds it until unpaused.
+    Rig paused;
+    paused.recordMovingBox(2);
+    paused.control(Events::ReplayPlayStart);
+    paused.advance(100);
+    paused.replay.update();
+    paused.control(Events::ReplayPause);
+    paused.replay.update();
+    paused.events.dispatch();
+    CHECK(paused.replay.isPlaying());
+    paused.control(Events::ReplayPause);
+    paused.replay.update();
+    paused.events.dispatch();
+    CHECK(!paused.replay.isPlaying());
+}
+
+// Delayed effects from a replay handler end with the playback that raised them.
+void delayedReplayEffectsEndWithTheirPlayback()
+{
+    for (const bool restart : {false, true}) {
+        Rig rig;
+        rig.control(Events::ReplayRecordStart);
+        rig.replay.capture(rig.world);
+        rig.advance(100);
+        rig.events.raise(Event("Hit"));
+        rig.events.dispatch();
+        rig.replay.capture(rig.world);
+        rig.advance(2000);
+        rig.replay.capture(rig.world);
+        rig.control(Events::ReplayRecordStop);
+
+        int late = 0;
+        EventManager& replayEvents = rig.replay.events();
+        bool raised = false;
+        replayEvents.subscribe("Hit", [&](const Event&) {
+            if (!raised) {
+                raised = true;
+                replayEvents.raise(Event("Late"), 1000);
+            }
+        });
+        replayEvents.subscribe("Late", [&](const Event&) { ++late; });
+
+        rig.control(Events::ReplayPlayStart);
+        rig.advance(100);
+        rig.replay.update();
+        CHECK(replayEvents.pending() == 1);
+        if (!restart) {
+            rig.control(Events::ReplayPlayStop);
+            CHECK(replayEvents.pending() == 0);
+        }
+        rig.control(Events::ReplayPlayStart);
+        CHECK(replayEvents.pending() == 0);
+        rig.advance(1500);
+        rig.replay.update();
+        CHECK(late == 0);
+    }
+}
+
+// A restart raised in the frame playback ended must not be undone by the stop.
+void aStaleStopDoesNotEndARestart()
+{
+    Rig rig;
+    rig.recordMovingBox(3);
+    rig.control(Events::ReplayPlayStart);
+    rig.advance(1000);
+    rig.replay.update();
+    rig.events.raise(Event(Events::ReplayPlayStart));
+    rig.replay.update();
+    rig.events.dispatch();
+    CHECK(rig.replay.isPlaying());
+    CHECK(rig.replay.playbackPosition() == 0);
+
+    // A stop from the game, which names no run, always works.
+    rig.control(Events::ReplayPlayStop);
+    CHECK(!rig.replay.isPlaying());
+}
+
 void destroyingDuringPlaybackRestoresTheGame()
 {
     ManualClock real;
@@ -459,6 +578,9 @@ int main()
     rollingWindowKeepsTagsOfKeptObjects();
     objectsAppearAndDisappear();
     controlRules();
+    theLastFrameIsRendered();
+    delayedReplayEffectsEndWithTheirPlayback();
+    aStaleStopDoesNotEndARestart();
     destroyingDuringPlaybackRestoresTheGame();
 
     if (failures != 0) {

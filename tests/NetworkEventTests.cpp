@@ -1,3 +1,4 @@
+#include "Components.hpp"
 #include "EventCodec.hpp"
 #include "EventManager.hpp"
 #include "Multiplayer.hpp"
@@ -6,8 +7,11 @@
 #include "NetworkProtocol.hpp"
 #include "NetworkServer.hpp"
 #include "NetworkServerHost.hpp"
+#include "ReplaySystem.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
+#include "Timeline.hpp"
+#include "World.hpp"
 #include "ZmqMessage.hpp"
 
 #include <algorithm>
@@ -1380,6 +1384,76 @@ bool sessionsShareEventsThroughBridges()
     return passed;
 }
 
+// A replay longer than the server's timeout must not cost the player its
+// place, as long as the game keeps its session and bridge running.
+bool sessionSurvivesAReplayThatKeepsItRunning()
+{
+    Network::ServerConfig config = serverConfig();
+    config.inactivityTimeoutTics = 300 * kNsPerMs;
+    Network::NetworkServerHost host(config, hostConfig());
+    host.start();
+
+    RealTimeClock realTime;
+    Timeline gameTime(realTime, kNsPerUs);
+    EventManager events(gameTime);
+    World world;
+    GameObject& box = world.create("box");
+    box.add<Transform>();
+    box.add<Renderable>();
+    box.setActive(true);
+    ReplaySystem replay(events, gameTime, realTime);
+
+    Multiplayer::Config sessionConfig;
+    sessionConfig.serverEndpoint = host.boundEndpoint();
+    std::unique_ptr<Multiplayer::Session> viewer = Multiplayer::Session::open(sessionConfig, realTime);
+    std::unique_ptr<Multiplayer::Session> other = Multiplayer::Session::open(sessionConfig, realTime);
+    NetworkEventBridge bridge(events, *viewer, {"Ping"});
+    int pings = 0;
+    const EventManager::SubscriptionId subscription =
+        events.subscribe("Ping", [&pings](const Event&) { ++pings; });
+
+    const auto frame = [&] {
+        replay.update();
+        viewer->update();
+        bridge.apply();
+        other->update();
+        events.dispatch();
+        viewer->publishLocalPlayer(1.0F, 1.0F);
+        other->publishLocalPlayer(2.0F, 2.0F);
+    };
+    bool passed = expect(waitFor(
+                             [&] {
+                                 frame();
+                                 return viewer->remotePlayers().size() == 1 && other->remotePlayers().size() == 1;
+                             },
+                             std::chrono::milliseconds(3000)),
+                         "both sessions connect");
+    const Multiplayer::PlayerId id = viewer->localPlayerId();
+
+    events.raise(Event(Events::ReplayRecordStart));
+    events.dispatch();
+    for (int i = 0; i < 3; ++i) {
+        replay.capture(world);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    events.raise(Event(Events::ReplayPlayStart).set("speed", 0.01));
+    events.dispatch();
+    other->publishEvent(ping(1));
+
+    bool stayedVisible = true;
+    const auto until = Clock::now() + std::chrono::milliseconds(800);
+    while (Clock::now() < until) {
+        frame();
+        stayedVisible &= other->remotePlayers().size() == 1;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    passed &= expect(replay.isPlaying() && stayedVisible && viewer->localPlayerId() == id,
+                     "the viewer stays connected through a replay longer than the timeout");
+    passed &= expect(pings == 1, "a remote event arriving during the replay is still handled");
+    events.unsubscribe(subscription);
+    return passed;
+}
+
 } // namespace
 
 int main()
@@ -1408,6 +1482,7 @@ int main()
     passed &= leaveSendsEventsPublishedJustBefore();
     passed &= leaveUsesAPosePublishedTheSameFrame();
     passed &= sessionsShareEventsThroughBridges();
+    passed &= sessionSurvivesAReplayThatKeepsItRunning();
 
     if (!passed) {
         return 1;

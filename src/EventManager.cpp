@@ -154,6 +154,12 @@ std::size_t EventManager::dispatch()
     return handled;
 }
 
+void EventManager::clearPending()
+{
+    const std::lock_guard<std::mutex> lock(queueMutex_);
+    queue_ = {};
+}
+
 void EventManager::setLimits(std::size_t maxRounds, std::size_t maxEventsPerDispatch)
 {
     requireOwner();

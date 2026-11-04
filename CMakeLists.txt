@@ -272,7 +272,7 @@ add_test(NAME network-world-sync-tests COMMAND network-world-sync-tests)
 # outboxes and resume on a ManualClock; text clients exchanging events beside
 # binary and property-delta clients that carry none, on a real host; and the bridge between a session and an EventManager.
 add_executable(network-event-tests tests/NetworkEventTests.cpp)
-target_link_libraries(network-event-tests PRIVATE multiplayer)
+target_link_libraries(network-event-tests PRIVATE multiplayer engine-replay)
 
 add_test(NAME network-event-tests COMMAND network-event-tests)
 
