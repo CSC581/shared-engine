@@ -16,14 +16,18 @@
 
 #include <SDL3/SDL.h>
 
+#include <array>
 #include <memory>
 #include <vector>
 
 class ApexGame : public Game {
 public:
-    ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> session = {});
+    ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session = {});
+    // Handlers capture this, and engine.events() outlives the game.
+    ~ApexGame() override;
 
-    void handleInput(Engine& engine) override;
+    // Input arrives as InputEvents; see onInput() and applyHeldKeys().
+    void handleInput(Engine&) override {}
     // The engine calls the FrameTime overload; World needs the FrameTime.
     // The float one is pure virtual in Game, so it stays as a forwarder.
     void update(const FrameTime& time, Engine& engine) override;
@@ -52,6 +56,9 @@ private:
     // Dark brown a crumbling moss ledge fades toward; also half its debris.
     static constexpr Color crumbledColor{110, 80, 45};
 
+    void onInput(const Event& event);
+    bool isHeld(SDL_Scancode key) const { return keysHeld_[key]; }
+    void applyHeldKeys();
     void handleCollisions();
     void onPlayerCollide(GameObject& other);
     void applySlingshotFling();
@@ -68,6 +75,11 @@ private:
     void updateNetwork();
     void updateCrumbles(float deltaTime);
     void spawnDebris(const Rect& ledge);
+
+    Engine& engine_;
+    std::vector<EventManager::SubscriptionId> subscriptions_;
+    // Kept from InputEvents, indexed by scancode.
+    std::array<bool, SDL_SCANCODE_COUNT> keysHeld_{};
 
     // Every object in the scene: platforms, the local player and, online,
     // the remote players and server-owned platforms NetworkWorldSync mirrors.

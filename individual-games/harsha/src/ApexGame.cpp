@@ -3,17 +3,18 @@
 #include "ApexLevel.hpp"
 #include "ApexNetworkConfig.hpp"
 #include "ApexPresence.hpp"
-#include "Input.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
+#include <string>
 #include <utility>
 
-ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> session)
-    : session_(std::move(session)),
+ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session)
+    : engine_(engine),
+      session_(std::move(session)),
       viewWidth_(static_cast<float>(engine.getWidth())),
       viewHeight_(static_cast<float>(engine.getHeight())),
       worldWidth_(viewWidth_),
@@ -26,6 +27,8 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
       })
 {
     ApexLevel::buildLevel(world_, worldWidth_, worldHeight_, viewHeight_, session_ != nullptr);
+
+    subscriptions_.push_back(engine_.events().subscribe(Events::Input, [this](const Event& event) { onInput(event); }));
 
     player_ = &ApexLevel::makePlayer(world_, 0.0F, 0.0F, playerWidth, playerHeight, gravity);
     playerTransform_ = player_->get<Transform>();
@@ -75,44 +78,71 @@ ApexGame::ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> s
     }
 }
 
-void ApexGame::handleInput(Engine& engine)
+ApexGame::~ApexGame()
 {
-    // Local game timeline, offline and online (online it does not affect peers or server).
-    Timeline& gameTime = engine.gameTime();
-    if (Input::isKeyJustPressed(SDL_SCANCODE_P)) {
-        gameTime.togglePause();
+    for (const EventManager::SubscriptionId id : subscriptions_) {
+        engine_.events().unsubscribe(id);
     }
-    if (Input::isKeyJustPressed(SDL_SCANCODE_1)) {
-        gameTime.setScale(0.5);
-    }
-    if (Input::isKeyJustPressed(SDL_SCANCODE_2)) {
-        gameTime.setScale(1.0);
-    }
-    if (Input::isKeyJustPressed(SDL_SCANCODE_3)) {
-        gameTime.setScale(2.0);
-    }
+}
 
-    // Walking is recomputed from the keys every frame; nothing held, no walk.
-    walkIntent_ = 0.0F;
-
-    // Paused: freeze the climber. Only quit and the timeline keys above act.
-    if (gameTime.isPaused()) {
-        if (Input::isKeyJustPressed(SDL_SCANCODE_ESCAPE)) {
-            engine.quit();
-        }
+// Key changes and the one-shot keys. Runs at the engine's first dispatch, also
+// while paused, so P can unpause and a release during a pause is not missed.
+void ApexGame::onInput(const Event& event)
+{
+    if (event.get<std::string>("kind") != "key") {
+        return;
+    }
+    const auto key = static_cast<SDL_Scancode>(event.get<std::int64_t>("key"));
+    const bool pressed = event.get<std::string>("state") == "pressed";
+    keysHeld_[key] = pressed;
+    if (!pressed) {
         return;
     }
 
-    // Aim/charge only while grounded — no air control once jumping.
+    // Local game timeline, offline and online (online it does not affect peers or server).
+    Timeline& gameTime = engine_.gameTime();
+    switch (key) {
+    case SDL_SCANCODE_P:
+        gameTime.togglePause();
+        break;
+    case SDL_SCANCODE_1:
+        gameTime.setScale(0.5);
+        break;
+    case SDL_SCANCODE_2:
+        gameTime.setScale(1.0);
+        break;
+    case SDL_SCANCODE_3:
+        gameTime.setScale(2.0);
+        break;
+    case SDL_SCANCODE_ESCAPE:
+        engine_.quit();
+        break;
+    default:
+        break;
+    }
+}
+
+// What the held keys mean this frame. At the start of update(), not in
+// handleInput(), which runs before the dispatch that delivers this frame's keys.
+void ApexGame::applyHeldKeys()
+{
+    // Walking is recomputed from the keys every frame; nothing held, no walk.
+    walkIntent_ = 0.0F;
+
+    // Paused: freeze the climber.
+    if (gameTimePaused_) {
+        return;
+    }
+
     float aim = 0.0F;
-    if (Input::isKeyPressed(SDL_SCANCODE_A) || Input::isKeyPressed(SDL_SCANCODE_LEFT)){
+    if (isHeld(SDL_SCANCODE_A) || isHeld(SDL_SCANCODE_LEFT)) {
         aim -= 1.0F;
     }
-    if (Input::isKeyPressed(SDL_SCANCODE_D) || Input::isKeyPressed(SDL_SCANCODE_RIGHT)){
+    if (isHeld(SDL_SCANCODE_D) || isHeld(SDL_SCANCODE_RIGHT)) {
         aim += 1.0F;
     }
 
-    if (isOnGround_ && Input::isKeyPressed(SDL_SCANCODE_SPACE)) {
+    if (isOnGround_ && isHeld(SDL_SCANCODE_SPACE)) {
         isCharging_ = true;
         aimDirection_ = aim;
     } else if (!isCharging_ && isOnGround_) {
@@ -128,7 +158,7 @@ void ApexGame::handleInput(Engine& engine)
 
     // "Not held" rather than "just released": a release during a pause is
     // missed, so the stored charge fires on the first unpaused frame.
-    if (isCharging_ && !Input::isKeyPressed(SDL_SCANCODE_SPACE)) {
+    if (isCharging_ && !isHeld(SDL_SCANCODE_SPACE)) {
         isCharging_ = false;
 
         const float power = baseJumpSpeed + chargePower_;
@@ -138,10 +168,6 @@ void ApexGame::handleInput(Engine& engine)
 
         chargePower_ = 0.0F;
         isOnGround_ = false;
-    }
-
-    if (Input::isKeyJustPressed(SDL_SCANCODE_ESCAPE)) {
-        engine.quit();
     }
 }
 
@@ -197,6 +223,8 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     const Timeline& gameTime = engine.gameTime();
     gameTimePaused_ = gameTime.isPaused();
     gameTimeScale_ = gameTime.scale();
+
+    applyHeldKeys();
 
     // Refresh snapshots, then mirror them into the World (server platform
     // poses, remote players) before anything reads positions this frame.
