@@ -18,10 +18,12 @@ constexpr const char* LedgeCrumbleEvent = "LedgeCrumbleEvent";
 constexpr const char* SummitEvent = "SummitEvent";
 constexpr float noticeSeconds = 4.0F;
 constexpr float ghostFlashSeconds = 0.6F;
+constexpr std::int64_t replayFlashRealTics = 300'000'000;
 } // namespace
 
 ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session)
     : engine_(engine),
+      replay_(engine.events(), engine.gameTime(), engine.realTime()),
       session_(std::move(session)),
       viewWidth_(static_cast<float>(engine.getWidth())),
       viewHeight_(static_cast<float>(engine.getHeight())),
@@ -47,6 +49,22 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     subscriptions_.push_back(engine_.events().subscribe(Events::Spawn, [this](const Event& event) { onSpawn(event); }));
     subscriptions_.push_back(engine_.events().subscribe(LedgeCrumbleEvent, [this](const Event& event) { onLedgeCrumble(event); }));
     subscriptions_.push_back(engine_.events().subscribe(SummitEvent, [this](const Event& event) { onSummit(event); }));
+    // After replay_'s own subscription, so it has stopped by the time this runs.
+    // A stale stop can arrive for a playback that restarted, hence the check.
+    subscriptions_.push_back(engine_.events().subscribe(Events::ReplayPlayStop, [this](const Event&) {
+        if (!replay_.isPlaying()) {
+            engine_.events().raise(Event{Events::ReplayRecordStart});
+        }
+    }));
+    replay_.setRollingWindow(killCamTics);
+    replay_.setFrameStateHook([this] { return recordClimbers(); });
+    replay_.events().subscribe(Events::Death, [this](const Event& event) {
+        if (event.origin == 0) {
+            replayFlashUntil_ = engine_.realTime().now() + replayFlashRealTics;
+        }
+    });
+    engine_.events().raise(Event{Events::ReplayRecordStart});
+
     if (session_ && session_->supportsEvents()) {
         bridge_ = std::make_unique<NetworkEventBridge>(
             engine_.events(), *session_,
@@ -122,6 +140,29 @@ void ApexGame::onInput(const Event& event)
         return;
     }
 
+    if (key == SDL_SCANCODE_ESCAPE) {
+        engine_.quit();
+        return;
+    }
+    if (key == SDL_SCANCODE_F5) {
+        engine_.events().raise(Event{Events::ReplayPlayStart});
+        return;
+    }
+    if (key == SDL_SCANCODE_F8) {
+        engine_.events().raise(Event{Events::ReplaySpeed}.set(
+            "speed", replay_.speed() < 1.0 ? 1.0 : replay_.speed() < 2.0 ? 2.0 : 0.5));
+        return;
+    }
+    if (replay_.isPlaying()) {
+        if (key == SDL_SCANCODE_F6) {
+            engine_.events().raise(Event{Events::ReplayPause});
+        } else if (key == SDL_SCANCODE_F7) {
+            engine_.events().raise(Event{Events::ReplayPlayStop});
+        }
+        // The replay owns the live timeline's pause while it plays.
+        return;
+    }
+
     // Local game timeline, offline and online (online it does not affect peers or server).
     Timeline& gameTime = engine_.gameTime();
     switch (key) {
@@ -136,9 +177,6 @@ void ApexGame::onInput(const Event& event)
         break;
     case SDL_SCANCODE_3:
         gameTime.setScale(2.0);
-        break;
-    case SDL_SCANCODE_ESCAPE:
-        engine_.quit();
         break;
     default:
         break;
@@ -271,6 +309,11 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     const auto deltaTime = static_cast<float>(time.dtSeconds);
     currentScaleMode_ = engine.getScaleMode();
 
+    replay_.update();
+
+    // A replay pauses the live timeline, so the rest of this function treats it
+    // as a pause: the session, bridge and pose keep going, and Carrier keeps
+    // measuring, so a rider is not thrown when the replay ends.
     const Timeline& gameTime = engine.gameTime();
     gameTimePaused_ = gameTime.isPaused();
     gameTimeScale_ = gameTime.scale();
@@ -390,6 +433,7 @@ void ApexGame::update(const FrameTime& time, Engine& engine)
     }
 
     updateNetwork();
+    replay_.capture(world_, 0.0F, camera_);
 
     // roomAt clamps, so a leap above the tower's top can't count as room 7.
     const int room = roomAt(playerTransform_->y);
@@ -536,7 +580,10 @@ void ApexGame::onDeath(const Event& event)
     isOnGround_ = false;
     groundedPlatformId_ = 0;
     player_->setActive(false);
+    // The spawn is on game time, which the replay pauses, so the climber comes
+    // back after the kill cam, not under it.
     raiseSpawnAt(*checkpoint_, respawnDelayTics);
+    engine_.events().raise(Event{Events::ReplayPlayStart});
 }
 
 void ApexGame::onSpawn(const Event& event)
@@ -728,6 +775,28 @@ void ApexGame::onSummit(const Event& event)
     if (event.origin != 0) {
         showNotice("Climber #" + std::to_string(event.origin) + " reached the Apex!");
     }
+}
+
+// One line per climber: id (0 = this one), x, y and animation. A dead climber
+// is hidden, so it is left out. Ghost animations were checked by decodeAnimation
+// and are written back from the result, because another player chose the text.
+std::string ApexGame::recordClimbers() const
+{
+    std::string text;
+    if (!isDead_) {
+        text += "0 " + std::to_string(playerTransform_->x) + ' ' + std::to_string(playerTransform_->y) + ' ' +
+                ApexPresence::encodeAnimation(playerAnim_) + '\n';
+    }
+    if (session_) {
+        for (const Multiplayer::Player& remote : session_->remotePlayers()) {
+            ApexPresence::RemoteAnimation animation;
+            ApexPresence::decodeAnimation(remote.data, animation);
+            text += std::to_string(remote.id) + ' ' + std::to_string(remote.x) + ' ' + std::to_string(remote.y) + ' ' +
+                    std::to_string(static_cast<int>(animation.clip)) + ' ' + std::to_string(animation.frame) + ' ' +
+                    (animation.facingRight ? "1" : "0") + '\n';
+        }
+    }
+    return text;
 }
 
 void ApexGame::showNotice(std::string text)

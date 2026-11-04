@@ -12,6 +12,7 @@
 #include "Multiplayer.hpp"
 #include "NetworkEventBridge.hpp"
 #include "NetworkWorldSync.hpp"
+#include "ReplaySystem.hpp"
 #include "World.hpp"
 #include "animation/PlayerAnimation.hpp"
 
@@ -65,6 +66,8 @@ private:
 
     // On game time, so a pause holds it. Lets the death read on screen.
     static constexpr std::int64_t respawnDelayTics = kGameTicsPerSecond * 2 / 5;
+    // How much the always-on recording keeps: the kill cam's length.
+    static constexpr std::int64_t killCamTics = kGameTicsPerSecond * 5;
 
     // Dark brown a crumbling moss ledge fades toward; also half its debris.
     static constexpr Color crumbledColor{110, 80, 45};
@@ -94,6 +97,9 @@ private:
     void onLedgeCrumble(const Event& event);
     void onSummit(const Event& event);
     void showNotice(std::string text);
+    // The climbers drawn outside renderWorld(), as text for the replay.
+    std::string recordClimbers() const;
+    void drawRecordedClimbers(SDL_Renderer* renderer, float camera) const;
     void updateOnlineCues(float deltaTime);
     void spawnDebris(const Rect& ledge);
 
@@ -101,6 +107,10 @@ private:
     std::vector<EventManager::SubscriptionId> subscriptions_;
     // Kept from InputEvents, indexed by scancode.
     std::array<bool, SDL_SCANCODE_COUNT> keysHeld_{};
+    // Always recording the last killCamTics. Pauses the game while it plays.
+    ReplaySystem replay_;
+    // Red border until this real time, when a replay reaches a death.
+    std::int64_t replayFlashUntil_ = 0;
 
     // Every object in the scene: platforms, the local player and, online,
     // the remote players and server-owned platforms NetworkWorldSync mirrors.
