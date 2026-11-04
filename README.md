@@ -53,7 +53,7 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 | Function | Meaning |
 | -------- | ------- |
 | `Event{type}.set(name, value)` | Builds an event. A value is a bool, integer, decimal or text. `get<T>(name)`, `getOr<T>(name, fallback)` and `has(name)` read it back |
-| `event.priority` | `EventPriority::High` (-100), `Normal` (0, the default) or `Low` (100). Lower runs first among events due at the same time |
+| `event.priority` | `EventPriority::High` (-100), `Normal` (0, the default) or `Low` (100). Lower runs first among everything due at the same dispatch. A delay decides when an event becomes due. Only `High` is kept when the queue is full |
 | `engine.events()` | The game's event manager. Its timestamps come from game time |
 | `events.subscribe(type, handler)` | Calls `handler` for every event of that type. Returns an id |
 | `events.subscribeAll(handler)` | Calls `handler` for every event, after the type's own handlers |
@@ -148,7 +148,7 @@ A game raises these from whatever it likes, such as a key's `InputEvent` or a `D
 - **Replay shows what was recorded and does not simulate again.** Frame times vary, so running the inputs through physics again would not give the same result. Positions and the camera are blended between frames, so slow motion is smooth.
 - **Playback keeps its own world, event manager and timeline.** The live game is paused underneath and is left paused afterwards if the player had paused it. The live event manager keeps running, so input and remote events still reach gameplay handlers, and those that change the live world should return early while `replay.isPlaying()`. A networked game keeps its session and bridge running during playback.
 
-**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events. Replay is local to one machine, and a networked game resumes against the current network state. Replay follows game time, so time the game spent paused while recording is skipped, and a stretch recorded with the game at 2x plays at half its original pace at replay speed 1. Recording keeps everything until it stops, unless a rolling window is set.
+**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. An event counts as delivered once it reaches the client, so a session destroyed before the game handles it loses it. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events. Replay is local to one machine, and a networked game resumes against the current network state. Replay follows game time, so time the game spent paused while recording is skipped, and a stretch recorded with the game at 2x plays at half its original pace at replay speed 1. Recording keeps everything until it stops, unless a rolling window is set.
 
 <div style="page-break-before: always"></div>
 

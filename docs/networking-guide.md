@@ -163,16 +163,18 @@ request cannot move a player backwards.
 
 **Events ride on the same exchange** (Milestone 4, protocol version 7). A
 `POSITION` also carries the client's unconfirmed events, numbered 1, 2, 3…,
-and the highest relayed event it has handled. The server gives each new event
+and the highest relayed event it has received. The server gives each new event
 the next server sequence number and the sender's id as its origin, and adds it
 to every *other* player's outbox; an event it has already accepted is
 recognised by its number and not relayed twice. The `SNAPSHOT` reply says which events were accepted and carries up to 64 outbox
-events the client has not acknowledged. So each event reaches every other
-client once, in the same order everywhere, even when a request or reply is
-lost. Every `WELCOME` says how many of the player's events the server has
+events the client has not acknowledged. The server limits an acknowledgement
+to the highest event it has sent that player, so a wrong number cannot erase
+events still on their way. So an event reaches every other client without
+duplicates and in the same order, even when a request or reply is lost, as
+long as it fits the bounded queues described below. Every `WELCOME` says how many of the player's events the server has
 accepted and which server instance (a random number picked at startup) sent
 it. The client drops its events up to that number and numbers the rest on
-from there, and forgets the relayed numbers it handled only if the instance
+from there, and forgets the relayed numbers it received only if the instance
 changed. So a rejoin with the same session token loses and repeats nothing,
 and a client the server timed out (or whose server restarted) starts again
 as a new player, numbering from 1 and losing what was relayed while it was
@@ -188,7 +190,10 @@ duplicates, bounded best effort: an event is acknowledged when it reaches the
 client, not when a game handles it. The server
 never reads an event. On the game side,
 `NetworkEventBridge` connects a session to the game's `EventManager` for the
-event types the game chooses to share. Peer-to-peer mode carries no events.
+event types the game chooses to share, and treats what arrives as untrusted:
+it removes object ids from death, spawn and collision events, limits priority
+to `High`..`Low`, and a bad argument in a remote event is counted, not fatal.
+Server sockets refuse any frame over 16 MiB. A session has one bridge. Peer-to-peer mode carries no events.
 
 **In peer-to-peer mode, they genuinely do.** See §3.
 
