@@ -256,7 +256,10 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
     sender.lastAcceptedEvent = lastAccepted;
     sender.acceptedEvents += accepted.size();
     auto& outbox = sender.outbox;
-    while (!outbox.empty() && outbox.front()->serverSequence <= request.ackedEventSequence) {
+    // A client cannot acknowledge what it was never sent, so a bad number
+    // cannot erase events still on their way to it.
+    const std::uint64_t acknowledged = std::min(request.ackedEventSequence, sender.lastSentEvent);
+    while (!outbox.empty() && outbox.front()->serverSequence <= acknowledged) {
         outbox.pop_front();
     }
 
@@ -268,6 +271,9 @@ Reply NetworkServer::handleLocked(Request request, std::int64_t now)
     reply.events.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
         reply.events.push_back(*outbox[i]);
+    }
+    if (count > 0) {
+        sender.lastSentEvent = std::max(sender.lastSentEvent, reply.events.back().serverSequence);
     }
     return reply;
 }

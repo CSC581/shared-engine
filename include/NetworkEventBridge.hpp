@@ -15,7 +15,9 @@
 // local manager, so the game's own handlers run for them like any other
 // event. A remote event is raised with this machine's game time, because the
 // sender's clock means nothing here, and keeps the sender's timestamp as the
-// argument "sentAt". Its origin is the sender's player id.
+// reserved argument "net.sentAt". Its origin is the sender's player id. Its
+// priority is limited to EventPriority::High..Low, and a Death, Spawn or
+// Collision event loses `object`, `a` and `b` (see Event::origin).
 //
 // Only listed types cross in either direction. A remote event of any other
 // type is ignored, so another player cannot raise, say, InputEvent here. A
@@ -26,9 +28,10 @@
 // The bridge must not outlive the manager or the session.
 class NetworkEventBridge {
 public:
-    // Throws std::logic_error for a peer-to-peer session, which carries no
-    // events, and std::invalid_argument for a type that is not a valid event
-    // name (see validateEvent in EventCodec.hpp).
+    // Throws std::logic_error for a peer-to-peer or binary session, which
+    // carry no events, or a session that already has a bridge, and
+    // std::invalid_argument for a type that is not a valid event name (see
+    // validateEvent in EventCodec.hpp).
     NetworkEventBridge(EventManager& events, Multiplayer::Session& session,
                        std::vector<std::string> sharedTypes);
     ~NetworkEventBridge();

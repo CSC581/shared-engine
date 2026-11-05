@@ -163,17 +163,18 @@ request cannot move a player backwards.
 
 **Events ride on the same exchange** (Milestone 4, protocol version 7). A
 `POSITION` also carries the client's unconfirmed events, numbered 1, 2, 3…,
-and the highest relayed event it has handled. The server gives each new event
+and the highest relayed event it has received. The server gives each new event
 the next server sequence number and the sender's id as its origin, and adds it
 to every *other* player's outbox; an event it has already accepted is
-recognised by its number and not relayed twice. The `SNAPSHOT` reply (or
-property delta) says which events were accepted and carries up to 64 outbox
-events the client has not acknowledged. So each event reaches every other
-client once, in the same order everywhere, even when a request or reply is
-lost. Every `WELCOME` says how many of the player's events the server has
+recognised by its number and not relayed twice. The `SNAPSHOT` reply says which events were accepted and carries up to 64 outbox
+events the client has not acknowledged. The server limits an acknowledgement
+to the highest event it has sent that player, so a wrong number cannot erase
+events still on their way. So an event reaches every other client without
+duplicates and in the same order, even when a request or reply is lost, as
+long as it fits the bounded queues described below. Every `WELCOME` says how many of the player's events the server has
 accepted and which server instance (a random number picked at startup) sent
 it. The client drops its events up to that number and numbers the rest on
-from there, and forgets the relayed numbers it handled only if the instance
+from there, and forgets the relayed numbers it received only if the instance
 changed. So a rejoin with the same session token loses and repeats nothing,
 and a client the server timed out (or whose server restarted) starts again
 as a new player, numbering from 1 and losing what was relayed while it was
@@ -182,11 +183,17 @@ player and drops the oldest beyond that, so a long outage cannot end in a
 flood of stale events. With send pacing on, a client that has events waiting
 resends its last pose to carry them instead of waiting for the next paced
 send, and `leave()` sends waiting events (for at most about 0.2 s) before
-`LEAVE` (not if it is reconnecting at that moment). A session's `takeRemoteEvents()` returns only the latest `update()`'s
-events, so a game that never takes them does not pile them up. The server
+`LEAVE` (not if it is reconnecting at that moment). A session's `takeRemoteEvents()` returns events since the last call and keeps
+at most 256, so a game that never takes them does not pile them up;
+`Session::droppedEvents()` counts this client's losses. Delivery is no
+duplicates, bounded best effort: an event is acknowledged when it reaches the
+client, not when a game handles it. The server
 never reads an event. On the game side,
 `NetworkEventBridge` connects a session to the game's `EventManager` for the
-event types the game chooses to share. Peer-to-peer mode carries no events.
+event types the game chooses to share, and treats what arrives as untrusted:
+it removes object ids from death, spawn and collision events, limits priority
+to `High`..`Low`, and a bad argument in a remote event is counted, not fatal.
+Server sockets refuse any frame over 16 MiB. A session has one bridge. Peer-to-peer mode carries no events.
 
 **In peer-to-peer mode, they genuinely do.** See §3.
 
@@ -309,6 +316,12 @@ baseline; subsequent replies contain changed fields and membership. The client
 still exposes a complete `WorldSnapshot`, and requests a complete resync when
 its acknowledged baseline does not match the host. Binary and property deltas
 are rejected in peer-to-peer mode.
+
+Binary carries no events. It keeps its Milestone 3 layout for the benchmarks
+that compare it with text; `publishEvent()` and a `NetworkEventBridge` on a
+binary session throw `std::logic_error`, and a binary client on a server where
+text clients use events simply receives none. Use text for any game that shares
+events.
 
 Pass `engine.realTime()`, never `engine.gameTime()`. A session running on a
 pausable clock could never reconnect, and could never report the unpause.

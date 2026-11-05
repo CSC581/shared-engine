@@ -1,4 +1,4 @@
-#include "BinaryNetworkProtocol.hpp"
+#include "Components.hpp"
 #include "EventCodec.hpp"
 #include "EventManager.hpp"
 #include "Multiplayer.hpp"
@@ -7,14 +7,19 @@
 #include "NetworkProtocol.hpp"
 #include "NetworkServer.hpp"
 #include "NetworkServerHost.hpp"
+#include "ReplaySystem.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
+#include "Timeline.hpp"
+#include "World.hpp"
 #include "ZmqMessage.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <functional>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -218,6 +223,11 @@ bool acknowledgementsClearTheOutbox()
                      "acknowledged events are dropped, later ones are kept");
     passed &= expect(b.send({}, first.events[2].serverSequence).events.empty(),
                      "once everything is acknowledged nothing is resent");
+
+    a.send(outgoing(4, 1));
+    passed &= expect(numbers(b.send({}, std::numeric_limits<std::uint64_t>::max()).events) ==
+                         std::vector<std::int64_t>{4},
+                     "acknowledging an event never sent does not erase it");
     return passed;
 }
 
@@ -401,7 +411,7 @@ bool sameEvents(const std::vector<Network::RelayedEvent>& a, const std::vector<N
            });
 }
 
-bool bothFormatsCarryEventsAndAcks()
+bool textCarriesEventsAndAcks()
 {
     std::string error;
     const Network::Request request = positionWithEvents();
@@ -414,40 +424,12 @@ bool bothFormatsCarryEventsAndAcks()
                                                 text, error) &&
                              sameRequest(request, text),
                          "a text POSITION round-trips its acknowledgement and events: " + error);
-    Network::Request binary;
-    passed &= expect(Network::decodeBinaryRequest(Network::encodeBinaryRequest(request), binary, error) &&
-                         sameRequest(request, binary),
-                     "a binary POSITION round-trips its acknowledgement and events: " + error);
-    Network::BinaryRequestEnvelope deltaRequest;
-    deltaRequest.request = request;
-    deltaRequest.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
-    deltaRequest.acknowledgedServerTick = 3;
-    Network::BinaryRequestEnvelope deltaDecoded;
-    passed &= expect(Network::decodeBinaryRequest(Network::encodeBinaryRequest(deltaRequest), deltaDecoded, error) &&
-                         sameRequest(request, deltaDecoded.request),
-                     "a property-delta POSITION round-trips its events: " + error);
 
     Network::Reply textReply;
     passed &= expect(Network::decodeReply(Network::encodeReply(reply), textReply, error) &&
                          textReply.acceptedClientSequence == 5 && sameEvents(reply.events, textReply.events) &&
                          textReply.snapshot.platforms.size() == 1,
                      "a text SNAPSHOT round-trips acceptance and events: " + error);
-    Network::Reply binaryReply;
-    passed &= expect(Network::decodeBinaryReply(Network::encodeBinaryReply(reply), binaryReply, error) &&
-                         binaryReply.acceptedClientSequence == 5 && sameEvents(reply.events, binaryReply.events),
-                     "a binary SNAPSHOT round-trips acceptance and events: " + error);
-
-    Network::BinaryReplyEnvelope delta;
-    delta.kind = Network::BinaryReplyKind::SnapshotDelta;
-    delta.reply = reply;
-    Network::WorldSnapshot base = reply.snapshot;
-    base.serverTick = 11;
-    delta.delta = Network::makeSnapshotDelta(base, reply.snapshot);
-    Network::BinaryReplyEnvelope deltaReply;
-    passed &= expect(Network::decodeBinaryReply(Network::encodeBinaryReply(delta), deltaReply, error) &&
-                         deltaReply.kind == Network::BinaryReplyKind::SnapshotDelta &&
-                         deltaReply.reply.acceptedClientSequence == 5 && sameEvents(reply.events, deltaReply.reply.events),
-                     "a snapshot delta carries acceptance and events too: " + error);
 
     Network::Reply welcome;
     welcome.type = Network::ReplyType::Welcome;
@@ -455,21 +437,10 @@ bool bothFormatsCarryEventsAndAcks()
     welcome.acceptedClientSequence = 17;
     welcome.serverInstance = 0xFEDCBA9876543210ULL;
     Network::Reply decodedText;
-    Network::Reply decodedBinary;
-    Network::BinaryReplyEnvelope deltaWelcome;
-    deltaWelcome.kind = Network::BinaryReplyKind::DeltaWelcome;
-    deltaWelcome.reply = welcome;
-    Network::BinaryReplyEnvelope decodedDelta;
     passed &= expect(Network::decodeReply(Network::encodeReply(welcome), decodedText, error) &&
                          decodedText.acceptedClientSequence == 17 &&
-                         decodedText.serverInstance == welcome.serverInstance &&
-                         Network::decodeBinaryReply(Network::encodeBinaryReply(welcome), decodedBinary, error) &&
-                         decodedBinary.acceptedClientSequence == 17 &&
-                         decodedBinary.serverInstance == welcome.serverInstance &&
-                         Network::decodeBinaryReply(Network::encodeBinaryReply(deltaWelcome), decodedDelta, error) &&
-                         decodedDelta.reply.acceptedClientSequence == 17 &&
-                         decodedDelta.reply.serverInstance == welcome.serverInstance,
-                     "WELCOME carries what was accepted and the server instance in every format: " + error);
+                         decodedText.serverInstance == welcome.serverInstance,
+                     "WELCOME carries what was accepted and the server instance: " + error);
     return passed;
 }
 
@@ -512,48 +483,25 @@ bool decodersRejectBrokenEventFields()
     passed &= expect(!Network::decodeReply(shortWelcome, reply, error),
                      "a WELCOME without its server instance is refused");
 
-    const Network::BinaryMessage bytes = Network::encodeBinaryReply(snapshotWithEvents());
-    passed &= expect(!Network::decodeBinaryReply(bytes.substr(0, bytes.size() - 1), reply, error),
-                     "a truncated binary SNAPSHOT is refused");
-    const Network::BinaryMessage binaryWelcome = Network::encodeBinaryReply(welcome);
-    passed &= expect(!Network::decodeBinaryReply(binaryWelcome.substr(0, binaryWelcome.size() - 1), reply, error),
-                     "a truncated binary WELCOME is refused");
-
-    // Every shorter prefix of a binary message carrying events is refused.
-    Network::BinaryRequestEnvelope deltaRequest;
-    deltaRequest.request = positionWithEvents();
-    deltaRequest.snapshotStrategy = Net::SnapshotStrategy::PropertyDelta;
-    deltaRequest.acknowledgedServerTick = 3;
-    Network::BinaryReplyEnvelope deltaReply;
-    deltaReply.kind = Network::BinaryReplyKind::SnapshotDelta;
-    deltaReply.reply = snapshotWithEvents();
-    Network::WorldSnapshot base = deltaReply.reply.snapshot;
-    base.serverTick = 11;
-    deltaReply.delta = Network::makeSnapshotDelta(base, deltaReply.reply.snapshot);
-    const Network::BinaryMessage whole[] = {
-        Network::encodeBinaryRequest(positionWithEvents()),
-        Network::encodeBinaryRequest(deltaRequest),
-        Network::encodeBinaryReply(snapshotWithEvents()),
-        Network::encodeBinaryReply(deltaReply),
-    };
-    bool everyPrefixRefused = true;
-    for (std::size_t kind = 0; kind < 4; ++kind) {
-        for (std::size_t length = 0; length < whole[kind].size(); ++length) {
-            const Network::BinaryMessage prefix = whole[kind].substr(0, length);
-            Network::BinaryRequestEnvelope requestEnvelope;
-            Network::BinaryReplyEnvelope replyEnvelope;
-            everyPrefixRefused &= kind < 2 ? !Network::decodeBinaryRequest(prefix, requestEnvelope, error)
-                                           : !Network::decodeBinaryReply(prefix, replyEnvelope, error);
-        }
-    }
-    passed &= expect(everyPrefixRefused, "every truncated binary message carrying events is refused");
-
     // A relayed event decoded from a client's request would let a client
     // choose its own origin; the direction of each list is fixed.
     Network::Message relayedInRequest(position.begin(), position.begin() + 9);
     Network::appendEventsText(relayedInRequest, snapshotWithEvents().events);
     passed &= expect(!Network::decodeRequest(relayedInRequest, request, error),
                      "a POSITION cannot carry server-to-client events");
+
+    // Fields 11, 15 and 17 are the event's type, argument name and value.
+    const std::string tooLong(Net::maxEventTextLength + 1, 'x');
+    for (const auto& [field, message] : std::vector<std::pair<std::size_t, std::string>>{
+             {11, "invalid event type"},
+             {15, "invalid event argument name"},
+             {17, "event text value is too long"},
+         }) {
+        Network::Message oversized = position;
+        oversized.at(field) = tooLong;
+        passed &= expect(!Network::decodeRequest(oversized, request, error) && error == message,
+                         "an over-long event field is refused by its length: " + message);
+    }
     return passed;
 }
 
@@ -925,10 +873,9 @@ Network::HostConfig hostConfig()
     return config;
 }
 
-// Text, binary and property-delta clients on one server. A and B send; every
-// client receives everyone else's events once, and the two that only listen
-// see the same order.
-bool mixedClientsExchangeEventsThroughTheHost()
+// Events are text-only. On one server, two text clients exchange events, while
+// binary and property-delta clients stay connected, get none and may not send.
+bool textClientsExchangeEventsBesideBinaryClients()
 {
     Network::NetworkServerHost host(serverConfig(), hostConfig());
     host.start();
@@ -970,28 +917,41 @@ bool mixedClientsExchangeEventsThroughTheHost()
                              std::chrono::milliseconds(3000)),
                          "all four clients connect");
 
+    for (const std::size_t binaryClient : {std::size_t{1}, std::size_t{2}}) {
+        bool threw = false;
+        try {
+            clients[binaryClient]->publishEvent(ping(1));
+        } catch (const std::logic_error&) {
+            threw = true;
+        }
+        passed &= expect(threw && clients[binaryClient]->pendingEvents() == 0,
+                         "a binary client refuses to publish an event");
+    }
+
     constexpr std::int64_t perSender = 40;
     for (std::int64_t n = 0; n < perSender; ++n) {
         clients[0]->publishEvent(ping(n));
-        clients[1]->publishEvent(ping(100 + n));
+        clients[3]->publishEvent(ping(100 + n));
     }
-    const auto complete = [&] {
-        return received[0].size() == perSender && received[1].size() == perSender &&
-               received[2].size() == 2 * perSender && received[3].size() == 2 * perSender;
-    };
+    const auto complete = [&] { return received[0].size() == perSender && received[3].size() == perSender; };
     passed &= expect(waitFor(
                          [&] {
                              pump();
                              return complete();
                          },
                          std::chrono::milliseconds(5000)),
-                     "every client receives every other client's events");
+                     "each text client receives the other's events");
     // Give any duplicate a chance to show up.
     for (int i = 0; i < 20; ++i) {
         pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     passed &= expect(complete(), "no event arrives twice");
+    passed &= expect(received[1].empty() && received[2].empty(), "binary and property-delta clients get no events");
+    passed &= expect(clients[1]->state() == Network::ConnectionState::Connected &&
+                         clients[2]->state() == Network::ConnectionState::Connected &&
+                         clients[2]->snapshot().players.size() == clients.size(),
+                     "binary and property-delta clients keep working beside them");
 
     const auto values = [](const std::vector<Event>& events) {
         std::vector<std::int64_t> result;
@@ -1000,20 +960,18 @@ bool mixedClientsExchangeEventsThroughTheHost()
         }
         return result;
     };
-    std::vector<std::int64_t> fromA;
-    std::vector<std::int64_t> fromB;
+    std::vector<std::int64_t> fromFirst;
+    std::vector<std::int64_t> fromLast;
     for (std::int64_t n = 0; n < perSender; ++n) {
-        fromA.push_back(n);
-        fromB.push_back(100 + n);
+        fromFirst.push_back(n);
+        fromLast.push_back(100 + n);
     }
-    passed &= expect(values(received[1]) == fromA && values(received[0]) == fromB,
+    passed &= expect(values(received[3]) == fromFirst && values(received[0]) == fromLast,
                      "each sender's events arrive in the order they were sent, and never back at the sender");
-    passed &= expect(values(received[2]) == values(received[3]),
-                     "text and property-delta clients see the same global order");
     passed &= expect(std::all_of(received[0].begin(), received[0].end(),
-                                 [&](const Event& event) { return event.origin == clients[1]->playerId(); }),
+                                 [&](const Event& event) { return event.origin == clients[3]->playerId(); }),
                      "relayed events carry the sender's id");
-    passed &= expect(clients[0]->pendingEvents() == 0 && clients[1]->pendingEvents() == 0,
+    passed &= expect(clients[0]->pendingEvents() == 0 && clients[3]->pendingEvents() == 0,
                      "every published event was accepted");
     return passed;
 }
@@ -1023,6 +981,7 @@ bool mixedClientsExchangeEventsThroughTheHost()
 class FakeSession final : public Multiplayer::Session {
 public:
     Multiplayer::Mode sessionMode = Multiplayer::Mode::ClientServer;
+    bool carriesEvents = true;
     std::vector<Event> published;
     std::vector<Event> incoming;
 
@@ -1036,6 +995,7 @@ public:
     Multiplayer::AuthorityState authorityState() const override { return Multiplayer::AuthorityState::Ready; }
     std::string status() const override { return "fake"; }
     Multiplayer::Mode mode() const override { return sessionMode; }
+    bool supportsEvents() const override { return carriesEvents; }
     void publishEvent(const Event& event) override { published.push_back(event); }
     std::vector<Event> takeRemoteEvents() override
     {
@@ -1081,9 +1041,9 @@ bool bridgeSharesOnlyListedLocalEvents()
         bridge.apply();
         events.dispatch();
         passed &= expect(handled.size() == 1 && handled[0].origin == 7 && handled[0].timestamp == 1000 &&
-                             handled[0].getOr<std::int64_t>("sentAt", -1) == 40 &&
+                             handled[0].getOr<std::int64_t>("net.sentAt", -1) == 40 &&
                              handled[0].priority == EventPriority::High,
-                         "a remote event is raised with the local time, the sender's time as sentAt, its origin "
+                         "a remote event is raised with the local time, the sender's time as net.sentAt, its origin "
                          "and its priority; unlisted types and events without an origin are ignored");
         passed &= expect(session.published.size() == 1, "a remote event is never published again");
     }
@@ -1091,6 +1051,85 @@ bool bridgeSharesOnlyListedLocalEvents()
     events.raise(ping(4));
     events.dispatch();
     passed &= expect(session.published.size() == 1, "a destroyed bridge publishes nothing");
+    return passed;
+}
+
+// Object 3 is one player's own object on one machine and a different object,
+// or nothing, on another, so a remote id must not reach a handler.
+bool bridgeRemovesWhatARemotePlayerMustNotDecide()
+{
+    ManualClock clock;
+    EventManager events(clock);
+    FakeSession session;
+    NetworkEventBridge bridge(events, session, {Events::Death, Events::Spawn, Events::Collision, "Ping"});
+    std::vector<Event> handled;
+    events.subscribeAll([&](const Event& event) { handled.push_back(event); });
+
+    Event death(Events::Death);
+    death.origin = 7;
+    death.set("object", 3).set("cause", "lava");
+    Event spawn(Events::Spawn);
+    spawn.origin = 7;
+    spawn.set("object", 3).set("x", 1.0);
+    Event collision(Events::Collision);
+    collision.origin = 7;
+    collision.set("a", 3).set("b", 4);
+    Event game = ping(1);
+    game.origin = 7;
+    game.set("object", 3).set("net.sentAt", 999);
+    game.priority = std::numeric_limits<int>::min();
+    Event low = ping(2);
+    low.origin = 7;
+    low.priority = std::numeric_limits<int>::max();
+    session.incoming = {death, spawn, collision, game, low};
+    bridge.apply();
+    events.dispatch();
+
+    bool passed = expect(handled.size() == 5, "every remote event is raised");
+    if (!passed) {
+        return false;
+    }
+    std::map<std::int64_t, const Event*> pings;
+    for (const Event& event : handled) {
+        if (event.type == "Ping") {
+            pings[event.get<std::int64_t>("n")] = &event;
+        } else {
+            passed &= expect(!event.has("object") && !event.has("a") && !event.has("b"),
+                             "a remote death, spawn or collision carries no object id");
+        }
+    }
+    const auto deathEvent = std::find_if(handled.begin(), handled.end(),
+                                         [](const Event& event) { return event.type == Events::Death; });
+    passed &= expect(deathEvent != handled.end() && deathEvent->getOr<std::string>("cause", "") == "lava",
+                     "other arguments survive");
+    passed &= expect(pings.at(1)->has("object"), "a game's own event type keeps its arguments");
+    passed &= expect(pings.at(1)->get<std::int64_t>("net.sentAt") != 999,
+                     "a sender cannot choose the reserved net.sentAt");
+    passed &= expect(pings.at(1)->priority == EventPriority::High && pings.at(2)->priority == EventPriority::Low,
+                     "a remote priority stays within High and Low");
+    return passed;
+}
+
+bool oneBridgePerSession()
+{
+    ManualClock clock;
+    EventManager events(clock);
+    FakeSession session;
+    bool passed = true;
+    {
+        NetworkEventBridge first(events, session, {"Ping"});
+        bool threw = false;
+        try {
+            NetworkEventBridge second(events, session, {"Ping"});
+        } catch (const std::logic_error&) {
+            threw = true;
+        }
+        passed &= expect(threw, "a second bridge on a session is refused");
+        events.raise(ping(1));
+        events.dispatch();
+        passed &= expect(session.published.size() == 1, "the first bridge still publishes once");
+    }
+    NetworkEventBridge replacement(events, session, {"Ping"});
     return passed;
 }
 
@@ -1118,6 +1157,29 @@ bool bridgeRefusesWhatCannotWork()
         threw = true;
     }
     passed &= expect(threw, "a type that is not a valid event name is refused");
+
+    session.carriesEvents = false;
+    threw = false;
+    try {
+        NetworkEventBridge bridge(events, session, {"Ping"});
+    } catch (const std::logic_error&) {
+        threw = true;
+    }
+    passed &= expect(threw, "a bridge over a session without events fails at once");
+    session.carriesEvents = true;
+
+    Multiplayer::Config binaryConfig;
+    binaryConfig.serverEndpoint = "tcp://127.0.0.1:1";
+    binaryConfig.clientServerDataFormat = Net::DataFormat::Binary;
+    RealTimeClock binaryClock;
+    std::unique_ptr<Multiplayer::Session> binary = Multiplayer::Session::open(binaryConfig, binaryClock);
+    threw = false;
+    try {
+        binary->publishEvent(ping(1));
+    } catch (const std::logic_error&) {
+        threw = true;
+    }
+    passed &= expect(threw && !binary->supportsEvents(), "a binary session refuses to publish");
 
     Multiplayer::Config config;
     config.mode = Multiplayer::Mode::PeerToPeer;
@@ -1239,7 +1301,7 @@ struct SessionPair {
     }
 };
 
-bool sessionKeepsOnlyTheLatestFrameOfEvents()
+bool sessionKeepsEventsUntilTaken()
 {
     SessionPair pair;
     bool passed = expect(pair.open(), "both sessions connect");
@@ -1248,19 +1310,45 @@ bool sessionKeepsOnlyTheLatestFrameOfEvents()
     const std::vector<Event> first = pair.receive(std::chrono::milliseconds(1000));
     passed &= expect(first.size() == 1 && first[0].getOr<std::int64_t>("n", 0) == 1, "an event arrives");
 
-    // Delivered by some update() but never taken: gone by the next one.
+    // A menu or replay: update() keeps running, nothing takes the events.
     pair.sender->publishEvent(ping(2));
-    const auto until = Clock::now() + std::chrono::milliseconds(500);
+    const auto until = Clock::now() + std::chrono::milliseconds(300);
     while (Clock::now() < until) {
         pair.frame();
     }
-    passed &= expect(pair.receiver->takeRemoteEvents().empty(),
-                     "events not taken before the next update() are dropped, not piled up");
-
     pair.sender->publishEvent(ping(3));
-    const std::vector<Event> later = pair.receive(std::chrono::milliseconds(1000));
-    passed &= expect(later.size() == 1 && later[0].getOr<std::int64_t>("n", 0) == 3,
-                     "later events still arrive normally");
+    std::vector<Event> later;
+    const auto arrived = [&] {
+        pair.frame();
+        for (Event& event : pair.receiver->takeRemoteEvents()) {
+            later.push_back(std::move(event));
+        }
+        return later.size() >= 2;
+    };
+    passed &= expect(waitFor(arrived, std::chrono::milliseconds(1000)) && later.size() == 2 &&
+                         later[0].getOr<std::int64_t>("n", 0) == 2 && later[1].getOr<std::int64_t>("n", 0) == 3,
+                     "events not taken by one update() are still there later, in order");
+
+    // Paced so only the receiver's session overflows: 400 sent, 256 kept.
+    for (int batch = 0; batch < 40; ++batch) {
+        for (int i = 0; i < 10; ++i) {
+            pair.sender->publishEvent(ping(batch * 10 + i));
+        }
+        pair.frame();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    passed &= expect(waitFor(
+                         [&] {
+                             pair.frame();
+                             return pair.receiver->droppedEvents() == 144;
+                         },
+                         std::chrono::milliseconds(2000)),
+                     "a game that never takes events loses the oldest and they are counted");
+    const std::vector<Event> kept = pair.receiver->takeRemoteEvents();
+    passed &= expect(kept.size() == 256 && kept.front().getOr<std::int64_t>("n", 0) == 144 &&
+                         kept.back().getOr<std::int64_t>("n", 0) == 399,
+                     "the newest 256 are kept");
+    passed &= expect(pair.sender->droppedEvents() == 0, "the sender lost nothing");
     return passed;
 }
 
@@ -1349,7 +1437,7 @@ bool aPoseArrivingDuringACarryIsStillSent()
 }
 
 // The whole path a game uses: EventManager -> bridge -> Session -> host ->
-// Session -> bridge -> EventManager, with a text and a binary session.
+// Session -> bridge -> EventManager.
 bool sessionsShareEventsThroughBridges()
 {
     Network::NetworkServerHost host(serverConfig(), hostConfig());
@@ -1367,7 +1455,6 @@ bool sessionsShareEventsThroughBridges()
     for (int i = 0; i < 2; ++i) {
         Multiplayer::Config config;
         config.serverEndpoint = host.boundEndpoint();
-        config.clientServerDataFormat = i == 0 ? Net::DataFormat::TextMultipart : Net::DataFormat::Binary;
         games[i].session = Multiplayer::Session::open(config, realTime);
         games[i].bridge = std::make_unique<NetworkEventBridge>(games[i].events, *games[i].session,
                                                                std::vector<std::string>{"Ping"});
@@ -1416,9 +1503,79 @@ bool sessionsShareEventsThroughBridges()
         passed &= expect(pings[0].origin == 0 && pings[0].getOr<std::int64_t>("n", 0) == i + 1,
                          "a game handles its own ping first, locally");
         passed &= expect(pings[1].origin == other && pings[1].getOr<std::int64_t>("n", 0) == 2 - i &&
-                             pings[1].has("sentAt"),
-                         "the other game's ping arrives with its origin and sentAt");
+                             pings[1].has("net.sentAt"),
+                         "the other game's ping arrives with its origin and net.sentAt");
     }
+    return passed;
+}
+
+// A replay longer than the server's timeout must not cost the player its
+// place, as long as the game keeps its session and bridge running.
+bool sessionSurvivesAReplayThatKeepsItRunning()
+{
+    Network::ServerConfig config = serverConfig();
+    config.inactivityTimeoutTics = 300 * kNsPerMs;
+    Network::NetworkServerHost host(config, hostConfig());
+    host.start();
+
+    RealTimeClock realTime;
+    Timeline gameTime(realTime, kNsPerUs);
+    EventManager events(gameTime);
+    World world;
+    GameObject& box = world.create("box");
+    box.add<Transform>();
+    box.add<Renderable>();
+    box.setActive(true);
+    ReplaySystem replay(events, gameTime, realTime);
+
+    Multiplayer::Config sessionConfig;
+    sessionConfig.serverEndpoint = host.boundEndpoint();
+    std::unique_ptr<Multiplayer::Session> viewer = Multiplayer::Session::open(sessionConfig, realTime);
+    std::unique_ptr<Multiplayer::Session> other = Multiplayer::Session::open(sessionConfig, realTime);
+    NetworkEventBridge bridge(events, *viewer, {"Ping"});
+    int pings = 0;
+    const EventManager::SubscriptionId subscription =
+        events.subscribe("Ping", [&pings](const Event&) { ++pings; });
+
+    const auto frame = [&] {
+        replay.update();
+        viewer->update();
+        bridge.apply();
+        other->update();
+        events.dispatch();
+        viewer->publishLocalPlayer(1.0F, 1.0F);
+        other->publishLocalPlayer(2.0F, 2.0F);
+    };
+    bool passed = expect(waitFor(
+                             [&] {
+                                 frame();
+                                 return viewer->remotePlayers().size() == 1 && other->remotePlayers().size() == 1;
+                             },
+                             std::chrono::milliseconds(3000)),
+                         "both sessions connect");
+    const Multiplayer::PlayerId id = viewer->localPlayerId();
+
+    events.raise(Event(Events::ReplayRecordStart));
+    events.dispatch();
+    for (int i = 0; i < 3; ++i) {
+        replay.capture(world);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    events.raise(Event(Events::ReplayPlayStart).set("speed", 0.01));
+    events.dispatch();
+    other->publishEvent(ping(1));
+
+    bool stayedVisible = true;
+    const auto until = Clock::now() + std::chrono::milliseconds(800);
+    while (Clock::now() < until) {
+        frame();
+        stayedVisible &= other->remotePlayers().size() == 1;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    passed &= expect(replay.isPlaying() && stayedVisible && viewer->localPlayerId() == id,
+                     "the viewer stays connected through a replay longer than the timeout");
+    passed &= expect(pings == 1, "a remote event arriving during the replay is still handled");
+    events.unsubscribe(subscription);
     return passed;
 }
 
@@ -1434,22 +1591,25 @@ int main()
     passed &= fullOutboxDropsTheOldestAndCountsThem();
     passed &= aSkippedEventIsRefused();
     passed &= rejoiningKeepsTheOutboxAndSequences();
-    passed &= bothFormatsCarryEventsAndAcks();
+    passed &= textCarriesEventsAndAcks();
     passed &= decodersRejectBrokenEventFields();
     passed &= clientResendsUntilAcceptedAndHandlesEachEventOnce();
     passed &= clientKeepsOrRenumbersEventsOnRejoin();
     passed &= fullClientQueueDropsTheOldestUnsentEvents();
     passed &= lateOldRequestStillMatchesAfterRejoin();
     passed &= clientIncomingQueueIsCapped();
-    passed &= mixedClientsExchangeEventsThroughTheHost();
+    passed &= textClientsExchangeEventsBesideBinaryClients();
     passed &= bridgeSharesOnlyListedLocalEvents();
+    passed &= bridgeRemovesWhatARemotePlayerMustNotDecide();
+    passed &= oneBridgePerSession();
     passed &= bridgeRefusesWhatCannotWork();
     passed &= pacedSessionSendsEventsWithoutWaiting();
     passed &= aPoseArrivingDuringACarryIsStillSent();
-    passed &= sessionKeepsOnlyTheLatestFrameOfEvents();
+    passed &= sessionKeepsEventsUntilTaken();
     passed &= leaveSendsEventsPublishedJustBefore();
     passed &= leaveUsesAPosePublishedTheSameFrame();
     passed &= sessionsShareEventsThroughBridges();
+    passed &= sessionSurvivesAReplayThatKeepsItRunning();
 
     if (!passed) {
         return 1;

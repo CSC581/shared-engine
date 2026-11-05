@@ -853,10 +853,34 @@ bool refusedPositionsAreReportedNotHidden(Net::DataFormat format, const std::str
 
 } // namespace
 
+// libzmq drops the connection, so the request is never read or answered.
+bool oversizedRequestIsRefused()
+{
+    Network::NetworkServerHost host(testServerConfig(), testHostConfig(Network::HostMode::Dedicated));
+    host.start();
+    zmq::context_t context(1);
+
+    zmq::socket_t socket(context, zmq::socket_type::req);
+    socket.set(zmq::sockopt::linger, 0);
+    socket.set(zmq::sockopt::rcvtimeo, 500);
+    socket.connect(host.boundEndpoint());
+    std::string oversized(Network::maxBinaryMessageSize + 1, 'x');
+    socket.send(zmq::buffer(oversized), zmq::send_flags::none);
+    zmq::message_t answer;
+    bool passed = expect(!socket.recv(answer), "a request over the limit gets no reply");
+
+    Network::Reply welcome;
+    passed &= expect(call(context, host.boundEndpoint(), Network::encodeJoin(token('1')), welcome) &&
+                         welcome.type == Network::ReplyType::Welcome,
+                     "the host keeps serving others");
+    return passed;
+}
+
 int main()
 {
     bool passed = true;
     try {
+        passed &= oversizedRequestIsRefused();
         passed &= rejectsBadConfig();
         passed &= joinsGetPrivateWorkers();
         passed &= binaryNetworkClientUsesRealHost();

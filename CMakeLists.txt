@@ -167,12 +167,16 @@ add_executable(event-integration-tests tests/EventIntegrationTests.cpp)
 target_link_libraries(event-integration-tests PRIVATE engine)
 add_test(NAME event-integration-tests COMMAND event-integration-tests)
 
+add_executable(engine-loop-tests tests/EngineLoopTests.cpp)
+target_link_libraries(engine-loop-tests PRIVATE engine)
+add_test(NAME engine-loop-tests COMMAND engine-loop-tests)
+
 add_executable(replay-tests tests/ReplayTests.cpp)
 target_link_libraries(replay-tests PRIVATE engine-replay)
 add_test(NAME replay-tests COMMAND replay-tests)
 
-# Milestone 4 Phase 3: event lists in the text and binary formats, their
-# shared validation rules, and decoding of truncated and corrupted input.
+# Milestone 4 Phase 3: event lists in the text format, their validation
+# rules, and decoding of truncated and corrupted input.
 add_executable(event-codec-tests tests/EventCodecTests.cpp)
 target_link_libraries(event-codec-tests PRIVATE network-core)
 add_test(NAME event-codec-tests COMMAND event-codec-tests)
@@ -269,10 +273,10 @@ target_link_libraries(network-world-sync-tests PRIVATE multiplayer)
 add_test(NAME network-world-sync-tests COMMAND network-world-sync-tests)
 
 # Milestone 4, 1.2: events relayed through the server. Acceptance, acks,
-# outboxes and resume on a ManualClock; text, binary, mixed and property-delta
-# clients on a real host; and the bridge between a session and an EventManager.
+# outboxes and resume on a ManualClock; text clients exchanging events beside
+# binary and property-delta clients that carry none, on a real host; and the bridge between a session and an EventManager.
 add_executable(network-event-tests tests/NetworkEventTests.cpp)
-target_link_libraries(network-event-tests PRIVATE multiplayer)
+target_link_libraries(network-event-tests PRIVATE multiplayer engine-replay)
 
 add_test(NAME network-event-tests COMMAND network-event-tests)
 

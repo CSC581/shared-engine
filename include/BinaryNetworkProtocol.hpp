@@ -15,7 +15,10 @@ namespace Network {
 // deliberately transport-free so it can be tested independently.
 using BinaryMessage = std::string;
 
-constexpr std::uint8_t binaryFormatVersion = 2;
+constexpr std::uint8_t binaryFormatVersion = 1;
+// Fixed at the Milestone 3 protocol: binary carries no events, so it does not
+// follow the text protocolVersion.
+constexpr std::uint16_t binarySemanticVersion = 6;
 constexpr std::size_t maxBinaryMessageSize = 16U * 1024U * 1024U;
 
 // Delivery metadata belongs to the client/host exchange, not to the
@@ -36,7 +39,6 @@ enum class BinaryReplyKind {
 
 struct BinaryReplyEnvelope {
     BinaryReplyKind kind = BinaryReplyKind::Standard;
-    // For SnapshotDelta, carries only acceptedClientSequence and events.
     Reply reply{};
     SnapshotDelta delta{};
 };

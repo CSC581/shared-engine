@@ -1,10 +1,7 @@
-// Event lists in the text and binary formats: exact round trips, the shared
-// validation rules, and decoding of hand-written, truncated and corrupted
-// input. Every check runs on both formats unless it is format-specific.
+// Event lists in the text format: exact round trips, the validation rules, and
+// decoding of hand-written, truncated and corrupted input.
 #include "EventCodec.hpp"
 #include "WireFormat.hpp"
-
-#include "../src/BinaryPrimitives.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -94,20 +91,6 @@ std::vector<Entry> textTrip(const std::vector<Entry>& events)
 }
 
 template <class Entry>
-std::vector<Entry> binaryTrip(const std::vector<Entry>& events)
-{
-    std::string bytes = "AB";
-    Network::appendEventsBinary(bytes, events);
-    bytes += 'Z';
-    std::size_t cursor = 2;
-    std::vector<Entry> decoded;
-    std::string error;
-    CHECK(Network::readEventsBinary(bytes, cursor, decoded, error));
-    CHECK(cursor == bytes.size() - 1);
-    return decoded;
-}
-
-template <class Entry>
 bool tripMatches(const std::vector<Entry>& original, const std::vector<Entry>& decoded, bool carriesOrigin)
 {
     if (original.size() != decoded.size()) {
@@ -126,8 +109,7 @@ bool tripMatches(const std::vector<Entry>& original, const std::vector<Entry>& d
 template <class Entry>
 bool roundTrips(const std::vector<Entry>& events, bool carriesOrigin)
 {
-    return tripMatches(events, textTrip(events), carriesOrigin) &&
-           tripMatches(events, binaryTrip(events), carriesOrigin);
+    return tripMatches(events, textTrip(events), carriesOrigin);
 }
 
 bool roundTripsBothWays(const Event& event)
@@ -208,11 +190,8 @@ void valuesAndFields()
     local.sequence = 42;
     local.origin = 7;
     const auto text = textTrip(std::vector<OutgoingEvent>{{1, local}});
-    const auto bytes = binaryTrip(std::vector<OutgoingEvent>{{1, local}});
     CHECK(text.size() == 1 && text[0].event.deliverAt == 0 && text[0].event.sequence == 0 &&
           text[0].event.origin == 0);
-    CHECK(bytes.size() == 1 && bytes[0].event.deliverAt == 0 && bytes[0].event.sequence == 0 &&
-          bytes[0].event.origin == 0);
 
     // The text layout, field by field, for one relayed event.
     Event death{"DeathEvent"};
@@ -226,7 +205,7 @@ void valuesAndFields()
 }
 
 // A value decaying toward zero passes through the subnormal range. It is
-// still sent, as zero of the same sign, in both formats.
+// still sent, as zero of the same sign.
 void subnormalsTravelAsZero()
 {
     Event tiny{"Decaying"};
@@ -240,11 +219,8 @@ void subnormalsTravelAsZero()
         return value == 0.0 && std::signbit(value) == negative;
     };
     const auto text = textTrip(std::vector<OutgoingEvent>{{1, tiny}});
-    const auto bytes = binaryTrip(std::vector<OutgoingEvent>{{1, tiny}});
     CHECK(text.size() == 1 && zeroOfSign(text[0].event, "positive", false) &&
           zeroOfSign(text[0].event, "negative", true));
-    CHECK(bytes.size() == 1 && zeroOfSign(bytes[0].event, "positive", false) &&
-          zeroOfSign(bytes[0].event, "negative", true));
 }
 
 void lists()
@@ -338,7 +314,7 @@ Event randomEvent(std::mt19937& rng)
 }
 
 // Text must carry every normal double exactly, not just everyday values:
-// random bit patterns cover the whole range, tiny to huge, in both formats.
+// random bit patterns cover the whole range, tiny to huge.
 void decimalsAcrossTheRange()
 {
     std::mt19937_64 rng(1);
@@ -396,12 +372,9 @@ bool allEncodersRefuse(const Event& event)
         return false;
     };
     Message message{"keep"};
-    std::string bytes = "keep";
     refused &= refuses([&] { Network::appendEventsText(message, std::vector<OutgoingEvent>{{1, event}}); });
     refused &= refuses([&] { Network::appendEventsText(message, std::vector<RelayedEvent>{{1, relayed}}); });
-    refused &= refuses([&] { Network::appendEventsBinary(bytes, std::vector<OutgoingEvent>{{1, event}}); });
-    refused &= refuses([&] { Network::appendEventsBinary(bytes, std::vector<RelayedEvent>{{1, relayed}}); });
-    return refused && message == Message{"keep"} && bytes == "keep";
+    return refused && message == Message{"keep"};
 }
 
 void rejectsInvalidEvents()
@@ -445,12 +418,9 @@ template <class Entry>
 bool listRefused(const std::vector<Entry>& events)
 {
     Message message{"keep"};
-    std::string bytes = "keep";
     bool textThrew = false;
-    bool binaryThrew = false;
     try { Network::appendEventsText(message, events); } catch (const std::invalid_argument&) { textThrew = true; }
-    try { Network::appendEventsBinary(bytes, events); } catch (const std::invalid_argument&) { binaryThrew = true; }
-    return textThrew && binaryThrew && message == Message{"keep"} && bytes == "keep";
+    return textThrew && message == Message{"keep"};
 }
 
 void rejectsInvalidLists()
@@ -478,16 +448,6 @@ bool textRefused(const Message& message)
     std::size_t cursor = 0;
     std::string error;
     return !Network::readEventsText(message, cursor, out, error) && !error.empty() && cursor == 0 &&
-           out.size() == 1 && sequenceOf(out[0]) == 0;
-}
-
-template <class Entry>
-bool binaryRefused(const std::string& bytes)
-{
-    std::vector<Entry> out(1);
-    std::size_t cursor = 0;
-    std::string error;
-    return !Network::readEventsBinary(bytes, cursor, out, error) && !error.empty() && cursor == 0 &&
            out.size() == 1 && sequenceOf(out[0]) == 0;
 }
 
@@ -537,97 +497,14 @@ void decoderRejectsHandWrittenText()
     CHECK(textRefused<OutgoingEvent>(Message{"2", "1", "A", "0", "0", "0", "3", "B", "0", "0", "0"}));
 }
 
-// A relayed event written field by field, for the binary decoder.
-struct BinaryEvent {
-    std::uint16_t count = 1;
-    std::uint64_t sequence = 1;
-    std::string type = "Hit";
-    std::int32_t priority = 0;
-    std::uint32_t origin = 7;
-    std::int64_t timestamp = 0;
-    std::uint8_t argCount = 0;
-    std::string argBytes;
-
-    std::string bytes() const
-    {
-        std::string out;
-        Network::binary::putU16(out, count);
-        Network::binary::putU64(out, sequence);
-        Network::binary::putString(out, type);
-        Network::binary::putI32(out, priority);
-        Network::binary::putU32(out, origin);
-        Network::binary::putI64(out, timestamp);
-        Network::binary::putU8(out, argCount);
-        return out + argBytes;
-    }
-};
-
-std::string binaryArg(const std::string& name, std::uint8_t kind, const std::string& valueBytes)
+// A start position past the end is refused, not read from.
+void decoderRefusesACursorPastTheEnd()
 {
-    std::string out;
-    Network::binary::putString(out, name);
-    Network::binary::putU8(out, kind);
-    return out + valueBytes;
-}
-
-std::string f64Bytes(double value)
-{
-    std::string out;
-    Network::binary::putF64(out, value);
-    return out;
-}
-
-void decoderRejectsHandWrittenBinary()
-{
-    BinaryEvent valid;
-    valid.argCount = 1;
-    valid.argBytes = binaryArg("n", 2, f64Bytes(1.5));
-    std::vector<RelayedEvent> decoded;
-    std::size_t cursor = 0;
+    std::vector<RelayedEvent> out;
     std::string error;
-    CHECK(Network::readEventsBinary(valid.bytes(), cursor, decoded, error));
-
-    const auto with = [&valid](const std::function<void(BinaryEvent&)>& change) {
-        BinaryEvent event = valid;
-        change(event);
-        return event.bytes();
-    };
-    CHECK(binaryRefused<RelayedEvent>(""));
-    {
-        // A start position past the end is refused, not read from.
-        const std::string bytes = valid.bytes();
-        std::vector<RelayedEvent> out;
-        std::size_t past = bytes.size() + 5;
-        CHECK(!Network::readEventsBinary(bytes, past, out, error) && past == bytes.size() + 5);
-        Message message{"0"};
-        std::size_t pastText = 3;
-        CHECK(!Network::readEventsText(message, pastText, out, error) && pastText == 3);
-    }
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.count = 65535; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.count = 65; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.sequence = 0; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.type = ""; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.type = std::string(65, 'T'); })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.type = "Bad Type"; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.origin = 0; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.timestamp = -1; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.argCount = 17; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.argCount = 2; })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.argBytes = binaryArg("n", 9, "\x01"); })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) { e.argBytes = binaryArg("n", 0, "\x02"); })));
-    for (const double bad : {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN(),
-                             std::numeric_limits<double>::denorm_min()}) {
-        CHECK(binaryRefused<RelayedEvent>(with([bad](BinaryEvent& e) { e.argBytes = binaryArg("n", 2, f64Bytes(bad)); })));
-    }
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) {
-        std::string text;
-        Network::binary::putString(text, std::string(Net::maxEventTextLength + 1, 'x'));
-        e.argBytes = binaryArg("n", 3, text);
-    })));
-    CHECK(binaryRefused<RelayedEvent>(with([](BinaryEvent& e) {
-        e.argCount = 2;
-        e.argBytes = binaryArg("n", 0, std::string(1, '\x01')) + binaryArg("n", 0, std::string(1, '\x00'));
-    })));
+    Message message{"0"};
+    std::size_t past = 3;
+    CHECK(!Network::readEventsText(message, past, out, error) && past == 3);
 }
 
 // Every shorter prefix of a valid list is refused cleanly.
@@ -646,15 +523,6 @@ void truncation()
     for (std::size_t length = 0; length < message.size(); ++length) {
         CHECK(textRefused<RelayedEvent>(Message(message.begin(), message.begin() + static_cast<std::ptrdiff_t>(length))));
     }
-
-    std::string bytes;
-    Network::appendEventsBinary(bytes, events);
-    for (std::size_t length = 0; length < bytes.size(); ++length) {
-        if (!binaryRefused<RelayedEvent>(bytes.substr(0, length))) {
-            CHECK(!"a truncated binary list was accepted");
-            return;
-        }
-    }
 }
 
 // Corrupted input never crashes, and whatever does decode is valid: it
@@ -664,9 +532,7 @@ bool reencodes(const std::vector<Entry>& events)
 {
     try {
         Message message;
-        std::string bytes;
         Network::appendEventsText(message, events);
-        Network::appendEventsBinary(bytes, events);
     } catch (const std::invalid_argument&) {
         return false;
     }
@@ -682,29 +548,18 @@ void corruption()
         event.origin = 9;
         events.push_back({i * 2, event});
     }
-    std::string bytes;
-    Network::appendEventsBinary(bytes, events);
     Message message;
     Network::appendEventsText(message, events);
     const std::vector<std::string> replacements{"", "0", "1", "-1", "x", "d", "99999999999999999999", "1e999"};
 
     int accepted = 0;
     for (int i = 0; i < 10000; ++i) {
-        std::string mutatedBytes = bytes;
-        mutatedBytes[std::uniform_int_distribution<std::size_t>(0, bytes.size() - 1)(rng)] =
-            static_cast<char>(std::uniform_int_distribution<int>(0, 255)(rng));
         std::vector<RelayedEvent> decoded;
         std::size_t cursor = 0;
         std::string error;
-        if (Network::readEventsBinary(mutatedBytes, cursor, decoded, error)) {
-            ++accepted;
-            CHECK(reencodes(decoded));
-        }
-
         Message mutatedText = message;
         mutatedText[std::uniform_int_distribution<std::size_t>(0, message.size() - 1)(rng)] =
             replacements[std::uniform_int_distribution<std::size_t>(0, replacements.size() - 1)(rng)];
-        cursor = 0;
         if (Network::readEventsText(mutatedText, cursor, decoded, error)) {
             ++accepted;
             CHECK(reencodes(decoded));
@@ -727,7 +582,7 @@ int main()
     rejectsInvalidEvents();
     rejectsInvalidLists();
     decoderRejectsHandWrittenText();
-    decoderRejectsHandWrittenBinary();
+    decoderRefusesACursorPastTheEnd();
     truncation();
     corruption();
     if (failures == 0) {

@@ -42,6 +42,8 @@
 // who computes what.
 //
 // SDL-free, like the modules underneath it.
+class NetworkEventBridge;
+
 namespace Multiplayer {
 
 using PlayerId = std::uint32_t;
@@ -243,30 +245,42 @@ public:
     // game's EventManager; most games use that rather than calling them. ---
 
     // Sends an event to every other player through the server, in the same
-    // order on every client. Lost requests and replies are resent and repeats
-    // dropped, so each arrives once, including across a reconnect to a
-    // server that still holds this player. The sender does not get its own
-    // events back. Events travel with this player's position sends, so they
-    // need publishLocalPlayer() to have been called at least once.
+    // order on every client: no duplicates, bounded best effort. Lost requests
+    // and replies are resent and repeats dropped, including across a reconnect
+    // to a server that still holds this player. The sender does not get its
+    // own events back. Events travel with this player's position sends, so
+    // they need publishLocalPlayer() to have been called at least once.
     //
-    // Events can still be lost: when more than 256 wait at this client, at
-    // the server for one receiver, or at a receiver that stops calling
-    // update() (the oldest go); when the server timed this player out; when
-    // leave() is called while reconnecting; and when published after
-    // leave(). None of these losses are counted here. Throws std::invalid_argument if the event
-    // breaks a rule of the wire format (validateEvent in EventCodec.hpp), and
-    // std::logic_error in peer-to-peer mode, which carries no events.
+    // Events can be lost: when more than 256 wait at this client, at the
+    // server for one receiver, or at a receiver that does not take them (the
+    // oldest go); when the server timed this player out; when leave() is
+    // called while reconnecting; and when published after leave(). Delivery
+    // means reaching the session, not that a game handled the event. Throws
+    // std::invalid_argument if the event breaks a rule of the wire format
+    // (validateEvent in EventCodec.hpp), and std::logic_error in peer-to-peer
+    // mode or the binary format, which carry no events.
     virtual void publishEvent(const Event& event) = 0;
 
-    // Other players' events delivered by the last update(), oldest first;
-    // each is returned once. Like remotePlayers(), this is the latest frame
-    // only: events not taken before the next update() are dropped, so a game
-    // that never takes them does not pile them up. origin is the sender's
-    // player id. Always empty in peer-to-peer mode.
+    // False in peer-to-peer mode and the binary format.
+    virtual bool supportsEvents() const { return true; }
+
+    // Other players' events since the last call, oldest first; each is returned
+    // once. Events arriving during update() are kept until taken, at most 256;
+    // older ones are dropped and counted by droppedEvents(). origin is the
+    // sender's player id. Always empty in peer-to-peer mode.
     virtual std::vector<Event> takeRemoteEvents() = 0;
+
+    // Events dropped by this client's full queues, either way, since it was
+    // created. Losses at the server are in NetworkServerHost::traffic(). Safe
+    // from the game thread at any time.
+    virtual std::uint64_t droppedEvents() const { return 0; }
 
 protected:
     Session() = default;
+
+private:
+    friend class ::NetworkEventBridge;
+    bool hasBridge_ = false;
 };
 
 // "client-server" / "peer-to-peer", for logs and on-screen text.

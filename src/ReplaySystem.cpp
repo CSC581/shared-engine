@@ -58,7 +58,12 @@ ReplaySystem::ReplaySystem(EventManager& liveEvents, Timeline& liveTime, const T
         liveEvents_.subscribe(Events::ReplayRecordStart, [this](const Event&) { startRecording(); }),
         liveEvents_.subscribe(Events::ReplayRecordStop, [this](const Event&) { recording_ = false; }),
         liveEvents_.subscribe(Events::ReplayPlayStart, [this](const Event& event) { startPlayback(event); }),
-        liveEvents_.subscribe(Events::ReplayPlayStop, [this](const Event&) { stopPlayback(); }),
+        liveEvents_.subscribe(Events::ReplayPlayStop, [this](const Event& event) {
+            // A stop this system raised for a playback that has since restarted.
+            if (event.getOr<std::int64_t>("run", run_) == run_) {
+                stopPlayback();
+            }
+        }),
         liveEvents_.subscribe(Events::ReplaySpeed, [this](const Event& event) {
             if (!event.has("speed")) {
                 throw std::invalid_argument("ReplaySpeedEvent needs a speed");
@@ -99,6 +104,7 @@ void ReplaySystem::capture(const World& world, float cameraX, float cameraY)
     frame.time = liveTime_.now();
     frame.cameraX = cameraX;
     frame.cameraY = cameraY;
+    frame.objects.reserve(world.objects().size());
     if (frameStateHook_) {
         frame.state = frameStateHook_();
     }
@@ -145,6 +151,19 @@ void ReplaySystem::update()
     if (!playing_) {
         return;
     }
+    // The engine dispatches before it renders, so the last frame gets a whole
+    // update of its own before the stop is raised. Paused, it stays on screen.
+    if (endShown_) {
+        if (!endRaised_ && !playbackPaused_) {
+            endRaised_ = true;
+            // High, so a full live queue cannot leave playback running forever.
+            Event stop(Events::ReplayPlayStop);
+            stop.priority = EventPriority::High;
+            stop.set("run", run_);
+            liveEvents_.raise(std::move(stop));
+        }
+        return;
+    }
     const std::int64_t begin = frames_.front().time;
     const std::int64_t end = frames_.back().time;
     position_ = std::min(end, begin + (playTime_.now() - playBase_));
@@ -152,10 +171,7 @@ void ReplaySystem::update()
 
     deliverEventsUpTo(position_, finished);
     showFrameAt(position_);
-    if (finished && !endRaised_) {
-        endRaised_ = true;
-        liveEvents_.raise(Event(Events::ReplayPlayStop));
-    }
+    endShown_ = finished;
 }
 
 std::int64_t ReplaySystem::recordedDuration() const
@@ -189,6 +205,7 @@ void ReplaySystem::startPlayback(const Event& event)
     if (playing_) {
         // Playing again starts over from the beginning.
         clearWorld();
+        replayEvents_.clearPending();
     } else {
         liveWasPaused_ = liveTime_.isPaused();
         liveTime_.pause();
@@ -200,7 +217,9 @@ void ReplaySystem::startPlayback(const Event& event)
     playTime_.unpause();
     position_ = frames_.front().time;
     eventCursor_ = 0;
+    endShown_ = false;
     endRaised_ = false;
+    ++run_;
     showFrameAt(position_);
 }
 
@@ -213,6 +232,7 @@ void ReplaySystem::stopPlayback()
     playbackPaused_ = false;
     playTime_.pause();
     clearWorld();
+    replayEvents_.clearPending();
     position_ = 0;
     cameraX_ = 0.0F;
     cameraY_ = 0.0F;

@@ -78,6 +78,7 @@ public:
     void update(const FrameTime& time, Engine&) override
     {
         replay_.update();
+        // A networked game would still run its session and bridge before this.
         if (replay_.isPlaying()) {
             return;
         }

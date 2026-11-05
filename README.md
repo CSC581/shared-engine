@@ -15,8 +15,8 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 
 | Part | Milestone Requirements | What we built |
 | ---- | ---------------------- | ------------- |
-| 1.1 | An event manager that queues events with priorities, uses the `Timeline` for timestamps, and handles collision, death, spawn and input events instead of SDL events | An `EventManager` owned by the engine. Raising an event only queues it; the engine hands out queued events twice per frame, ordered by game-time delivery, then priority, then raise order. The engine raises `InputEvent` (keys and chords) and `World` raises `CollisionEvent`; games raise `DeathEvent` and `SpawnEvent` |
-| 1.2 | Events shared across the network, with event data serialized in a protocol of our choice | `EventCodec` turns a list of events into our **text** or **binary** network format and back, with the same rules in both. Events ride on the position updates clients already send. The server numbers each event, adds the sender's id and passes it to every other player exactly once, in the same order everywhere. A game picks which event types to share with `NetworkEventBridge`. Client-server mode only |
+| 1.1 | An event manager that queues events with priorities, uses the `Timeline` for timestamps, and handles collision, death, spawn and input events instead of SDL events | An `EventManager` owned by the engine. Raising an event only queues it; the engine hands out queued events twice per frame. Everything due at that point runs by priority, then game-time delivery, then raise order. The engine raises `InputEvent` (keys and chords) and `World` raises `CollisionEvent`; games raise `DeathEvent` and `SpawnEvent` |
+| 1.2 | Events shared across the network, with event data serialized in a protocol of our choice | `EventCodec` turns a list of events into our multipart **text** network format and back. Events are text-only: Milestone 3's binary transport remains for its benchmarks, carries no events, and refuses them with an error. Events ride on the position updates clients already send. The server numbers each event, adds the sender's id and passes it to every other player in the same order, with no duplicates and bounded best-effort delivery (a full queue drops its oldest and counts it). A game picks which event types to share with `NetworkEventBridge`. Client-server mode only |
 | 1.3 | A replay system that records and plays back game play, started and controlled through the event system | `ReplaySystem` records every frame's objects, the camera, an optional game-state string and every event. Six replay events start and stop recording, start and stop playback, change the speed (0.5x, 1x, 2x or any other) and pause it. Playback shows the recording in a separate world while the live game waits, paused, and then carries on where it was |
 
 ## Files for this milestone
@@ -31,10 +31,10 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 ├── include/Engine.hpp                      src/Engine.cpp          engine.events(), two dispatches per frame
 └── sandbox/EventsDemo.cpp                                          events-demo
 1.2 Networked events
-├── include/EventCodec.hpp                  src/EventCodec.cpp      events in the text and binary formats
+├── include/EventCodec.hpp                  src/EventCodec.cpp      events in the text format
 ├── include/WireFormat.hpp                                          exact decimal text, event limits
 ├── include/NetworkProtocol.hpp             src/NetworkProtocol.cpp events in requests and replies (text)
-├── include/BinaryNetworkProtocol.hpp       src/BinaryNetworkProtocol.cpp   (binary)
+├── include/BinaryNetworkProtocol.hpp       src/BinaryNetworkProtocol.cpp   Milestone 3 binary, no events
 ├── include/NetworkServer.hpp               src/NetworkServer.cpp   numbering, relaying, outboxes
 ├── include/NetworkClient.hpp               src/NetworkClient.cpp   pending events, resends, acknowledgements
 ├── include/Multiplayer.hpp                 src/Multiplayer.cpp     Session::publishEvent / takeRemoteEvents
@@ -53,7 +53,7 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 | Function | Meaning |
 | -------- | ------- |
 | `Event{type}.set(name, value)` | Builds an event. A value is a bool, integer, decimal or text. `get<T>(name)`, `getOr<T>(name, fallback)` and `has(name)` read it back |
-| `event.priority` | `EventPriority::High` (-100), `Normal` (0, the default) or `Low` (100). Lower runs first among events due at the same time |
+| `event.priority` | `EventPriority::High` (-100), `Normal` (0, the default) or `Low` (100). Lower runs first among everything due at the same dispatch. A delay decides when an event becomes due. Only `High` is kept when the queue is full |
 | `engine.events()` | The game's event manager. Its timestamps come from game time |
 | `events.subscribe(type, handler)` | Calls `handler` for every event of that type. Returns an id |
 | `events.subscribeAll(handler)` | Calls `handler` for every event, after the type's own handlers |
@@ -80,8 +80,8 @@ The input polling and collider callbacks from Milestone 3 still work alongside t
 
 | Function | Meaning |
 | -------- | ------- |
-| `appendEventsText(message, events)`, `appendEventsBinary(bytes, events)` | Adds a list of events to a message being built. Throws if an event breaks a rule |
-| `readEventsText(message, cursor, events, error)`, `readEventsBinary(bytes, cursor, events, error)` | Reads a list starting at `cursor`. On failure, returns false and changes nothing |
+| `appendEventsText(message, events)` | Adds a list of events to a message being built. Throws if an event breaks a rule |
+| `readEventsText(message, cursor, events, error)` | Reads a list starting at `cursor`. On failure, returns false and changes nothing |
 | `validateEvent(event, error)` | Checks an event against the rules below |
 
 `OutgoingEvent` (client to server) is numbered 1, 2, 3… by the client and carries no sender id. `RelayedEvent` (server to client) is numbered by the server and carries the sender's id. An encoded event carries its type, values, priority and the sender's timestamp.
@@ -100,13 +100,13 @@ The input polling and collider callbacks from Milestone 3 still work alongside t
 | -------- | ------- |
 | `NetworkEventBridge(engine.events(), session, {"DeathEvent", ...})` | Shares the listed event types. Local events of those types are sent to every other player; events of other types never leave or enter. Throws in peer-to-peer mode |
 | `bridge.apply()` | Raises the events other players sent. Call once a frame after `session.update()` |
-| `session.publishEvent(event)`, `session.takeRemoteEvents()` | What the bridge uses underneath, for a game that wants to do it by hand. `takeRemoteEvents()` returns the events from the latest `update()`; ones not taken by the next `update()` are dropped |
+| `session.publishEvent(event)`, `session.takeRemoteEvents()` | What the bridge uses underneath, for a game that wants to do it by hand. `takeRemoteEvents()` returns events since the last call, at most 256; older ones are dropped and counted by `session.droppedEvents()` |
 
-A remote event has `origin` set to the sender's player id and is raised with this machine's game time; the sender's time is kept as the value `sentAt`. The sender handles its own event locally at once and never gets it back.
+A remote event has `origin` set to the sender's player id and is raised with this machine's game time; the sender's time is kept as the reserved value `net.sentAt`. Its priority is limited to `High`..`Low`. Object ids are local to each machine, so a remote `DeathEvent`, `SpawnEvent` or `CollisionEvent` loses `object`, `a` and `b`; find its player with `NetworkWorldSync::remotePlayer(event.origin)`. A handler that reads a missing or wrongly typed argument of a remote event does not stop the game: `EventManager::remoteHandlerErrors()` counts it. The sender handles its own event locally at once and never gets it back. A session has at most one bridge.
 
 | Rule | Value |
 | ---- | ----- |
-| Delivery | Exactly once, in the server's order. Lost requests and replies are resent, and repeats are dropped by number |
+| Delivery | No duplicates, bounded best effort, in the server's order. Lost requests and replies are resent, and repeats are dropped by number. An event is acknowledged when it reaches the client, not when a game handles it, so the limits below and a server timeout can still lose events |
 | Events per request or reply | 64; more wait for the next one |
 | Events waiting at the server for one player | 256 (`ServerConfig::eventOutboxLimit`); a player further behind loses its oldest |
 | Events waiting at a client | 256 each way; a full queue drops its oldest unsent (or untaken) event |
@@ -139,16 +139,16 @@ A game raises these from whatever it likes, such as a key's `InputEvent` or a `D
 
 - **Raising only queues.** Handlers never run inside a collision pass or a loop over objects, so a handler can safely create or destroy objects.
 - **Events are a name plus values,** not a class per event, so a game adds a new event type without changing the engine, and every event can be sent over the network the same way.
-- **Chains finish in one frame, but cannot run forever.** Events raised by handlers are handled in later rounds of the same dispatch, up to 8 rounds and 1,000 events.
+- **Chains usually finish in one frame, but cannot run forever.** Events raised by handlers are handled in later rounds of the same dispatch, up to 8 rounds and 1,000 events; the rest wait for the next dispatch. At most 10,000 events wait by default (`setMaxPending`). Past that, events less urgent than `High` are dropped and counted by `droppedByLimit()`.
 - **Timestamps use game time,** so a delayed event, like a respawn, waits while the game is paused.
 - **The server decides who sent an event.** Clients never send their own id, so they cannot fake another player's events.
 - **Each client detects, the server orders.** A client raises its own collisions and deaths locally without waiting; the server gives shared events one order and relays them, without reading them.
 - **Events ride on position updates.** No new messages or round trips. With send pacing, a client with events waiting resends its last position so they go at once.
 - **Only listed types cross the network,** in both directions, so another player cannot raise an `InputEvent` on your machine.
 - **Replay shows what was recorded and does not simulate again.** Frame times vary, so running the inputs through physics again would not give the same result. Positions and the camera are blended between frames, so slow motion is smooth.
-- **Playback never touches the live game.** It uses its own world, its own event manager and its own timeline on real time. The live game is paused underneath and is left paused afterwards if the player had paused it.
+- **Playback keeps its own world, event manager and timeline.** The live game is paused underneath and is left paused afterwards if the player had paused it. The live event manager keeps running, so input and remote events still reach gameplay handlers, and those that change the live world should return early while `replay.isPlaying()`. A networked game keeps its session and bridge running during playback.
 
-**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events. Replay is local to one machine, and a networked game resumes against the current network state. Replay follows game time, so time the game spent paused while recording is skipped, and a stretch recorded with the game at 2x plays at half its original pace at replay speed 1. Recording keeps everything until it stops, unless a rolling window is set.
+**Known limitations:** event values are only checked when the program runs, so the sender and receiver must agree on value names. Handlers do not return results; a handler that needs to answer raises another event. An event counts as delivered once it reaches the client, so a session destroyed before the game handles it loses it. A client the server timed out (3 s without a message) misses events relayed while it was gone, and in rare cases one of its own events can be relayed twice. Players who join later do not get earlier events. Peer-to-peer mode carries no events. Replay is local to one machine, and a networked game resumes against the current network state. Replay follows game time, so time the game spent paused while recording is skipped, and a stretch recorded with the game at 2x plays at half its original pace at replay speed 1. Recording keeps everything until it stops, unless a rolling window is set.
 
 <div style="page-break-before: always"></div>
 

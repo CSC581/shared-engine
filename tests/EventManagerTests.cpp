@@ -2,6 +2,7 @@
 #include "EventManager.hpp"
 #include "GameObject.hpp"
 #include "TimeSource.hpp"
+#include "TimeUnits.hpp"
 #include "Timeline.hpp"
 #include "World.hpp"
 
@@ -189,6 +190,119 @@ void timelineAndThreads()
     CHECK(count == 2 + workers * perWorker);
 }
 
+// On a running clock, events raised in one frame get different stamps, and
+// priority must still decide among everything due.
+void priorityWorksOnARunningClock()
+{
+    ManualClock clock;
+    EventManager manager(clock);
+    std::vector<std::string> seen;
+    manager.subscribeAll([&](const Event& event) { seen.push_back(event.type); });
+
+    Event low{"low"};
+    low.priority = EventPriority::Low;
+    Event high{"high"};
+    high.priority = EventPriority::High;
+    manager.raise(low);
+    clock.advance(1);
+    manager.raise(Event{"normal"});
+    clock.advance(1);
+    manager.raise(high);
+    clock.advance(1);
+    manager.raise(Event{"normal2"});
+    CHECK(manager.dispatch() == 4);
+    CHECK((seen == std::vector<std::string>{"high", "normal", "normal2", "low"}));
+
+    // An event not yet due still waits, whatever its priority.
+    seen.clear();
+    manager.raise(high, 5);
+    manager.raise(low);
+    CHECK(manager.dispatch() == 1);
+    CHECK((seen == std::vector<std::string>{"low"}));
+    clock.advance(5);
+    CHECK(manager.dispatch() == 1);
+    CHECK(seen.back() == "high");
+
+    // The real clock, as in Engine: stamps differ, the order does not.
+    RealTimeClock real;
+    Timeline game(real, kNsPerUs);
+    EventManager running(game);
+    bool lowFirst = false;
+    std::string first;
+    running.subscribeAll([&](const Event& event) {
+        if (first.empty()) {
+            first = event.type;
+        }
+    });
+    for (int i = 0; i < 2000; ++i) {
+        first.clear();
+        running.raise(low);
+        std::this_thread::yield();
+        running.raise(high);
+        running.dispatch();
+        lowFirst |= first == "low";
+    }
+    CHECK(!lowFirst);
+}
+
+// A fan-out chain stays bounded, and an urgent event still gets through.
+void aRunawayChainStaysBounded()
+{
+    ManualClock clock;
+    EventManager manager(clock);
+    std::uint64_t spreads = 0;
+    manager.subscribe("spread", [&](const Event&) {
+        ++spreads;
+        manager.raise(Event{"spread"});
+        manager.raise(Event{"spread"});
+    });
+    int urgentAt = -1;
+    int dispatches = 0;
+    manager.subscribe("urgent", [&](const Event&) { urgentAt = dispatches; });
+
+    manager.raise(Event{"spread"});
+    constexpr int raisedAt = 100;
+    for (dispatches = 0; dispatches < 200; ++dispatches) {
+        clock.advance(1);
+        if (dispatches == raisedAt) {
+            CHECK(manager.pending() >= 10000 - 1000);
+            Event urgent{"urgent"};
+            urgent.priority = EventPriority::High;
+            manager.raise(urgent);
+        }
+        manager.dispatch();
+        CHECK(manager.pending() <= 10001);
+    }
+    CHECK(manager.droppedByLimit() > 0);
+    CHECK(urgentAt >= raisedAt && urgentAt <= raisedAt + 11);
+
+    // Only events less urgent than High are dropped; the limit can be changed.
+    ManualClock otherClock;
+    EventManager small(otherClock);
+    small.setMaxPending(2);
+    small.raise(Event{"a"});
+    small.raise(Event{"b"});
+    small.raise(Event{"dropped"});
+    Event kept{"kept"};
+    kept.priority = EventPriority::High;
+    small.raise(kept);
+    CHECK(small.pending() == 3);
+    CHECK(small.droppedByLimit() == 1);
+    bool threw = false;
+    try {
+        small.setMaxPending(0);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+
+    // Clearing makes room again.
+    small.clearPending();
+    CHECK(small.pending() == 0);
+    small.raise(Event{"after"});
+    CHECK(small.pending() == 1);
+}
+
 void listenerLifetime()
 {
     ManualClock clock;
@@ -214,11 +328,57 @@ void listenerLifetime()
 }
 }
 
+void badRemoteArgumentsDoNotStopTheGame()
+{
+    ManualClock clock;
+    EventManager manager(clock);
+    int ran = 0;
+    manager.subscribe("Hit", [&](const Event& event) {
+        ++ran;
+        event.get<std::int64_t>("damage");
+    });
+
+    Event remote("Hit");
+    remote.origin = 7;
+    manager.raise(remote);
+    remote.set("damage", "lots");
+    manager.raise(remote);
+    manager.dispatch();
+    CHECK(ran == 2);
+    CHECK(manager.remoteHandlerErrors() == 2);
+
+    // The same mistake on a local event is this game's bug and still surfaces.
+    manager.raise(Event("Hit"));
+    bool threw = false;
+    try {
+        manager.dispatch();
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(manager.remoteHandlerErrors() == 2);
+
+    // Only bad data is forgiven: a remote event cannot hide other failures.
+    manager.subscribe("Boom", [](const Event&) { throw std::runtime_error("bug"); });
+    remote.type = "Boom";
+    manager.raise(remote);
+    threw = false;
+    try {
+        manager.dispatch();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 int main()
 {
+    badRemoteArgumentsDoNotStopTheGame();
     representationAndOrder();
     chainsAndChanges();
     timelineAndThreads();
+    priorityWorksOnARunningClock();
+    aRunawayChainStaysBounded();
     listenerLifetime();
     return failures == 0 ? 0 : 1;
 }
