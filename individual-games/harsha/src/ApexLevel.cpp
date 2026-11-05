@@ -88,7 +88,8 @@ GameObject& makeSpawnMarker(World& world, float x, float y, float width, int roo
 {
     GameObject& marker = world.create("trigger");
     marker.add<Transform>(x, y, width, ApexNetwork::playerHeight);
-    marker.add<Collider>(Collider::Kind::Trigger, triggerLayer);
+    // Landing inside a marker counts, so it must report every frame.
+    marker.add<Collider>(Collider::Kind::Trigger, triggerLayer).raiseStayEvents = true;
     marker.add<SpawnMarker>(room, slot);
     marker.setActive(true);
     return marker;
@@ -108,7 +109,8 @@ GameObject& makeRoomZone(World& world, int room, float top, float width, float h
 {
     GameObject& zone = world.create("trigger");
     zone.add<Transform>(0.0F, top, width, height);
-    zone.add<Collider>(Collider::Kind::Trigger, triggerLayer);
+    // The climber's centre decides the room, and it moves while overlapping.
+    zone.add<Collider>(Collider::Kind::Trigger, triggerLayer).raiseStayEvents = true;
     zone.add<RoomZone>(room);
     zone.setActive(true);
     return zone;

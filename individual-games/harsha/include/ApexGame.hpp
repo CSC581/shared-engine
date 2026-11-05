@@ -10,20 +10,29 @@
 #include "Game.hpp"
 #include "GameObject.hpp"
 #include "Multiplayer.hpp"
+#include "NetworkEventBridge.hpp"
 #include "NetworkWorldSync.hpp"
+#include "ReplaySystem.hpp"
 #include "World.hpp"
 #include "animation/PlayerAnimation.hpp"
 
 #include <SDL3/SDL.h>
 
+#include <array>
+#include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 class ApexGame : public Game {
 public:
-    ApexGame(const Engine& engine, std::unique_ptr<Multiplayer::Session> session = {});
+    ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session = {});
+    // Handlers capture this, and engine.events() outlives the game.
+    ~ApexGame() override;
 
-    void handleInput(Engine& engine) override;
+    // Input arrives as InputEvents; see onInput() and applyHeldKeys().
+    void handleInput(Engine&) override {}
     // The engine calls the FrameTime overload; World needs the FrameTime.
     // The float one is pure virtual in Game, so it stays as a forwarder.
     void update(const FrameTime& time, Engine& engine) override;
@@ -39,27 +48,45 @@ private:
     static constexpr float horizontalJumpRatio = 0.55F;
 
     static constexpr float walkSpeed = 300.0F;
+    // Air dash: sideways only, so it adds no height (design 12.5).
+    static constexpr float dashSpeed = 900.0F;
+    static constexpr float dashSeconds = 0.15F;
     // Share of a slingshot rail's vertical velocity added to a jump off it.
     static constexpr float slingshotVerticalShare = 0.5F;
     // Slop for the direction-aware landing check (float drift on the surface).
     static constexpr float landingTolerance = 4.0F;
+    // Feet this close to a top after the collision pass were pushed onto it.
+    // Far tighter than landingTolerance, or a falling climber would hover.
+    static constexpr float pushLandingTolerance = 0.01F;
 
     static constexpr float playerWidth = 50.0F;
     static constexpr float playerHeight = 70.0F;
 
     static constexpr int roomCount = 6;
 
+    // On game time, so a pause holds it. Lets the death read on screen.
+    static constexpr std::int64_t respawnDelayTics = kGameTicsPerSecond * 2 / 5;
+    // How much the always-on recording keeps: the kill cam's length.
+    static constexpr std::int64_t killCamTics = kGameTicsPerSecond * 5;
+
     // Dark brown a crumbling moss ledge fades toward; also half its debris.
     static constexpr Color crumbledColor{110, 80, 45};
 
+    void onInput(const Event& event);
+    bool isHeld(SDL_Scancode key) const { return keysHeld_[key]; }
+    void applyHeldKeys(float deltaTime);
+    void tryDash(float direction);
+    void updateDash(float deltaTime);
+    void onCollision(const Event& event);
     void handleCollisions();
-    void onPlayerCollide(GameObject& other);
     void applySlingshotFling();
-    // Puts the climber standing at a spawn marker, at rest, camera snapped.
-    void placeAt(const Transform& marker);
+    void onDeath(const Event& event);
+    void onSpawn(const Event& event);
+    // Raises the SpawnEvent that stands the climber on a spawn marker.
+    void raiseSpawnAt(const Transform& marker, std::int64_t delayTics = 0);
+    // Puts the climber at rest at this position, camera snapped.
+    void placeAt(float x, float y);
     const Transform* findSpawnMarker(int room, int slot);
-    void onPlayerEnter(GameObject& other);
-    void onPlayerExit(GameObject& other);
     void updateCamera(float deltaTime);
     float cameraTarget() const;
     int roomAt(float worldY) const;
@@ -67,7 +94,26 @@ private:
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
     void updateCrumbles(float deltaTime);
+    void onLedgeCrumble(const Event& event);
+    void onSummit(const Event& event);
+    void showNotice(std::string text);
+    // The climbers drawn outside renderWorld(), as text for the replay.
+    std::string recordClimbers() const;
+    void drawRecordedClimbers(SDL_Renderer* renderer, float camera) const;
+    void drawReplayOverlay(SDL_Renderer* renderer) const;
+    void updateOnlineCues(float deltaTime);
     void spawnDebris(const Rect& ledge);
+
+    Engine& engine_;
+    std::vector<EventManager::SubscriptionId> subscriptions_;
+    // Kept from InputEvents, indexed by scancode.
+    std::array<bool, SDL_SCANCODE_COUNT> keysHeld_{};
+    // Always recording the last killCamTics. Pauses the game while it plays.
+    ReplaySystem replay_;
+    // Red border until this real time, when a replay reaches a death.
+    std::int64_t replayFlashUntil_ = 0;
+    // The playback in progress came from a death, not from F5.
+    bool killCamPlaying_ = false;
 
     // Every object in the scene: platforms, the local player and, online,
     // the remote players and server-owned platforms NetworkWorldSync mirrors.
@@ -90,8 +136,8 @@ private:
     float walkIntent_ = 0.0F;
     // Surface::friction of the platform underfoot, refreshed each frame.
     float groundFriction_ = Surface::ground;
-    // Wind zone the climber is inside, set and cleared by the player's
-    // trigger callbacks (main thread); read by the player worker.
+    // Wind zone the climber is inside, set and cleared by onCollision() (main
+    // thread, between frames' worker runs); read by the player worker.
     const WindZone* wind_ = nullptr;
     // For drawing the wind cue: the (only) wind zone, its push this frame,
     // and how far the streaks have drifted.
@@ -119,6 +165,14 @@ private:
     // Optional online presence. The game uses the same surface for either
     // client-server or peer-to-peer deployment.
     std::unique_ptr<Multiplayer::Session> session_;
+    // Shares crumbles, deaths and summits. Client-server only. Declared after
+    // session_, which must outlive it.
+    std::unique_ptr<NetworkEventBridge> bridge_;
+    // What other climbers just did: a line of text, and ghosts flashing.
+    std::string notice_;
+    float noticeSecondsLeft_ = 0.0F;
+    std::unordered_map<Multiplayer::PlayerId, float> ghostFlashLeft_;
+    bool summitAnnounced_ = false;
 
     float viewWidth_;
     float viewHeight_;
@@ -132,8 +186,8 @@ private:
     int checkpointRoom_ = 0;
     // Online: moved to slot (id - 1) % 4 once, when the server assigns an id.
     bool onlineSlotPlaced_ = false;
-    // Set by a death zone's onEnter, acted on once the collision pass ends.
-    bool pendingRespawn_ = false;
+    // Between a DeathEvent and its delayed SpawnEvent: switched off and hidden.
+    bool isDead_ = false;
     int deaths_ = 0;
 
     // Vertical scroll: world Y minus camera_ is screen Y. It eases toward the
@@ -148,6 +202,11 @@ private:
 
     bool isCharging_ = false;
     bool isOnGround_ = false;
+
+    // One dash per airtime; time left in the current one.
+    bool dashUsed_ = false;
+    float dashDirection_ = 0.0F;
+    float dashTimeLeft_ = 0.0F;
 
     int highestRoomReached_ = 0;
 
