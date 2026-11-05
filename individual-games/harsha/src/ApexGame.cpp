@@ -606,10 +606,13 @@ void ApexGame::onSpawn(const Event& event)
 
 void ApexGame::raiseSpawnAt(const Transform& marker, std::int64_t delayTics)
 {
-    engine_.events().raise(Event{Events::Spawn}.set("object", player_->id())
-                                               .set("x", static_cast<double>(marker.x + (marker.width - playerWidth) * 0.5F))
-                                               .set("y", static_cast<double>(marker.y)),
-                           delayTics);
+    Event spawn{Events::Spawn};
+    spawn.set("object", player_->id())
+        .set("x", static_cast<double>(marker.x + (marker.width - playerWidth) * 0.5F))
+        .set("y", static_cast<double>(marker.y));
+    // A full queue dropping this would leave the climber dead for good.
+    spawn.priority = EventPriority::High;
+    engine_.events().raise(std::move(spawn), delayTics);
 }
 
 void ApexGame::placeAt(float x, float y)
@@ -705,10 +708,14 @@ void ApexGame::updateCrumbles(float deltaTime)
             if (crumble.timer >= Crumble::breakAfterSeconds) {
                 transform.x = crumble.homeX;
                 renderable.color = moss;
-                engine_.events().raise(Event{Events::Spawn}.set("kind", "debris")
-                                                           .set("x", static_cast<double>(transform.x))
-                                                           .set("y", static_cast<double>(transform.y))
-                                                           .set("width", static_cast<double>(transform.width)));
+                Event debris{Events::Spawn};
+                debris.set("kind", "debris")
+                    .set("x", static_cast<double>(transform.x))
+                    .set("y", static_cast<double>(transform.y))
+                    .set("width", static_cast<double>(transform.width));
+                // Only looks: anything else due in the same round goes first.
+                debris.priority = EventPriority::Low;
+                engine_.events().raise(std::move(debris));
                 ledge->setActive(false);
                 crumble.state = Crumble::State::Broken;
                 crumble.timer = 0.0F;
