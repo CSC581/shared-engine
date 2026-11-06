@@ -94,7 +94,6 @@ private:
     void updatePlayerPhysics(float deltaTime);
     void updateNetwork();
     void updateCrumbles(float deltaTime);
-    void onLedgeCrumble(const Event& event);
     void onSummit(const Event& event);
     void showNotice(std::string text);
     // The climbers drawn outside renderWorld(), as text for the replay.

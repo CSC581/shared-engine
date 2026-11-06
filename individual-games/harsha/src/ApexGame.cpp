@@ -47,7 +47,6 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     subscriptions_.push_back(engine_.events().subscribe(Events::Collision, [this](const Event& event) { onCollision(event); }));
     subscriptions_.push_back(engine_.events().subscribe(Events::Death, [this](const Event& event) { onDeath(event); }));
     subscriptions_.push_back(engine_.events().subscribe(Events::Spawn, [this](const Event& event) { onSpawn(event); }));
-    subscriptions_.push_back(engine_.events().subscribe(LedgeCrumbleEvent, [this](const Event& event) { onLedgeCrumble(event); }));
     subscriptions_.push_back(engine_.events().subscribe(SummitEvent, [this](const Event& event) { onSummit(event); }));
     // After replay_'s own subscription, so it has stopped by the time this runs.
     // A stale stop can arrive for a playback that restarted, hence the check.
@@ -79,6 +78,20 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     const std::vector<GameObject*> windZones = world_.findAllWith<WindZone>();
     windZoneObject_ = windZones.empty() ? nullptr : windZones.front();
     crumbles_ = world_.findAllWith<Crumble>();
+    // A ledge's number is its position in crumbles_: creation order, the same on
+    // every client. Another player chooses the number, and a bad one matches no
+    // ledge. Not guarded during a replay: this is live state, and the timer waits
+    // for the replay's end. A broken ledge is inactive and already ignored this.
+    for (std::size_t index = 0; index < crumbles_.size(); ++index) {
+        Crumble* crumble = crumbles_[index]->get<Crumble>();
+        crumbles_[index]->add<EventListener>(engine_.events()).listen(LedgeCrumbleEvent, [crumble, index](const Event& event) {
+            if (event.get<std::int64_t>("ledge") == static_cast<std::int64_t>(index) &&
+                crumble->state == Crumble::State::Intact) {
+                crumble->state = Crumble::State::Shaking;
+                crumble->timer = 0.0F;
+            }
+        });
+    }
 
     // Start on room 0's first slot (online, the real slot follows once the
     // server assigns an id).
@@ -688,7 +701,7 @@ void ApexGame::updateCrumbles(float deltaTime)
 
         switch (crumble.state) {
         case Crumble::State::Intact:
-            // Only onLedgeCrumble() starts the shake, so a landing here and one
+            // Only the ledge's listener starts the shake, so a landing here and one
             // on another client's screen take the same path.
             if (isOnGround_ && groundedPlatformId_ == ledge->id()) {
                 engine_.events().raise(Event{LedgeCrumbleEvent}.set("ledge", static_cast<std::int64_t>(index)));
@@ -760,22 +773,6 @@ void ApexGame::updateCrumbles(float deltaTime)
     }
     debris_.erase(std::remove_if(debris_.begin(), debris_.end(), [](const Debris& bit) { return bit.life <= 0.0F; }),
                   debris_.end());
-}
-
-// The ledge is its position in crumbles_: creation order, the same on every
-// client. Another player chooses the number, so it is checked. Not guarded
-// during a replay: this is live state, and its timer waits for the replay's end.
-void ApexGame::onLedgeCrumble(const Event& event)
-{
-    const std::int64_t index = event.get<std::int64_t>("ledge");
-    if (index < 0 || index >= static_cast<std::int64_t>(crumbles_.size())) {
-        return;
-    }
-    Crumble& crumble = *crumbles_[static_cast<std::size_t>(index)]->get<Crumble>();
-    if (crumble.state == Crumble::State::Intact) {
-        crumble.state = Crumble::State::Shaking;
-        crumble.timer = 0.0F;
-    }
 }
 
 // This climber's own summit already shows the banner.
