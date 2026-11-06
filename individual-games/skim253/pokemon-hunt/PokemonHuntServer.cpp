@@ -1,14 +1,11 @@
-// Headless Pokemon Hunt server: the engine's NetworkServerHost (which owns the
-// moving platforms) plus Mewtwo as a bot player in both network modes.
-//
-//   ./build/pokemon-hunt-server                  # tcp://*:5600, boss peer on 7290
-//   ./build/pokemon-hunt-server --rates          # log each player's send rate
-//   ./build/pokemon-hunt-server --platforms 100  # benchmark: more moving platforms
+// Headless platform host and Mewtwo bot. Run with --help for options.
 #include "DeltaTimer.hpp"
 #include "Endpoint.hpp"
 #include "Multiplayer.hpp"
+#include "NetworkEventBridge.hpp"
 #include "NetworkServerHost.hpp"
 #include "PokemonHuntBoss.hpp"
+#include "PokemonHuntEvents.hpp"
 #include "PokemonHuntWorld.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
@@ -54,7 +51,7 @@ void say(const std::string& line)
     std::cout << line << std::endl;
 }
 
-// One session per network mode, all carrying the same boss on real time.
+// One boss shared across network modes; only client-server text carries combat events.
 class BossBot {
 public:
     explicit BossBot(const TimeSource& clock) : clock_(clock), frameTimer_(clock, maxWorldStepNs) {}
@@ -65,6 +62,12 @@ public:
         if (session->state() == Multiplayer::State::Failed) {
             say("Mewtwo could not join " + label + ": " + session->status());
             return;
+        }
+        if (session->supportsEvents() && !bridge_) {
+            bridge_ = std::make_unique<NetworkEventBridge>(boss_.events(), *session, sharedEventTypes());
+            bridgedLink_ = links_.size();
+            // Hits come over this session, so its poses say where hitters are.
+            boss_.setPlayerLocator(sessionLocator(*session));
         }
         links_.push_back({label, std::move(session), false});
     }
@@ -78,7 +81,10 @@ public:
             for (std::size_t i = 0; i < links_.size(); ++i) {
                 links_[i].session->update();
                 reportReadiness(links_[i]);
-                readDamage(i, *links_[i].session);
+                if (bridge_ && i == bridgedLink_) {
+                    // Raised now, handled in the next boss_.update().
+                    bridge_->apply();
+                }
             }
 
             const std::string data = encodeBossWorld(boss_.objects());
@@ -103,21 +109,13 @@ private:
         }
     }
 
-    // Ids are unique per session only, so the link index is part of the key.
-    void readDamage(std::size_t linkIndex, const Multiplayer::Session& session)
-    {
-        for (const Multiplayer::Player& player : session.remotePlayers()) {
-            long long damage = 0;
-            if (parseDamageDealt(player.data, damage)) {
-                boss_.reportDamage((static_cast<std::uint64_t>(linkIndex) << 32) | player.id, damage);
-            }
-        }
-    }
-
     const TimeSource& clock_;
     DeltaTimer frameTimer_;
     Boss boss_{say};
     std::vector<Link> links_;
+    // Last: it must go before the session and the manager it uses.
+    std::unique_ptr<NetworkEventBridge> bridge_;
+    std::size_t bridgedLink_ = 0;
 };
 
 struct ServerOptions {

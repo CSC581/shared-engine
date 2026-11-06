@@ -453,6 +453,15 @@ add_custom_command(TARGET pokemon-hunt POST_BUILD
 add_executable(pokemon-hunt-server individual-games/skim253/pokemon-hunt/PokemonHuntServer.cpp)
 target_link_libraries(pokemon-hunt-server PRIVATE multiplayer engine-geometry Threads::Threads)
 
+add_executable(pokemon-hunt-tests individual-games/skim253/pokemon-hunt/tests/PokemonHuntTests.cpp)
+target_include_directories(pokemon-hunt-tests PRIVATE individual-games/skim253/pokemon-hunt)
+target_link_libraries(pokemon-hunt-tests PRIVATE engine multiplayer)
+add_test(NAME pokemon-hunt-tests COMMAND pokemon-hunt-tests)
+add_executable(pokemon-hunt-network-tests individual-games/skim253/pokemon-hunt/tests/PokemonHuntNetworkTests.cpp)
+target_include_directories(pokemon-hunt-network-tests PRIVATE individual-games/skim253/pokemon-hunt)
+target_link_libraries(pokemon-hunt-network-tests PRIVATE multiplayer engine-geometry)
+add_test(NAME pokemon-hunt-network-tests COMMAND pokemon-hunt-network-tests)
+
 # Runtime art next to the binary so SDL_GetBasePath() + "media/apex-ascent/"
 # works regardless of the caller's working directory.
 add_custom_command(TARGET apex-ascent POST_BUILD

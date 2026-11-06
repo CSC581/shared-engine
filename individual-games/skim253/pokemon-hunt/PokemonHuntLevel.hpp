@@ -2,6 +2,7 @@
 
 #include "Components.hpp"
 #include "PokemonHuntConfig.hpp"
+#include "PokemonHuntDraw.hpp"
 #include "PokemonHuntWorld.hpp"
 #include "World.hpp"
 
@@ -9,11 +10,8 @@
 #include <iterator>
 #include <stdexcept>
 #include <string>
-#include <utility>
 
-// The client's level as GameObjects: Solid platforms and hidden walls (no
-// Motion, so collisions push the Pokemon out of them), hidden spawn points and
-// a hidden death zone.
+// Static level geometry and hidden zones; contacts are handled through World events.
 namespace PokemonHunt {
 
 constexpr int levelLayer = 0;
@@ -88,13 +86,13 @@ inline GameObject& makeSpawnPoint(World& world, float x, float y)
     return spawn;
 }
 
-// Hidden, below the pits and wider than the level.
-inline GameObject& makeDeathZone(World& world, Collider::Callback onFall)
+// Hidden trigger below the pits; its enter event triggers death.
+inline GameObject& makeDeathZone(World& world)
 {
     constexpr float overhang = 500.0F;
     GameObject& zone = world.create("death-zone");
     zone.add<Transform>(-overhang, windowHeight + 40.0F, levelWidth + 2.0F * overhang, 400.0F);
-    zone.add<Collider>(Collider::Kind::Trigger, zoneLayer).onCollide = std::move(onFall);
+    zone.add<Collider>(Collider::Kind::Trigger, zoneLayer);
     zone.setActive(true);
     return zone;
 }

@@ -6,16 +6,55 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <utility>
 #include <vector>
 
 namespace PokemonHunt {
 
-// Moves Mewtwo and its shadow balls between snapshots, which arrive only as
-// often as this client sends (game-time paced), with the server's own rules.
-// The next snapshot corrects any wrong guess.
+// Estimates Mewtwo's clock offset using the shortest recent round trip.
+// Assumes symmetric travel time; local times are nanoseconds, boss times microseconds.
+class BossClockSync {
+public:
+    static constexpr std::size_t keptSamples = 8;
+
+    // Reject samples where the local receive time precedes the send time.
+    bool receive(std::int64_t sentAt, std::int64_t receivedAt, std::int64_t bossTimeUs)
+    {
+        const std::int64_t roundTrip = receivedAt - sentAt;
+        if (roundTrip < 0) {
+            return false;
+        }
+        samples_.push_back({roundTrip, bossTimeUs * kNsPerUs + roundTrip / 2 - receivedAt});
+        if (samples_.size() > keptSamples) {
+            samples_.pop_front();
+        }
+        best_ = *std::min_element(samples_.begin(), samples_.end(),
+                                  [](const Sample& a, const Sample& b) { return a.roundTrip < b.roundTrip; });
+        return true;
+    }
+
+    bool synced() const { return !samples_.empty(); }
+    std::int64_t roundTrip() const { return best_.roundTrip; }
+
+    // Convert boss microseconds to estimated local nanoseconds.
+    std::int64_t toLocal(std::int64_t bossTimeUs) const { return bossTimeUs * kNsPerUs - best_.offset; }
+
+private:
+    struct Sample {
+        std::int64_t roundTrip = 0;
+        // Mewtwo's clock minus ours, in nanoseconds.
+        std::int64_t offset = 0;
+    };
+
+    std::deque<Sample> samples_;
+    Sample best_;
+};
+
+// Predicts boss and projectile motion between snapshots; new snapshots correct the estimate.
 class WorldPredictor {
 public:
     // Takes the snapshot only when it changed; `now` is real-time nanoseconds.
@@ -129,8 +168,9 @@ private:
 
     void moveBoss(Multiplayer::Platform& boss, float t) const
     {
-        const bool charging = ((boss.id - bossIdBase) & bossCharging) != 0;
-        if (!charging) {
+        // Mewtwo stands still while charging a shadow ball or a Psystrike.
+        const bool standing = ((boss.id - bossIdBase) & (bossCharging | bossPsystrike)) != 0;
+        if (!standing) {
             float x = boss.x + facing(boss) * bossWalkSpeed * t;
             bool turned = false;
             if (x > bossMaxX) {
