@@ -582,11 +582,14 @@ void StationEvents::onAlarm(const Event& event)
     warningSeconds_ = static_cast<float>(warning);
 
     // Both edges are delayed on game time, so a paused player's alarm waits
-    // for them, and a slowed one runs slower.
+    // for them, and a slowed one runs slower. High, like spawns: a dropped
+    // end would leave the alarm on for good.
     Event begin(AlarmBeginEvent);
+    begin.priority = EventPriority::High;
     begin.set("kind", kind);
     events_.raise(std::move(begin), tics(warning));
     Event end(AlarmEndEvent);
+    end.priority = EventPriority::High;
     end.set("kind", kind);
     events_.raise(std::move(end), tics(warning + duration));
 }

@@ -795,7 +795,12 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     }
 
     // The mission debrief: the moment the relays come online, the last ten
-    // seconds play back in slow motion, once per session.
+    // seconds play back in slow motion, once per session. A stopped F9 clip
+    // waiting to be played means nothing is recording, so there is no footage
+    // of this moment; the debrief is skipped rather than showing that clip.
+    if (missionComplete_ && !debriefShown_ && manualClipReady_) {
+        debriefShown_ = true;
+    }
     if (missionComplete_ && !debriefShown_ && !replay_.isPlaying() && replay_.frameCount() > 1) {
         debriefShown_ = true;
         debriefActive_ = true;
@@ -1112,7 +1117,7 @@ void StarfallSalvageGame::renderCrewOverlays(SDL_Renderer* renderer) const
         const float dx = player.x + StarfallSalvage::playerWidth * 0.5F - bodyX;
         const float dy = player.y + StarfallSalvage::playerHeight * 0.5F - bodyY;
         if (bridge_ && spawned_ && !stationEvents_->down() &&
-            std::hypot(dx, dy) <= StarfallSalvage::reviveRange * 2.0F) {
+            std::hypot(dx, dy) <= StarfallSalvage::reviveRange) {
             text(renderer, screenX - 20.0F, player.y - 26.0F, "HOLD S+E", {255, 230, 150});
         }
     }
