@@ -1,8 +1,10 @@
+#include "StarfallSalvageEvents.hpp"
 #include "StarfallSalvageLevel.hpp"
 #include "StarfallSalvageRules.hpp"
 #include "StarfallSalvageWorld.hpp"
 #include "Components.hpp"
 #include "DeltaTimer.hpp"
+#include "EventManager.hpp"
 #include "SendPacer.hpp"
 #include "Timeline.hpp"
 #include "World.hpp"
@@ -267,26 +269,16 @@ int checkStation()
     stepPlayer(world, astronaut, 200);
     EXPECT(astronaut.grounded && astronaut.jumpsUsed == 0);
 
-    // Falling from high above at terminal speed with only half the astronaut
-    // over deck 4's east edge still lands on the deck, not beside it.
+    // Falling from just under the roof, near terminal speed, with only half
+    // the astronaut over deck 4's east edge still lands on the deck, not
+    // beside it.
     const Rect deck4 = StarfallSalvage::decks[4];
     const float edgeX = deck4.x + deck4.width - StarfallSalvage::playerWidth * 0.5F;
-    placeAt(astronaut, edgeX, -200.0F);
+    placeAt(astronaut, edgeX, StarfallSalvage::ceiling.y + StarfallSalvage::ceiling.height + 4.0F);
     stepPlayer(world, astronaut, 150);
     EXPECT(astronaut.grounded);
     EXPECT(std::fabs(body.x - edgeX) < 0.01F);
     EXPECT(std::fabs(body.y + body.height - deck4.y) <= 0.5F);
-
-    // Into the hull breach, which is reached along the floor under deck 2: the
-    // hidden death zone sends the astronaut back to its spawn point without
-    // costing a life.
-    placeAt(astronaut, 76.0F, 380.0F);
-    Transform& movable = *player.get<Transform>();
-    movable.x = StarfallSalvage::hullBreach.x + 25.0F;
-    movable.y = StarfallSalvage::decks[2].y + StarfallSalvage::decks[2].height + 20.0F;
-    stepPlayer(world, astronaut, 150);
-    EXPECT(std::fabs(body.x - 76.0F) < 0.01F);
-    EXPECT(astronaut.lives == 3);
 
     // The closed bulkhead stops the astronaut at the wall; opened, which only
     // clears its collider's layers, it lets the astronaut walk through.
@@ -302,23 +294,6 @@ int checkStation()
     astronaut.input.axis = 0.0F;
     placeAt(astronaut, 76.0F, 380.0F);
     stepPlayer(world, astronaut, 5);
-
-    // A drone costs one life and respawns the astronaut, then a second of
-    // invulnerability protects it even though it respawned inside the drone.
-    GameObject& drone = StarfallSalvage::makeNetworkPlatform(world, {11, 0.0F, 0.0F, 0.0F, 0.0F});
-    Transform& dronePose = *drone.get<Transform>();
-    dronePose.x = 70.0F;
-    dronePose.y = 390.0F;
-    dronePose.width = 46.0F;
-    dronePose.height = 26.0F;
-    drone.setActive(true);
-    stepPlayer(world, astronaut, 1);
-    EXPECT(astronaut.lives == 2 && astronaut.invulnerableSeconds > 0.0F);
-    stepPlayer(world, astronaut, 10);
-    EXPECT(astronaut.lives == 2);
-    stepPlayer(world, astronaut, 60);
-    EXPECT(astronaut.lives == 1);
-    drone.setActive(false);
 
     // Riding a shuttle: carried by its move between frames, and let go if it
     // jumps further than a rider could have stayed on.
@@ -366,6 +341,294 @@ int checkStation()
     return 0;
 }
 
+// Flipped gravity: the astronaut falls to the ceiling, stands on its
+// underside, jumps downward, and falls back when gravity is restored.
+int checkGravity()
+{
+    World world;
+    StarfallSalvage::buildStation(world);
+    GameObject& player = StarfallSalvage::makePlayer(world);
+    StarfallSalvage::Astronaut& astronaut = *player.get<StarfallSalvage::Astronaut>();
+    const Transform& body = *player.get<Transform>();
+    const Motion& motion = *player.get<Motion>();
+    const float roof = StarfallSalvage::ceiling.y + StarfallSalvage::ceiling.height;
+
+    placeAt(astronaut, 76.0F, 380.0F);
+    stepPlayer(world, astronaut, 30);
+    EXPECT(astronaut.grounded);
+
+    astronaut.setFlipped(true);
+    EXPECT(astronaut.flipped() && !astronaut.grounded);
+    stepPlayer(world, astronaut, 150);
+    EXPECT(astronaut.grounded);
+    EXPECT(std::fabs(body.y - roof) <= 0.5F);
+
+    // A jump pushes away from the ceiling, so downward.
+    astronaut.input.jump = true;
+    stepPlayer(world, astronaut, 1);
+    astronaut.input.jump = false;
+    EXPECT(!astronaut.grounded && astronaut.jumpsUsed == 1 && motion.velocityY > 0.0F);
+    stepPlayer(world, astronaut, 150);
+    EXPECT(astronaut.grounded && std::fabs(body.y - roof) <= 0.5F);
+
+    astronaut.setFlipped(false);
+    stepPlayer(world, astronaut, 150);
+    EXPECT(astronaut.grounded);
+    EXPECT(std::fabs(body.y + body.height - StarfallSalvage::decks[1].y) <= 0.5F);
+
+    // Respawning always restores normal gravity.
+    astronaut.setFlipped(true);
+    astronaut.respawn();
+    EXPECT(!astronaut.flipped());
+    return 0;
+}
+
+// The station's gameplay through the engine's events: deaths, spawns, crates,
+// gravity panels, reviving and the server's alarms.
+int checkEvents()
+{
+    TestClock clock;
+    EventManager events(clock);
+    World world;
+    const StarfallSalvage::Station layout = StarfallSalvage::buildStation(world);
+    world.setEventManager(&events);
+    GameObject& player = StarfallSalvage::makePlayer(world);
+    StarfallSalvage::Astronaut& astronaut = *player.get<StarfallSalvage::Astronaut>();
+    const Transform& body = *player.get<Transform>();
+
+    std::uint8_t collected = 0;
+    Rect rescuerBounds{600.0F, 460.0F, StarfallSalvage::playerWidth, StarfallSalvage::playerHeight};
+    StarfallSalvage::StationEvents::Hooks hooks;
+    hooks.collectCargo = [&collected](std::size_t crate) {
+        const auto bit = static_cast<std::uint8_t>(1U << crate);
+        const bool fresh = (collected & bit) == 0;
+        collected |= bit;
+        return fresh;
+    };
+    hooks.findPlayer = [&rescuerBounds](std::uint32_t id, Rect& bounds) {
+        if (id != 7) return false;
+        bounds = rescuerBounds;
+        return true;
+    };
+    hooks.localPlayerId = [] { return 1U; };
+    // Player 4 is the alarm director here (in the game: the lowest id online).
+    hooks.alarmDirectorId = [] { return 4U; };
+    StarfallSalvage::StationEvents station(events, player, layout, hooks);
+
+    std::vector<std::uint32_t> revivesRaised;
+    events.subscribe(StarfallSalvage::ReviveEvent, [&revivesRaised](const Event& event) {
+        if (event.origin == 0) revivesRaised.push_back(static_cast<std::uint32_t>(event.getOr<std::int64_t>("target", 0)));
+    });
+
+    bool reviveHeld = false;
+    std::vector<StarfallSalvage::Claim> teammates;
+    // One frame as the game runs it: physics only while not down, then the
+    // queued events, then the timers.
+    const auto step = [&](int frames) {
+        const FrameTime frame{1.0 / static_cast<double>(StarfallSalvage::normalLoopHz), 0};
+        for (int i = 0; i < frames; ++i) {
+            clock.elapsed += kGameTicsPerSecond / StarfallSalvage::normalLoopHz;
+            if (!station.down()) {
+                world.updateComponents(frame, "player");
+                astronaut.beginCollisionPass();
+                world.resolveCollisions();
+            }
+            world.flushDestroyed();
+            events.dispatch();
+            station.update(static_cast<float>(frame.dtSeconds), reviveHeld, teammates);
+            events.dispatch();
+        }
+    };
+    const auto placeDrone = [&](Transform& pose) {
+        pose.x = body.x - 5.0F;
+        pose.y = body.y + 10.0F;
+        pose.width = 46.0F;
+        pose.height = 26.0F;
+    };
+    const auto spawnAt = [&](float x, float y) {
+        Event spawn(Events::Spawn);
+        spawn.set("x", static_cast<double>(x)).set("y", static_cast<double>(y));
+        events.raise(std::move(spawn));
+        events.dispatch();
+    };
+
+    // The breach: a DeathEvent that respawns without costing a life.
+    spawnAt(76.0F, 380.0F);
+    step(5);
+    Transform& movable = *player.get<Transform>();
+    movable.x = StarfallSalvage::hullBreach.x + 25.0F;
+    movable.y = StarfallSalvage::decks[2].y + StarfallSalvage::decks[2].height + 20.0F;
+    step(150);
+    EXPECT(std::fabs(body.x - astronaut.spawn.x) < 0.01F);
+    EXPECT(astronaut.lives == 3 && !station.down());
+
+    // Touching a crate collects it once.
+    const Rect crate0 = StarfallSalvage::cargo[0];
+    spawnAt(crate0.x, crate0.y - 10.0F);
+    step(2);
+    EXPECT(collected == 0x1);
+
+    // A floor panel flips gravity up to the ceiling; walking the ceiling picks
+    // up the crate hanging over the breach; the ceiling panel flips it back.
+    const Rect floorPanel = StarfallSalvage::gravityPanels[0];
+    spawnAt(floorPanel.x + 5.0F, floorPanel.y + floorPanel.height - StarfallSalvage::playerHeight - 2.0F);
+    step(3);
+    EXPECT(astronaut.flipped() && station.flags().flipped);
+    step(120);
+    const float roof = StarfallSalvage::ceiling.y + StarfallSalvage::ceiling.height;
+    EXPECT(astronaut.grounded && std::fabs(body.y - roof) <= 0.5F);
+    astronaut.input.axis = 1.0F;
+    for (int i = 0; i < 300 && astronaut.flipped(); ++i) step(1);
+    astronaut.input.axis = 0.0F;
+    EXPECT(!astronaut.flipped());
+    EXPECT((collected & 0x2) != 0);
+    step(120);
+    EXPECT(astronaut.grounded && std::fabs(body.y + body.height - StarfallSalvage::decks[6].y) <= 0.5F);
+
+    // A drone: a life lost, then down, frozen, with a ten second beacon.
+    spawnAt(76.0F, 380.0F);
+    step(60);
+    astronaut.invulnerableSeconds = 0.0F;
+    GameObject& drone = StarfallSalvage::makeNetworkPlatform(world, {11, 0.0F, 0.0F, 0.0F, 0.0F});
+    Transform& dronePose = *drone.get<Transform>();
+    placeDrone(dronePose);
+    drone.setActive(true);
+    step(1);
+    drone.setActive(false);
+    EXPECT(station.down() && astronaut.lives == 2 && station.hasBeacon());
+    EXPECT(station.flags().down);
+    const float downX = body.x;
+    step(static_cast<int>((StarfallSalvage::beaconSeconds - 0.2F) * StarfallSalvage::normalLoopHz));
+    EXPECT(station.down() && std::fabs(body.x - downX) < 0.01F);
+    step(20);
+    EXPECT(!station.down() && std::fabs(body.x - astronaut.spawn.x) < 0.01F && astronaut.invulnerableSeconds > 0.0F);
+
+    // A shield that runs out while still inside a drone ends in a hit: drones
+    // raise "stay" collisions, not only "enter".
+    step(60);
+    astronaut.invulnerableSeconds = 0.3F;
+    drone.setActive(true);
+    placeDrone(dronePose);
+    step(5);
+    EXPECT(!station.down() && astronaut.lives == 2);
+    step(20);
+    drone.setActive(false);
+    EXPECT(station.down() && astronaut.lives == 1);
+
+    // A revive from a player across the station is refused; one from beside
+    // this player brings it back at the rescuer's side.
+    const auto reviveFrom = [&](std::uint32_t rescuer) {
+        Event revive(StarfallSalvage::ReviveEvent);
+        revive.set("target", static_cast<std::int64_t>(1));
+        revive.origin = rescuer;
+        events.raise(std::move(revive));
+        events.dispatch();
+    };
+    rescuerBounds.x = body.x + 400.0F;
+    rescuerBounds.y = body.y;
+    reviveFrom(7);
+    EXPECT(station.down());
+    reviveFrom(8); // a player NetworkWorldSync does not know
+    EXPECT(station.down());
+    rescuerBounds.x = body.x + 30.0F;
+    reviveFrom(7);
+    EXPECT(!station.down());
+    EXPECT(std::fabs(body.x - rescuerBounds.x) < 0.01F && std::fabs(body.y - rescuerBounds.y) < 0.01F);
+    EXPECT(astronaut.invulnerableSeconds >= 1.9F);
+    EXPECT(station.banner().kind == StarfallSalvage::Banner::Kind::Revived && station.banner().subject == 0 &&
+           station.banner().actor == 7);
+
+    // With no lives left there is no beacon: only a revive, or restarting alone.
+    step(60);
+    astronaut.invulnerableSeconds = 0.0F;
+    drone.setActive(true);
+    placeDrone(dronePose);
+    step(1);
+    drone.setActive(false);
+    EXPECT(station.down() && astronaut.lives == 0 && !station.hasBeacon());
+    step(static_cast<int>((StarfallSalvage::beaconSeconds + 2.0F) * StarfallSalvage::normalLoopHz));
+    EXPECT(station.down());
+    station.restartAlone();
+    events.dispatch();
+    EXPECT(!station.down() && astronaut.lives == 3);
+
+    // Rescuing: holding the revive chord next to a downed teammate for long
+    // enough raises one ReviveEvent naming it; one not down is ignored.
+    spawnAt(100.0F, 380.0F);
+    step(30);
+    teammates = {{5, body.x + 20.0F, body.y, StarfallSalvage::encodeState(0, -1, 0, {false, true})}};
+    reviveHeld = true;
+    step(static_cast<int>(StarfallSalvage::reviveSeconds * StarfallSalvage::normalLoopHz) - 5);
+    EXPECT(revivesRaised.empty() && station.reviveTargetId() == 5 && station.reviveProgress() > 0.5F);
+    step(10);
+    EXPECT(revivesRaised.size() == 1 && revivesRaised[0] == 5);
+    reviveHeld = false;
+    teammates = {{5, body.x + 20.0F, body.y, StarfallSalvage::encodeState(0, -1, 0, {false, false})}};
+    EXPECT(StarfallSalvage::reviveTarget(body.bounds(), 1, teammates) == 0);
+    teammates = {{5, body.x + 400.0F, body.y, StarfallSalvage::encodeState(0, -1, 0, {false, true})}};
+    EXPECT(StarfallSalvage::reviveTarget(body.bounds(), 1, teammates) == 0);
+    teammates.clear();
+
+    // Another player's death only shows a banner.
+    Event remoteDeath(Events::Death);
+    remoteDeath.set("cause", "drone");
+    remoteDeath.origin = 9;
+    events.raise(std::move(remoteDeath));
+    events.dispatch();
+    EXPECT(!station.down() && station.banner().kind == StarfallSalvage::Banner::Kind::Down &&
+           station.banner().subject == 9);
+
+    // The director's alarm warns first, then flips gravity for its duration,
+    // both on game time; panels do nothing meanwhile. Bad alarms are ignored.
+    Event alarm(StarfallSalvage::StationAlarmEvent);
+    alarm.set("kind", "gravity").set("warning", 2.0).set("duration", 6.0);
+    alarm.origin = 4;
+    events.raise(std::move(alarm));
+    events.dispatch();
+    EXPECT(station.alarmWarning() == "gravity" && !station.gravityFailure());
+    step(95);
+    EXPECT(!station.gravityFailure() && !astronaut.flipped());
+    step(10);
+    EXPECT(station.gravityFailure() && astronaut.flipped() && station.alarmWarning().empty());
+    step(6 * StarfallSalvage::normalLoopHz);
+    EXPECT(!station.gravityFailure() && !astronaut.flipped());
+
+    // A player who is not the director cannot set off an alarm.
+    Event forged(StarfallSalvage::StationAlarmEvent);
+    forged.set("kind", "gravity").set("warning", 0.0).set("duration", 6.0);
+    forged.origin = 5;
+    events.raise(std::move(forged));
+    events.dispatch();
+    step(5);
+    EXPECT(station.alarmWarning().empty() && !station.gravityFailure());
+
+    Event bogus(StarfallSalvage::StationAlarmEvent);
+    bogus.set("kind", "meteors");
+    bogus.origin = 4;
+    events.raise(std::move(bogus));
+    Event blackout(StarfallSalvage::StationAlarmEvent);
+    blackout.set("kind", "blackout").set("warning", "soon").set("duration", static_cast<std::int64_t>(1));
+    blackout.origin = 4;
+    events.raise(std::move(blackout));
+    events.dispatch();
+    EXPECT(station.alarmWarning() == "blackout");
+    step(2 * StarfallSalvage::normalLoopHz + 5);
+    EXPECT(station.blackout());
+    step(StarfallSalvage::normalLoopHz);
+    EXPECT(!station.blackout());
+
+    // This player's own alarm (it is the director in its own game) counts.
+    Event own(StarfallSalvage::StationAlarmEvent);
+    own.set("kind", "blackout").set("warning", 0.0).set("duration", 1.0);
+    events.raise(std::move(own));
+    events.dispatch();
+    step(2);
+    EXPECT(station.blackout());
+    step(StarfallSalvage::normalLoopHz);
+    EXPECT(!station.blackout());
+    return 0;
+}
+
 } // namespace
 
 int main()
@@ -375,20 +638,26 @@ int main()
     std::uint8_t mask = 0;
     std::uint8_t personalMask = 0;
     int pad = -1;
-    EXPECT(StarfallSalvage::encodeState(0xA, 2, 0x2) == "CAP2I2");
-    EXPECT(StarfallSalvage::encodeState(0xF, -1, 0) == "CFP-I0");
-    EXPECT(StarfallSalvage::decodeState("C3P0I1", mask, pad, personalMask) &&
+    EXPECT(StarfallSalvage::encodeState(0xA, 2, 0x2) == "CAP2I2G0D0");
+    EXPECT(StarfallSalvage::encodeState(0xF, -1, 0) == "CFP-I0G0D0");
+    EXPECT(StarfallSalvage::encodeState(0x1, -1, 0x1, {true, true}) == "C1P-I1G1D1");
+    EXPECT(StarfallSalvage::decodeState("C3P0I1G0D0", mask, pad, personalMask) &&
            mask == 3 && pad == 0 && personalMask == 1);
-    EXPECT(StarfallSalvage::decodeState("CFP-I0", mask, pad, personalMask) &&
+    EXPECT(StarfallSalvage::decodeState("CFP-I0G0D0", mask, pad, personalMask) &&
            mask == 15 && pad == -1 && personalMask == 0);
-    EXPECT(StarfallSalvage::decodeState("C0P3I0", mask, pad, personalMask) && pad == 3);
-    EXPECT(StarfallSalvage::decodeState("C0P4I0", mask, pad, personalMask) && pad == 4);
+    EXPECT(StarfallSalvage::decodeState("C0P3I0G0D0", mask, pad, personalMask) && pad == 3);
+    EXPECT(StarfallSalvage::decodeState("C0P4I0G0D0", mask, pad, personalMask) && pad == 4);
     EXPECT(!StarfallSalvage::decodeState("P0", mask, pad, personalMask));
     EXPECT(!StarfallSalvage::decodeState("C3P0", mask, pad, personalMask));
-    EXPECT(!StarfallSalvage::decodeState("C0P5I0", mask, pad, personalMask));
-    EXPECT(!StarfallSalvage::decodeState("C0P-I1", mask, pad, personalMask));
-    EXPECT(!StarfallSalvage::decodeState("CgP0I0", mask, pad, personalMask));
-    EXPECT(!StarfallSalvage::decodeState("CFP0extra", mask, pad, personalMask));
+    EXPECT(!StarfallSalvage::decodeState("C3P0I1", mask, pad, personalMask)); // the old six-character form
+    EXPECT(!StarfallSalvage::decodeState("C0P5I0G0D0", mask, pad, personalMask));
+    EXPECT(!StarfallSalvage::decodeState("C0P-I1G0D0", mask, pad, personalMask));
+    EXPECT(!StarfallSalvage::decodeState("CgP0I0G0D0", mask, pad, personalMask));
+    EXPECT(!StarfallSalvage::decodeState("C3P0I1G2D0", mask, pad, personalMask));
+    EXPECT(!StarfallSalvage::decodeState("CFP0extra!", mask, pad, personalMask));
+    EXPECT(StarfallSalvage::crewFlags("C1P-I1G1D0").flipped && !StarfallSalvage::crewFlags("C1P-I1G1D0").down);
+    EXPECT(StarfallSalvage::crewFlags("C1P-I1G0D1").down);
+    EXPECT(!StarfallSalvage::crewFlags("garbage").down);
 
     std::vector<StarfallSalvage::Claim> players{
         onPad(1, 0, 0x1), onPad(2, 1, 0x2), onPad(3, 2, 0xC)
@@ -413,11 +682,6 @@ int main()
     EXPECT(StarfallSalvage::creditedCargoMask({simultaneousPickup[0], simultaneousPickup[1]}, 2) == 0x3);
     EXPECT(StarfallSalvage::creditedCargoMask({simultaneousPickup[1], simultaneousPickup[0]}, 2) == 0x3);
 
-    const Rect firstCrate = StarfallSalvage::cargo[0];
-    EXPECT(StarfallSalvage::cargoAt(firstCrate, 0, true, 0.02F) == 0x1);
-    EXPECT(StarfallSalvage::cargoAt(firstCrate, 0, false, 0.02F) == 0);
-    EXPECT(StarfallSalvage::cargoAt(firstCrate, 0, true, 0.0F) == 0);
-    EXPECT(StarfallSalvage::cargoAt(firstCrate, 0x1, true, 0.02F) == 0);
     EXPECT(StarfallSalvage::chooseCargoWinner({onPad(9, 0, 1), onPad(2, 1, 2)}).playerId == 2);
     EXPECT(StarfallSalvage::chooseCargoWinner({{1, 0.0F, 0.0F, "bad"}, onPad(2, 1, 2)}).playerId == 2);
     EXPECT(StarfallSalvage::chooseCargoWinner({}).playerId == 0);
@@ -484,7 +748,11 @@ int main()
     EXPECT(StarfallSalvage::isDrone(config.platforms[4].id));
     EXPECT(config.platforms[2].endX - config.platforms[2].startX >= 300.0F);
     EXPECT(config.platforms[4].endX - config.platforms[4].startX >= 400.0F);
-    for (const Rect& crate : StarfallSalvage::cargo) EXPECT(supportedByDeck(crate));
+    // Every crate sits on a deck, except the one hanging under the roof.
+    for (const Rect& crate : StarfallSalvage::cargo) {
+        EXPECT(supportedByDeck(crate) ||
+               crate.y == StarfallSalvage::ceiling.y + StarfallSalvage::ceiling.height);
+    }
     for (const Rect& relay : StarfallSalvage::relayPads) EXPECT(supportedByDeck(relay));
     for (const Rect& plate : StarfallSalvage::gatePlates) EXPECT(supportedByDeck(plate));
     EXPECT(StarfallSalvage::bulkhead.x > StarfallSalvage::decks[3].x + StarfallSalvage::decks[3].width);
@@ -496,6 +764,8 @@ int main()
     EXPECT(StarfallSalvage::cameraTargetX(2000.0F) == 640.0F);
 
     EXPECT(checkStation() == 0);
+    EXPECT(checkGravity() == 0);
+    EXPECT(checkEvents() == 0);
 
-    std::cout << "Starfall Salvage cooperative rules, time/pacing and station checks passed\n";
+    std::cout << "Starfall Salvage cooperative rules, time/pacing, station, gravity and event checks passed\n";
 }

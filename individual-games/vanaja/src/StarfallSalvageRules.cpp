@@ -37,19 +37,38 @@ int gatePlateUnderPlayer(const Rect& player)
 }
 
 std::string encodeState(std::uint8_t cargoMask, int control,
-                        std::uint8_t personalCargoMask)
+                        std::uint8_t personalCargoMask, CrewFlags flags)
 {
     constexpr char hex[] = "0123456789ABCDEF";
     return std::string{'C', hex[cargoMask & allCargoMask], 'P',
                        control >= 0 && control < static_cast<int>(relayPads.size() + gatePlates.size())
                            ? static_cast<char>('0' + control) : '-',
-                       'I', hex[personalCargoMask & cargoMask & allCargoMask]};
+                       'I', hex[personalCargoMask & cargoMask & allCargoMask],
+                       'G', flags.flipped ? '1' : '0', 'D', flags.down ? '1' : '0'};
 }
 
 bool decodeState(const std::string& data, std::uint8_t& cargoMask, int& control,
                  std::uint8_t& personalCargoMask)
 {
-    if (data.size() != 6 || data[0] != 'C' || data[2] != 'P' || data[4] != 'I') {
+    CrewFlags flags;
+    return decodeState(data, cargoMask, control, personalCargoMask, flags);
+}
+
+CrewFlags crewFlags(const std::string& data)
+{
+    std::uint8_t mask = 0;
+    std::uint8_t personal = 0;
+    int control = -1;
+    CrewFlags flags;
+    return decodeState(data, mask, control, personal, flags) ? flags : CrewFlags{};
+}
+
+bool decodeState(const std::string& data, std::uint8_t& cargoMask, int& control,
+                 std::uint8_t& personalCargoMask, CrewFlags& flags)
+{
+    if (data.size() != 10 || data[0] != 'C' || data[2] != 'P' || data[4] != 'I' ||
+        data[6] != 'G' || data[8] != 'D' || (data[7] != '0' && data[7] != '1') ||
+        (data[9] != '0' && data[9] != '1')) {
         return false;
     }
     constexpr char hex[] = "0123456789ABCDEF";
@@ -66,6 +85,8 @@ bool decodeState(const std::string& data, std::uint8_t& cargoMask, int& control,
     cargoMask = static_cast<std::uint8_t>(mask);
     control = data[3] == '-' ? -1 : data[3] - '0';
     personalCargoMask = static_cast<std::uint8_t>(personalMask);
+    flags.flipped = data[7] == '1';
+    flags.down = data[9] == '1';
     return true;
 }
 
@@ -97,21 +118,6 @@ MissionStatus evaluateMission(const std::vector<Claim>& claims)
                            result.relays.occupied[2];
     result.complete = result.cargoMask == allCargoMask && result.relays.online;
     return result;
-}
-
-std::uint8_t cargoAt(const Rect& player, std::uint8_t recoveredMask,
-                     bool canCollect, float deltaTime)
-{
-    if (!canCollect || deltaTime <= 0.0F) return 0;
-
-    std::uint8_t pickedUp = 0;
-    for (std::size_t i = 0; i < cargo.size(); ++i) {
-        const auto bit = static_cast<std::uint8_t>(1U << i);
-        if ((recoveredMask & bit) == 0 && Collision::intersects(player, cargo[i])) {
-            pickedUp |= bit;
-        }
-    }
-    return pickedUp;
 }
 
 std::uint8_t creditedCargoMask(const std::vector<Claim>& claims, std::uint32_t playerId)
@@ -160,6 +166,28 @@ CargoWinner chooseCargoWinner(const std::vector<Claim>& claims)
         }
     }
     return winner;
+}
+
+std::uint32_t reviveTarget(const Rect& rescuer, std::uint32_t rescuerId,
+                           const std::vector<Claim>& claims)
+{
+    const float cx = rescuer.x + rescuer.width * 0.5F;
+    const float cy = rescuer.y + rescuer.height * 0.5F;
+    std::uint32_t best = 0;
+    float bestDistance = reviveRange;
+    for (const Claim& claim : claims) {
+        if (claim.playerId == 0 || claim.playerId == rescuerId || !crewFlags(claim.data).down) {
+            continue;
+        }
+        const float dx = claim.x + playerWidth * 0.5F - cx;
+        const float dy = claim.y + playerHeight * 0.5F - cy;
+        const float distance = std::sqrt(dx * dx + dy * dy);
+        if (distance <= bestDistance) {
+            best = claim.playerId;
+            bestDistance = distance;
+        }
+    }
+    return best;
 }
 
 std::int64_t frameIntervalNs(double scale)

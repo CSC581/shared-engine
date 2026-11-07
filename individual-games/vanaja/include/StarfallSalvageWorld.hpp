@@ -9,6 +9,18 @@
 
 namespace StarfallSalvage {
 
+// Game event types, shared by the client and the server. The engine defines
+// CollisionEvent, DeathEvent, SpawnEvent and InputEvent (Event.hpp).
+//   ReviveEvent        {target}: a teammate rescued the downed player `target`
+//   StationAlarmEvent  {kind, warning, duration}: raised by the alarm
+//                      director (the lowest player id online), relayed by the server;
+//                      kind is "gravity" or "blackout", times in seconds
+//   AlarmBeginEvent / AlarmEndEvent {kind}: local, delayed from the alarm
+constexpr const char* ReviveEvent = "ReviveEvent";
+constexpr const char* StationAlarmEvent = "StationAlarmEvent";
+constexpr const char* AlarmBeginEvent = "AlarmBeginEvent";
+constexpr const char* AlarmEndEvent = "AlarmEndEvent";
+
 constexpr int width = 960;
 constexpr int worldWidth = 1600;
 constexpr int height = 540;
@@ -39,11 +51,26 @@ constexpr std::array<Rect, 7> decks{{
      static_cast<float>(worldWidth) - (hullBreach.x + hullBreach.width), 40.0F},
 }};
 
-// Hidden death zones: one just inside the breach, and a catch-all below the
-// station for anything else that falls out of the world.
-constexpr std::array<Rect, 2> deathZones{{
+// The station roof. Its underside is the floor of anyone whose gravity is
+// flipped; it sits where the interior's top rail is drawn.
+constexpr Rect ceiling{16.0F, 72.0F, static_cast<float>(worldWidth) - 32.0F, 24.0F};
+
+// Hidden death zones: one just inside the breach, a catch-all below the
+// station for anything else that falls out of the world, and one above the
+// roof for anything that falls up past it.
+constexpr std::array<Rect, 3> deathZones{{
     {hullBreach.x, hullBreach.y + 15.0F, hullBreach.width, 160.0F},
     {-400.0F, static_cast<float>(height) + 60.0F, static_cast<float>(worldWidth) + 800.0F, 400.0F},
+    {-400.0F, -600.0F, static_cast<float>(worldWidth) + 800.0F, 500.0F},
+}};
+
+// Gravity panels: touching one flips the astronaut's gravity. Two lie on deck
+// tops (flip up) and two on the ceiling's underside (flip back down).
+constexpr std::array<Rect, 4> gravityPanels{{
+    {300.0F, 494.0F, 40.0F, 6.0F},
+    {700.0F, 96.0F, 40.0F, 6.0F},
+    {1040.0F, 314.0F, 40.0F, 6.0F},
+    {1450.0F, 96.0F, 40.0F, 6.0F},
 }};
 
 constexpr std::array<Rect, 3> relayPads{{
@@ -58,9 +85,12 @@ constexpr std::array<Rect, 2> gatePlates{{
     {1160.0F, 314.0F, 50.0F, 6.0F},
 }};
 
+// Crate 2 hangs under the roof above the hull breach. A double jump from
+// deck 2 reaches it but passes through the circling drone's orbit; the safe
+// way is to flip gravity and walk the ceiling.
 constexpr std::array<Rect, 4> cargo{{
     {185.0F, 395.0F, 25.0F, 25.0F},
-    {455.0F, 475.0F, 25.0F, 25.0F},
+    {548.0F, ceiling.y + ceiling.height, 25.0F, 25.0F},
     {625.0F, 315.0F, 25.0F, 25.0F},
     {1505.0F, 235.0F, 25.0F, 25.0F},
 }};
