@@ -45,10 +45,12 @@ struct CrewFlags {
 
 // Reviving: a teammate holds the revive chord this close to a downed
 // astronaut for this long. A downed astronaut with lives left calls itself
-// back after the beacon runs out.
+// back after the beacon runs out. One with no lives left may restart alone
+// once it has waited restartWaitSeconds, so an idle teammate cannot strand it.
 constexpr float reviveRange = 60.0F;
 constexpr float reviveSeconds = 1.2F;
 constexpr float beaconSeconds = 10.0F;
+constexpr float restartWaitSeconds = 20.0F;
 
 // One player can claim only the pad beneath their feet, and only while holding E.
 int padUnderPlayer(const Rect& player);

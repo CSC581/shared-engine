@@ -41,7 +41,8 @@ named the winner.
   A teammate standing next to them and holding `S` + `E` for about a second
   brings them back at the rescuer's side. With lives left, the beacon recalls
   you after 10 s anyway; with no lives left, only a teammate can revive you
-  (or press `R` if no teammate can: none online, or all of them down). A
+  (or press `R` if no teammate can: none online, or all of them down; after
+  20 s of waiting, `R` works anyway so an idle teammate cannot strand you). A
   revive only counts if the rescuer is really next to you. Everyone sees "NOVA IS DOWN" and
   "SOL REVIVED NOVA".
 - **Station alarms:** every 35 to 50 s the crew's alarm director (whoever is
@@ -51,7 +52,9 @@ named the winner.
   **blackout** (only the space around astronauts and relays stays lit for 8 s).
   A 2 s warning comes first.
 - **Mission debrief:** the game always keeps the last 10 seconds. When the
-  relays come online, it plays them back in slow motion. You can also record
+  relays come online, it plays them back in slow motion (if you are recording
+  an F9 clip at that moment, the debrief plays that clip instead, which also
+  ends on the win). You can also record
   and replay your own clips (see controls).
 
 ## Milestone 3 requirements
@@ -127,7 +130,7 @@ also adds `--advertise ITS_OWN_IP`, and `--bootstrap` uses the first peer's IP.
 | `Space` / `W` | Jump (press again in the air to double jump); jumps downward while flipped |
 | Hold `E` | Use the relay or gate switch you are standing on |
 | Hold `S` + `E` | Revive a downed teammate you are standing next to |
-| `R` | Restart when you are down with no lives left and no teammate can revive you |
+| `R` | Restart when you are down with no lives left and no teammate can revive you, or after waiting 20 s |
 | `F9` | Start or stop recording a replay clip (keeps its last 60 s) |
 | `F10` | Play the replay (the last 10 s, or your clip); press again to stop |
 | `F11` / `F12` | Replay speed 0.5x / 1x / 2x, and pause |

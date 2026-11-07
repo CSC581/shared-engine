@@ -665,11 +665,12 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
         raise(engine_, Events::ReplayRecordStart);
     }
 
-    // With no lives left and no teammate able to revive it (none online, or
-    // all of them down too), R starts this player over.
+    // With no lives left, R starts this player over when no teammate can
+    // revive it (none online, or all of them down too), or once it has
+    // waited long enough for one.
     if (restartQueued_) {
         restartQueued_ = false;
-        if (stationEvents_->down() && astronaut_->lives == 0 && !teammateCanHelp()) {
+        if (stationEvents_->canRestart(teammateCanHelp())) {
             stationEvents_->restartAlone();
         }
     }
@@ -1184,10 +1185,14 @@ void StarfallSalvageGame::renderCrewOverlays(SDL_Renderer* renderer) const
             if (teammateCanHelp()) {
                 centeredText(renderer, 258, "A TEAMMATE CAN REVIVE YOU SOONER (S+E)", {255, 210, 200});
             }
-        } else if (!teammateCanHelp()) {
+        } else if (stationEvents_->canRestart(teammateCanHelp())) {
             centeredText(renderer, 248, "NO LIVES LEFT - PRESS R TO RESTART", {255, 210, 200});
         } else {
-            centeredText(renderer, 248, "NO LIVES LEFT - A TEAMMATE MUST HOLD S+E BY YOU", {255, 210, 200});
+            centeredText(renderer, 242, "NO LIVES LEFT - A TEAMMATE MUST HOLD S+E BY YOU", {255, 210, 200});
+            std::snprintf(message, sizeof(message), "OR PRESS R IN %.0f S",
+                          std::ceil(static_cast<double>(StarfallSalvage::restartWaitSeconds -
+                                                        stationEvents_->downSeconds())));
+            centeredText(renderer, 258, message, {255, 210, 200});
         }
     }
 }

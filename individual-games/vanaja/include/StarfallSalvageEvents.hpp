@@ -71,10 +71,15 @@ public:
     // players' claims, whose data carries their CrewFlags.
     void update(float dt, bool reviveHeld, const std::vector<Claim>& teammates);
 
-    // With no lives and nobody to revive it: back with full lives.
+    // Down with no lives left, and either no teammate able to revive it or
+    // restartWaitSeconds of game time spent waiting for one.
+    bool canRestart(bool teammateCanHelp) const;
+    // Back with full lives.
     void restartAlone();
 
     bool down() const { return down_; }
+    // Game seconds spent down this time; 0 when not down.
+    float downSeconds() const { return down_ ? downSeconds_ : 0.0F; }
     bool hasBeacon() const { return beacon_ > 0.0F; }
     float beaconSecondsLeft() const { return beacon_ > 0.0F ? beacon_ : 0.0F; }
     std::uint32_t reviveTargetId() const { return reviveTarget_; }
@@ -110,6 +115,7 @@ private:
     bool down_ = false;
     // Seconds until a downed astronaut calls itself back; <= 0 means never.
     float beacon_ = 0.0F;
+    float downSeconds_ = 0.0F;
     bool panelFlipped_ = false;
     float panelCooldown_ = 0.0F;
     std::uint32_t reviveTarget_ = 0;

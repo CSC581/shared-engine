@@ -398,6 +398,7 @@ void StationEvents::update(float dt, bool reviveHeld, const std::vector<Claim>& 
     if (down_) {
         reviveTarget_ = 0;
         reviveProgress_ = 0.0F;
+        downSeconds_ += dt;
         if (beacon_ > 0.0F) {
             beacon_ -= dt;
             if (beacon_ <= 0.0F) {
@@ -425,6 +426,11 @@ void StationEvents::update(float dt, bool reviveHeld, const std::vector<Claim>& 
         reviveTarget_ = 0;
         reviveProgress_ = 0.0F;
     }
+}
+
+bool StationEvents::canRestart(bool teammateCanHelp) const
+{
+    return down_ && astronaut_.lives == 0 && (!teammateCanHelp || downSeconds_ >= restartWaitSeconds);
 }
 
 void StationEvents::restartAlone()
@@ -504,6 +510,7 @@ void StationEvents::onDeath(const Event& event)
     }
     astronaut_.lives = std::max(0, astronaut_.lives - 1);
     down_ = true;
+    downSeconds_ = 0.0F;
     // With no lives left, only a teammate can bring it back.
     beacon_ = astronaut_.lives > 0 ? beaconSeconds : 0.0F;
     if (Motion* motion = player_.get<Motion>()) {

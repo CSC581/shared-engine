@@ -546,8 +546,13 @@ int checkEvents()
     step(1);
     drone.setActive(false);
     EXPECT(station.down() && astronaut.lives == 0 && !station.hasBeacon());
+    // Restarting alone: at once with nobody to help, otherwise only after the wait.
+    EXPECT(station.canRestart(false) && !station.canRestart(true));
     step(static_cast<int>((StarfallSalvage::beaconSeconds + 2.0F) * StarfallSalvage::normalLoopHz));
-    EXPECT(station.down());
+    EXPECT(station.down() && !station.canRestart(true));
+    step(static_cast<int>((StarfallSalvage::restartWaitSeconds - StarfallSalvage::beaconSeconds) *
+                          StarfallSalvage::normalLoopHz));
+    EXPECT(station.down() && station.canRestart(true));
     station.restartAlone();
     events.dispatch();
     EXPECT(!station.down() && astronaut.lives == 3);
