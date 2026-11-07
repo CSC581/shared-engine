@@ -39,6 +39,8 @@ ApexGame::ApexGame(Engine& engine, std::unique_ptr<Multiplayer::Session> session
     ApexLevel::buildLevel(world_, worldWidth_, worldHeight_, viewHeight_, session_ != nullptr);
 
     world_.setEventManager(&engine_.events());
+    // F1 arrives as an InputEvent in onInput(), not through the engine's polling.
+    engine_.setScaleToggleKey(SDL_SCANCODE_UNKNOWN);
     engine_.registerChord("dash-left", {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_A});
     engine_.registerChord("dash-left", {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_LEFT});
     engine_.registerChord("dash-right", {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_D});
@@ -156,6 +158,10 @@ void ApexGame::onInput(const Event& event)
 
     if (key == SDL_SCANCODE_ESCAPE) {
         engine_.quit();
+        return;
+    }
+    if (key == SDL_SCANCODE_F1) {
+        engine_.toggleScaleMode();
         return;
     }
     if (key == SDL_SCANCODE_F5) {
