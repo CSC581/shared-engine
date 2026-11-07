@@ -139,7 +139,7 @@ A game raises these from whatever it likes, such as a key's `InputEvent` or a `D
 
 - **Raising only queues.** Handlers never run inside a collision pass or a loop over objects, so a handler can safely create or destroy objects.
 - **Events are a name plus values,** not a class per event, so a game adds a new event type without changing the engine, and every event can be sent over the network the same way.
-- **Chains usually finish in one frame, but cannot run forever.** Events raised by handlers are handled in later rounds of the same dispatch, up to 8 rounds and 1,000 events; the rest wait for the next dispatch. At most 10,000 events wait by default (`setMaxPending`). Past that, events less urgent than `High` are dropped and counted by `droppedByLimit()`.
+- **Chains usually finish in one frame, but cannot run forever.** Events raised by handlers are handled in later rounds of the same dispatch, up to 8 rounds and 1,000 events; the rest wait for the next dispatch. Once 10,000 events are waiting by default (`setMaxPending`), events less urgent than `High` are dropped and counted by `droppedByLimit()`. `High` events are always queued, so they can go past the limit.
 - **Timestamps use game time,** so a delayed event, like a respawn, waits while the game is paused.
 - **The server decides who sent an event.** Clients never send their own id, so they cannot fake another player's events.
 - **Each client detects, the server orders.** A client raises its own collisions and deaths locally without waiting; the server gives shared events one order and relays them, without reading them.
