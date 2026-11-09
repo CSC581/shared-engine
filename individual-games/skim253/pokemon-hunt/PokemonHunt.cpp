@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <deque>
 #include <exception>
@@ -123,15 +124,19 @@ public:
         const float dt = static_cast<float>(time.dtSeconds);
         now_ = engine.realTime().now();
         replay_.update();
+        matchReplaySpeed();
         const bool playing = replay_.isPlaying();
         if (!playing && effect_ != TimeEffect::None && now_ >= effectEndsAt_) {
             endEffect(gameTime);
         }
+        // Frozen or replaying: the network and remote players carry on, but
+        // this Pokemon, its shots and its timers hold still.
+        const bool simulating = !playing && effect_ != TimeEffect::Frozen;
 
         // Physics and network on their own workers; the network runs even while paused.
         controlLocked_ = controlLock_ > 0.0;
         frameTime_ = time;
-        workers_.runFrame(dt);
+        workers_.runFrame(simulating ? dt : 0.0F);
 
         // Workers have joined; bridge events dispatch after update().
         if (bridge_) {
@@ -145,7 +150,7 @@ public:
         forgetOldFinisher();
         placeCameraZones();
 
-        if (!playing && dt > 0.0F) {
+        if (simulating && dt > 0.0F) {
             playFrame(time);
         }
         world_.flushDestroyed();
@@ -268,7 +273,7 @@ private:
                 gameTime.setScale(speed.scale);
             }
         }
-        const bool manuallyPaused = gameTime.isPaused() && effect_ != TimeEffect::Frozen;
+        const bool manuallyPaused = gameTime.isPaused();
         if (key == SDL_SCANCODE_H && !manuallyPaused) {
             startEffect(TimeEffect::Haste, gameTime, now);
         } else if (key == SDL_SCANCODE_F && !manuallyPaused) {
@@ -839,8 +844,6 @@ private:
     {
         if (effect_ == TimeEffect::None) {
             savedScale_ = gameTime.scale();
-        } else if (effect_ == TimeEffect::Frozen) {
-            gameTime.unpause();
         }
         effect_ = effect;
         effectBannerUntil_ = now + effectBannerNs;
@@ -848,8 +851,8 @@ private:
             gameTime.setScale(hasteScale);
             effectEndsAt_ = now + static_cast<std::int64_t>(hasteSeconds * kNsPerSec);
         } else {
+            // Game time runs on at the normal scale; update() holds the simulation.
             gameTime.setScale(savedScale_);
-            gameTime.pause();
             effectEndsAt_ = now + static_cast<std::int64_t>(freezeSeconds * kNsPerSec);
         }
     }
@@ -858,9 +861,6 @@ private:
     {
         if (effect_ == TimeEffect::None) {
             return;
-        }
-        if (effect_ == TimeEffect::Frozen) {
-            gameTime.unpause();
         }
         gameTime.setScale(savedScale_);
         effect_ = TimeEffect::None;
@@ -952,12 +952,32 @@ private:
         }
     }
 
+    // Frames are stamped on game time, and playback walks it at real-time
+    // pace. A stretch recorded under Haste (2x) or a speed key would replay
+    // at the wrong pace, so playback follows each frame's recorded scale and
+    // looks as fast as it did live.
+    void matchReplaySpeed()
+    {
+        if (!replay_.isPlaying()) {
+            return;
+        }
+        std::istringstream in(replay_.currentFrameState());
+        in.imbue(std::locale::classic());
+        double scale = 0.0;
+        if (in >> scale && scale > 0.0 && std::fabs(scale - replay_.speed()) > 1e-6) {
+            events_.raise(Event{Events::ReplaySpeed}.set("speed", scale));
+        }
+    }
+
     // Custom-drawn sprites need frame state alongside the engine's Renderables.
+    // It starts with the game-time scale, which matchReplaySpeed() reads, then
+    // the time effect, so the replay shows Haste and Freeze as they looked.
     std::string replayFrameState() const
     {
         std::ostringstream out;
         out.imbue(std::locale::classic());
-        out << now_ << ' ' << animationTime_ << ' ' << bossFlash_ << ' ';
+        out << engine_.gameTime().scale() << ' ' << static_cast<int>(effect_) << ' ' << effectSecondsLeft() << ' '
+            << (now_ < effectBannerUntil_) << ' ' << now_ << ' ' << animationTime_ << ' ' << bossFlash_ << ' ';
         out << std::quoted(encodeBossWorld(bossWorld_)) << ' ';
         const auto member = [&](const Transform& body, const PokemonData& data, bool local) {
             out << "p " << body.x - cameraX_ << ' ' << body.y << ' ' << local << ' '
@@ -981,11 +1001,15 @@ private:
         renderWorld(renderer, replay_.world(), replay_.cameraX(), replay_.cameraY());
         std::istringstream in(replay_.currentFrameState());
         in.imbue(std::locale::classic());
+        double scale = 0.0;
+        int effect = 0;
+        double effectLeft = 0.0;
+        bool banner = false;
         std::int64_t now = 0;
         double animation = 0.0;
         double flash = 0.0;
         std::string encoded;
-        in >> now >> animation >> flash >> std::quoted(encoded);
+        in >> scale >> effect >> effectLeft >> banner >> now >> animation >> flash >> std::quoted(encoded);
         std::vector<Multiplayer::Platform> objects;
         decodeBossWorld(encoded, objects);
         drawShadowBalls(renderer, objects, replay_.cameraX());
@@ -1006,6 +1030,11 @@ private:
                                 local ? "YOU" : species[data.species].name,
                                 local ? Palette::you : Palette::nameTag, now);
             }
+        }
+        if (effect == static_cast<int>(TimeEffect::Haste)) {
+            drawHaste(renderer, banner);
+        } else if (effect == static_cast<int>(TimeEffect::Frozen)) {
+            drawFrozenOverlay(renderer, effectLeft);
         }
         setColor(renderer, Palette::controlsHelp);
         drawTextCentered(renderer, Layout::centerX, 30.0F, "REPLAY   P pause   BACKSPACE stop");
@@ -1108,6 +1137,8 @@ private:
         title << "Pokemon Hunt | " << species[local_.species].name << " | ";
         if (engine.gameTime().isPaused()) {
             title << "PAUSED";
+        } else if (effect_ == TimeEffect::Frozen) {
+            title << "FROZEN";
         } else {
             title << engine.gameTime().scale() << "x";
         }

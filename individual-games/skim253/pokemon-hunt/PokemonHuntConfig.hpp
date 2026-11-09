@@ -69,6 +69,10 @@ constexpr double hasteScale = 2.0;
 constexpr double hasteSeconds = 5.0;
 constexpr int freezeHurtCount = 2;      // hurt this many times...
 constexpr double freezeWindowSeconds = 3.0; // ...within this long
+// Freeze holds this client's simulation but leaves game time running, so each
+// frozen frame gets its own game time and the replay shows the whole freeze.
+// A paused timeline would give every frame the same time, and the
+// ReplaySystem keeps only the last frame per time.
 constexpr double freezeSeconds = 1.5;
 constexpr std::int64_t effectBannerNs = kNsPerSec;
 
