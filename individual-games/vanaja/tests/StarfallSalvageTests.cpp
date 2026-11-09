@@ -14,6 +14,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <vector>
 
 #define EXPECT(condition) do { \
@@ -437,8 +438,8 @@ int checkEvents()
     const auto placeDrone = [&](Transform& pose) {
         pose.x = body.x - 5.0F;
         pose.y = body.y + 10.0F;
-        pose.width = 46.0F;
-        pose.height = 26.0F;
+        pose.width = StarfallSalvage::droneWidth;
+        pose.height = StarfallSalvage::droneHeight;
     };
     const auto spawnAt = [&](float x, float y) {
         Event spawn(Events::Spawn);
@@ -565,6 +566,26 @@ int checkEvents()
     rescuerBounds.y = body.y;
     reviveFrom(7);
     EXPECT(!station.down() && astronaut.lives == StarfallSalvage::startingLives);
+
+    // A drone and the breach touched in the same frame raise one death, not
+    // two, so a breach respawn never also costs a life and leaves the
+    // astronaut down.
+    std::vector<std::string> deaths;
+    const EventManager::SubscriptionId deathWatch = events.subscribe(Events::Death, [&deaths](const Event& event) {
+        if (event.origin == 0) deaths.push_back(event.getOr<std::string>("cause", ""));
+    });
+    step(60);
+    astronaut.invulnerableSeconds = 0.0F;
+    movable.x = StarfallSalvage::deathZones[0].x + 10.0F;
+    movable.y = StarfallSalvage::deathZones[0].y + 5.0F;
+    drone.setActive(true);
+    placeDrone(dronePose);
+    step(1);
+    drone.setActive(false);
+    events.unsubscribe(deathWatch);
+    EXPECT(deaths.size() == 1);
+    EXPECT(station.down() == (deaths[0] == "drone"));
+    EXPECT(astronaut.lives == (station.down() ? StarfallSalvage::startingLives - 1 : StarfallSalvage::startingLives));
 
     // Rescuing: holding the revive chord next to a downed teammate for long
     // enough raises one ReviveEvent naming it; one not down is ignored.

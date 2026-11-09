@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -501,8 +502,11 @@ std::vector<StarfallSalvageGame::ReplaySprite> StarfallSalvageGame::replaySprite
 std::uint32_t StarfallSalvageGame::alarmDirector() const
 {
     std::uint32_t director = session_->localPlayerId();
+    if (director == 0) {
+        return 0;
+    }
     for (const auto& player : remote_) {
-        if (director == 0 || (player.id != 0 && player.id < director)) {
+        if (player.id != 0 && player.id < director) {
             director = player.id;
         }
     }
@@ -662,8 +666,11 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
         const auto id = session_->localPlayerId();
         const GameObject& spawn = *station_.spawns[(id ? id - 1 : 0) % station_.spawns.size()];
         astronaut_->spawn = spawn.get<Transform>()->bounds();
+        // Placed now, so this frame's physics starts there; the SpawnEvent
+        // places it again at the same point and does the rest.
         astronaut_->respawn();
         player_->setActive(true);
+        stationEvents_->spawnAtStart();
         spawned_ = true;
         raise(engine_, Events::ReplayRecordStart);
     }
@@ -1005,7 +1012,8 @@ void StarfallSalvageGame::renderStation(SDL_Renderer* renderer, float cameraX, c
         for (const ReplaySprite& sprite : replaySprites()) {
             const Rect bounds{sprite.x, sprite.y, StarfallSalvage::playerWidth, StarfallSalvage::playerHeight};
             if (sprite.drone) {
-                drone(renderer, {sprite.x, sprite.y, 46.0F, 26.0F}, cameraX);
+                drone(renderer, {sprite.x, sprite.y, StarfallSalvage::droneWidth, StarfallSalvage::droneHeight},
+                      cameraX);
             } else {
                 astronaut(renderer, bounds, suitFor(sprite.id), nameOf(sprite.id), cameraX,
                           lookFor({sprite.flipped, sprite.down}, pulse_));
@@ -1069,8 +1077,18 @@ void StarfallSalvageGame::renderBlackout(SDL_Renderer* renderer) const
     constexpr float tile = 16.0F;
     constexpr float lit = 80.0F;
     constexpr float edge = 120.0F;
+    // Fully dark tiles in a row are drawn as one rectangle.
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     for (float y = playTop; y < playBottom; y += tile) {
+        const float height = std::min(tile, playBottom - y);
+        float darkFrom = -1.0F;
+        const auto drawDark = [&](float to) {
+            if (darkFrom < 0.0F) return;
+            const SDL_FRect run{darkFrom, y, to - darkFrom, height};
+            SDL_SetRenderDrawColor(renderer, 3, 6, 14, 240);
+            SDL_RenderFillRect(renderer, &run);
+            darkFrom = -1.0F;
+        };
         for (float x = 0.0F; x < static_cast<float>(StarfallSalvage::width); x += tile) {
             float nearest = edge * edge;
             for (const Light& light : lights) {
@@ -1078,13 +1096,19 @@ void StarfallSalvageGame::renderBlackout(SDL_Renderer* renderer) const
                 const float dy = y + tile * 0.5F - light.y;
                 nearest = std::min(nearest, dx * dx + dy * dy);
             }
+            if (nearest >= edge * edge) {
+                if (darkFrom < 0.0F) darkFrom = x;
+                continue;
+            }
+            drawDark(x);
             if (nearest <= lit * lit) continue;
             const float distance = std::sqrt(nearest);
-            const auto alpha = static_cast<std::uint8_t>(240.0F * std::min(1.0F, (distance - lit) / (edge - lit)));
-            const SDL_FRect box{x, y, tile, std::min(tile, playBottom - y)};
+            const auto alpha = static_cast<std::uint8_t>(240.0F * (distance - lit) / (edge - lit));
+            const SDL_FRect box{x, y, tile, height};
             SDL_SetRenderDrawColor(renderer, 3, 6, 14, alpha);
             SDL_RenderFillRect(renderer, &box);
         }
+        drawDark(static_cast<float>(StarfallSalvage::width));
     }
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     notice(renderer, 78, "BLACKOUT: STAY NEAR YOUR CREW", {60, 20, 32}, {255, 196, 170});

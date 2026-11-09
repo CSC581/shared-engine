@@ -413,8 +413,14 @@ StationEvents::~StationEvents()
     }
 }
 
+void StationEvents::spawnAtStart()
+{
+    events_.raise(spawnEvent("start"));
+}
+
 void StationEvents::update(float dt, bool reviveHeld, const std::vector<Claim>& teammates)
 {
+    deathPending_ = false;
     if (dt <= 0.0F) {
         return;
     }
@@ -481,13 +487,18 @@ void StationEvents::onCollision(const Event& event)
     // a drone does not leave the astronaut safe there. Everything else reacts
     // once, on "enter".
     if (tag == "drone") {
-        if (astronaut_.invulnerableSeconds > 0.0F) {
+        if (astronaut_.invulnerableSeconds > 0.0F || deathPending_) {
             return;
         }
+        deathPending_ = true;
         events_.raise(deathEvent(self, "drone"));
     } else if (phase != "enter") {
         return;
     } else if (tag == "deathzone") {
+        if (deathPending_) {
+            return;
+        }
+        deathPending_ = true;
         events_.raise(deathEvent(self, "breach"));
     } else if (tag == "cargo") {
         for (std::size_t i = 0; i < station_.cargo.size(); ++i) {

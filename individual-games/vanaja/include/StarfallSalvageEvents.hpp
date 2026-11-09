@@ -67,6 +67,10 @@ public:
     StationEvents(const StationEvents&) = delete;
     StationEvents& operator=(const StationEvents&) = delete;
 
+    // The first SpawnEvent, once the game has placed the astronaut at its
+    // spawn point: it gets the spawn shield and any gravity failure under way.
+    void spawnAtStart();
+
     // Once per frame on the main thread. `dt` is game seconds (0 while
     // paused). `reviveHeld` is the revive chord; `teammates` are the other
     // players' claims, whose data carries their CrewFlags.
@@ -106,6 +110,11 @@ private:
     std::vector<EventManager::SubscriptionId> subscriptions_;
 
     bool down_ = false;
+    // A DeathEvent this player raised and has not handled yet. Every hazard
+    // touched in one collision pass raises its CollisionEvent before any
+    // death is handled, so only the first may raise a death; set until the
+    // next update().
+    bool deathPending_ = false;
     // Seconds until a downed astronaut calls itself back.
     float beacon_ = 0.0F;
     bool panelFlipped_ = false;

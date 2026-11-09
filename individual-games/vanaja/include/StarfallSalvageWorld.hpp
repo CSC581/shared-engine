@@ -123,11 +123,13 @@ constexpr std::array<Network::PlatformPath, 2> shuttlePaths{{
 // hazards. Drone 12 circles above deck 2: high enough to miss anyone standing
 // on it or on relay 2, and left of anyone riding the lift, so only jumps there
 // have to be timed.
+constexpr float droneWidth = 46.0F;
+constexpr float droneHeight = 26.0F;
 constexpr std::array<Network::PlatformPath, 3> dronePaths{{
-    {11, 260.0F, 466.0F, 620.0F, 466.0F, 155.0F, 46.0F, 26.0F},
-    {12, 0.0F, 0.0F, 0.0F, 0.0F, 110.0F, 46.0F, 26.0F,
+    {11, 260.0F, 466.0F, 620.0F, 466.0F, 155.0F, droneWidth, droneHeight},
+    {12, 0.0F, 0.0F, 0.0F, 0.0F, 110.0F, droneWidth, droneHeight,
      Network::PlatformPath::Shape::Circular, 560.0F, 220.0F, 40.0F},
-    {13, 1020.0F, 466.0F, 1460.0F, 466.0F, 165.0F, 46.0F, 26.0F},
+    {13, 1020.0F, 466.0F, 1460.0F, 466.0F, 165.0F, droneWidth, droneHeight},
 }};
 
 constexpr bool isShuttle(std::uint32_t id) { return id == 1 || id == 2; }
