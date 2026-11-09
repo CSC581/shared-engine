@@ -319,7 +319,7 @@ Station buildStation(World& world)
         station.cargo.push_back(&makeCargo(world, crate));
     }
     for (const Rect& panel : gravityPanels) {
-        makeGravityPanel(world, panel);
+        station.gravityPanels.push_back(&makeGravityPanel(world, panel));
     }
     for (const Rect& pad : relayPads) {
         station.relayPads.push_back(&makeFixture(world, "relay", pad, relayIdleColor));
@@ -442,7 +442,7 @@ void StationEvents::update(float dt, bool reviveHeld, const std::vector<Claim>& 
     }
 
     const std::uint32_t target =
-        reviveHeld ? reviveTarget(player_.get<Transform>()->bounds(), hooks_.localPlayerId(), teammates) : 0;
+        reviveHeld ? reviveTarget(player_.get<Transform>()->bounds(), localId(), teammates) : 0;
     if (target == 0 || target != reviveTarget_) {
         reviveTarget_ = target;
         reviveProgress_ = 0.0F;
@@ -507,9 +507,17 @@ void StationEvents::onCollision(const Event& event)
             }
         }
     } else if (tag == "gravitypanel") {
-        // A station-wide gravity failure overrides the panels while it lasts.
-        if (gravityAlarms_ == 0 && panelCooldown_ <= 0.0F) {
-            panelFlipped_ = !panelFlipped_;
+        // A floor panel sends the astronaut up and a ceiling panel sends it
+        // down, whichever way it touched the panel. A station-wide gravity
+        // failure overrides the panels while it lasts.
+        const auto panel = std::find_if(station_.gravityPanels.begin(), station_.gravityPanels.end(),
+                                        [other](const GameObject* p) { return static_cast<std::int64_t>(p->id()) == other; });
+        if (panel == station_.gravityPanels.end() || gravityAlarms_ > 0 || panelCooldown_ > 0.0F) {
+            return;
+        }
+        const bool onCeiling = (*panel)->get<Transform>()->y <= ceiling.y + ceiling.height;
+        if (panelFlipped_ != !onCeiling) {
+            panelFlipped_ = !onCeiling;
             panelCooldown_ = panelCooldownSeconds;
             applyGravity();
         }
@@ -560,11 +568,14 @@ void StationEvents::onSpawn(const Event& event)
 void StationEvents::onRevive(const Event& event)
 {
     const auto target = static_cast<std::uint32_t>(event.getOr<std::int64_t>("target", 0));
+    if (target == 0) {
+        return;
+    }
     if (event.origin == 0) {
         show(Banner::Kind::Revived, target, 0);
         return;
     }
-    const std::uint32_t self = hooks_.localPlayerId();
+    const std::uint32_t self = localId();
     if (self == 0 || target != self) {
         show(Banner::Kind::Revived, target, event.origin);
         return;
@@ -581,6 +592,9 @@ void StationEvents::onRevive(const Event& event)
     if (centreDistance(rescuer, player_.get<Transform>()->bounds()) > reviveAcceptRange) {
         return;
     }
+    // Up now, so a second rescuer's revive in this round is ignored; the
+    // SpawnEvent places the astronaut.
+    down_ = false;
     show(Banner::Kind::Revived, 0, event.origin);
     Event spawn = spawnEvent("revive");
     spawn.set("shield", 2.0).set("x", static_cast<double>(rescuer.x)).set("y", static_cast<double>(rescuer.y));

@@ -387,14 +387,17 @@ void StarfallSalvageGame::onInput(const Event& event)
     case SDL_SCANCODE_F10:
         toggleReplay();
         break;
-    case SDL_SCANCODE_F11:
-        playbackSpeed_ = playbackSpeed_ < 1.0 ? 1.0 : playbackSpeed_ < 2.0 ? 2.0 : 0.5;
+    case SDL_SCANCODE_F11: {
+        // Step on from the speed actually playing, which the debrief sets.
+        const double current = replay_.isPlaying() ? replay_.speed() : playbackSpeed_;
+        playbackSpeed_ = current < 1.0 ? 1.0 : current < 2.0 ? 2.0 : 0.5;
         if (replay_.isPlaying()) {
             Event speed(Events::ReplaySpeed);
             speed.set("speed", playbackSpeed_);
             engine_.events().raise(std::move(speed));
         }
         break;
+    }
     case SDL_SCANCODE_F12:
         if (replay_.isPlaying()) {
             raise(engine_, Events::ReplayPause);

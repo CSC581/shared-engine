@@ -100,6 +100,7 @@ private:
     void onAlarm(const Event& event);
     void onAlarmEdge(const Event& event, int change);
     void applyGravity();
+    std::uint32_t localId() const { return hooks_.localPlayerId ? hooks_.localPlayerId() : 0; }
     void show(Banner::Kind kind, std::uint32_t subject, std::uint32_t actor);
 
     EventManager& events_;

@@ -114,6 +114,7 @@ struct Station {
     std::vector<GameObject*> cargo;
     std::vector<GameObject*> relayPads;
     std::vector<GameObject*> gatePlates;
+    std::vector<GameObject*> gravityPanels;
     GameObject* bulkhead = nullptr;
 };
 

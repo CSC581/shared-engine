@@ -482,6 +482,13 @@ int checkEvents()
     step(120);
     EXPECT(astronaut.grounded && std::fabs(body.y + body.height - StarfallSalvage::decks[6].y) <= 0.5F);
 
+    // A ceiling panel only sends the astronaut down: one with normal gravity
+    // that jumps into it stays the right way up.
+    const Rect ceilingPanel = StarfallSalvage::gravityPanels[1];
+    spawnAt(ceilingPanel.x + 5.0F, ceilingPanel.y + 1.0F);
+    step(1);
+    EXPECT(!astronaut.flipped());
+
     // A drone: a life lost, then down, frozen, with a ten second beacon.
     spawnAt(76.0F, 380.0F);
     step(60);
@@ -567,6 +574,37 @@ int checkEvents()
     reviveFrom(7);
     EXPECT(!station.down() && astronaut.lives == StarfallSalvage::startingLives);
 
+    // Two revives arriving together bring the astronaut back once, and a
+    // revive naming nobody shows no banner.
+    int revivedSpawns = 0;
+    const EventManager::SubscriptionId spawnWatch = events.subscribe(Events::Spawn, [&revivedSpawns](const Event& event) {
+        if (event.getOr<std::string>("cause", "") == "revive") ++revivedSpawns;
+    });
+    step(60);
+    astronaut.invulnerableSeconds = 0.0F;
+    drone.setActive(true);
+    placeDrone(dronePose);
+    step(1);
+    drone.setActive(false);
+    EXPECT(station.down());
+    rescuerBounds.x = body.x + 30.0F;
+    rescuerBounds.y = body.y;
+    for (int i = 0; i < 2; ++i) {
+        Event revive(StarfallSalvage::ReviveEvent);
+        revive.set("target", static_cast<std::int64_t>(1));
+        revive.origin = 7;
+        events.raise(std::move(revive));
+    }
+    events.dispatch();
+    events.unsubscribe(spawnWatch);
+    EXPECT(!station.down() && revivedSpawns == 1);
+    step(200);
+    Event nobody(StarfallSalvage::ReviveEvent);
+    nobody.origin = 7;
+    events.raise(std::move(nobody));
+    events.dispatch();
+    EXPECT(station.banner().seconds <= 0.0F);
+
     // A drone and the breach touched in the same frame raise one death, not
     // two, so a breach respawn never also costs a life and leaves the
     // astronaut down.
@@ -576,6 +614,7 @@ int checkEvents()
     });
     step(60);
     astronaut.invulnerableSeconds = 0.0F;
+    const int livesBefore = astronaut.lives;
     movable.x = StarfallSalvage::deathZones[0].x + 10.0F;
     movable.y = StarfallSalvage::deathZones[0].y + 5.0F;
     drone.setActive(true);
@@ -585,7 +624,7 @@ int checkEvents()
     events.unsubscribe(deathWatch);
     EXPECT(deaths.size() == 1);
     EXPECT(station.down() == (deaths[0] == "drone"));
-    EXPECT(astronaut.lives == (station.down() ? StarfallSalvage::startingLives - 1 : StarfallSalvage::startingLives));
+    EXPECT(astronaut.lives == (station.down() ? livesBefore - 1 : livesBefore));
 
     // Rescuing: holding the revive chord next to a downed teammate for long
     // enough raises one ReviveEvent naming it; one not down is ignored.
