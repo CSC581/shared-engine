@@ -4,6 +4,7 @@
 #include "Color.hpp"
 #include "Components.hpp"
 #include "Multiplayer.hpp"
+#include "StarfallSalvageRules.hpp"
 #include "World.hpp"
 
 #include <cstdint>
@@ -18,6 +19,7 @@ namespace StarfallSalvage {
 constexpr std::uint32_t solidLayer = 1U << 0U;
 constexpr std::uint32_t hazardLayer = 1U << 1U;
 constexpr std::uint32_t zoneLayer = 1U << 2U;
+constexpr std::uint32_t pickupLayer = 1U << 3U;
 
 // Renderable::layer values: draw order.
 constexpr int deckDrawLayer = 1;
@@ -46,9 +48,11 @@ public:
 };
 
 // The local astronaut's platformer rules. Input becomes velocity, with a
-// double jump and a capped fall speed. Its Collider callbacks then work out
-// what happened in the World's collision pass: landing on a deck, shuttle or
-// the bulkhead, touching a drone, or falling into a death zone.
+// double jump and a capped fall speed, in whichever direction gravity pulls.
+// Its Collider callback works out whether the collision pass left it standing
+// on a deck, shuttle or the bulkhead: on top normally, underneath when its
+// gravity is flipped. Gameplay (drones, death zones, crates, gravity panels)
+// arrives as CollisionEvents instead; see StationEvents.
 //
 // update() runs on a FrameWorker through updateComponents(time, "player");
 // everything else is called on the main thread, outside that worker.
@@ -72,13 +76,21 @@ public:
     // null when it has disappeared from the session.
     void rideShuttle(const GameObject* shuttle);
     void detachFromShuttle();
+    // Stops dead where it is: no velocity, not standing on anything.
+    void halt();
 
-    // Back to `spawn`, at rest.
+    // Back to `spawn`, or to (x, y), at rest.
     void respawn();
+    void respawnAt(float x, float y);
+
+    // Gravity pulls up while flipped: the astronaut falls toward the ceiling,
+    // stands on undersides and jumps downward.
+    void setFlipped(bool flipped);
+    bool flipped() const { return flipped_; }
 
     Input input;
     Rect spawn{};
-    int lives = 3;
+    int lives = startingLives;
     float invulnerableSeconds = 0.0F;
     bool grounded = false;
     int jumpsUsed = 0;
@@ -87,10 +99,11 @@ public:
 
 private:
     void touch(GameObject& other);
-    void hitDrone();
 
     Transform* transform_ = nullptr;
     Motion* motion_ = nullptr;
+    Gravity* gravity_ = nullptr;
+    bool flipped_ = false;
     float supportX_ = 0.0F;
     float supportY_ = 0.0F;
 };
@@ -101,6 +114,7 @@ struct Station {
     std::vector<GameObject*> cargo;
     std::vector<GameObject*> relayPads;
     std::vector<GameObject*> gatePlates;
+    std::vector<GameObject*> gravityPanels;
     GameObject* bulkhead = nullptr;
 };
 
@@ -108,6 +122,10 @@ GameObject& makeDeck(World& world, const Rect& box, DeckKind kind);
 GameObject& makeSpawnPoint(World& world, float x, float y);
 GameObject& makeDeathZone(World& world, const Rect& box);
 GameObject& makeFixture(World& world, const char* tag, const Rect& box, Color color);
+// A crate: a fixture with a trigger collider, so touching it raises a
+// CollisionEvent.
+GameObject& makeCargo(World& world, const Rect& box);
+GameObject& makeGravityPanel(World& world, const Rect& box);
 GameObject& makeBulkhead(World& world);
 GameObject& makePlayer(World& world);
 
@@ -115,7 +133,8 @@ GameObject& makePlayer(World& world);
 GameObject& makeRemotePlayer(World& world, const Multiplayer::Player& player);
 GameObject& makeNetworkPlatform(World& world, const Multiplayer::Platform& platform);
 
-// Every deck, spawn point, death zone, crate, pad, plate and the bulkhead.
+// Every deck (and the ceiling), spawn point, death zone, crate, gravity panel,
+// pad, plate and the bulkhead.
 Station buildStation(World& world);
 
 } // namespace StarfallSalvage

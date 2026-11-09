@@ -37,17 +37,47 @@ struct CargoWinner {
     int crates = 0;
 };
 
+// What a player's data string says about the astronaut itself.
+struct CrewFlags {
+    bool flipped = false;
+    bool down = false;
+};
+
+// Each drone hit costs a life. Reviving: a teammate holds the revive chord
+// this close to a downed astronaut for this long. Otherwise the beacon calls
+// the astronaut back to its spawn point when it runs out, later if that hit
+// took the last life, so nobody is ever stranded. Coming back from the last
+// life restores every life.
+constexpr int startingLives = 3;
+constexpr float reviveRange = 60.0F;
+constexpr float reviveSeconds = 1.2F;
+constexpr float beaconSeconds = 10.0F;
+constexpr float lastLifeBeaconSeconds = 20.0F;
+
 // One player can claim only the pad beneath their feet, and only while holding E.
 int padUnderPlayer(const Rect& player);
 int gatePlateUnderPlayer(const Rect& player);
-std::string encodeState(std::uint8_t cargoMask, int control, std::uint8_t personalCargoMask);
+// "C<mask>P<control>I<personal>G<0|1>D<0|1>": cargo, the pad or plate held,
+// the crates this player picked up, flipped gravity and downed.
+std::string encodeState(std::uint8_t cargoMask, int control, std::uint8_t personalCargoMask,
+                        CrewFlags flags = {});
 bool decodeState(const std::string& data, std::uint8_t& cargoMask, int& control,
                  std::uint8_t& personalCargoMask);
+bool decodeState(const std::string& data, std::uint8_t& cargoMask, int& control,
+                 std::uint8_t& personalCargoMask, CrewFlags& flags);
+// The flags alone; all false when the data cannot be read.
+CrewFlags crewFlags(const std::string& data);
 MissionStatus evaluateMission(const std::vector<Claim>& claims);
-std::uint8_t cargoAt(const Rect& player, std::uint8_t recoveredMask,
-                     bool canCollect, float deltaTime);
 std::uint8_t creditedCargoMask(const std::vector<Claim>& claims, std::uint32_t playerId);
 CargoWinner chooseCargoWinner(const std::vector<Claim>& claims);
+
+// Distance between the centres of two rectangles.
+float centreDistance(const Rect& a, const Rect& b);
+
+// The downed teammate nearest the rescuer's centre, within reviveRange, or 0.
+// The rescuer's own claim is skipped.
+std::uint32_t reviveTarget(const Rect& rescuer, std::uint32_t rescuerId,
+                           const std::vector<Claim>& claims);
 
 // A 50 Hz baseline schedules a frame every 20 ms of game time, well under the
 // engine's 50 ms game-delta cap, at every supported scale: 25, 50 or 100

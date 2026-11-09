@@ -50,7 +50,7 @@ void usage()
 {
     std::cerr << "Usage: starfall-salvage --name NAME [--mode client-server|peer-to-peer] "
                  "[--server tcp://HOST:PORT] [--scale 0.5|1|2] [--peer-id ID --port PORT "
-                 "--bootstrap tcp://HOST:PORT --advertise HOST]\n";
+                 "--bootstrap tcp://HOST:PORT --advertise HOST] [--no-alarms]\n";
 }
 
 } // namespace
@@ -62,8 +62,13 @@ int main(int argc, char* argv[])
     bool portGiven = false;
     bool nameGiven = false;
     double initialScale = 1.0;
+    bool stationAlarms = true;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
+        if (arg == "--no-alarms") {
+            stationAlarms = false;
+            continue;
+        }
         if (i + 1 >= argc) {
             usage();
             return 1;
@@ -138,7 +143,7 @@ int main(int argc, char* argv[])
         const std::string title = "Starfall Salvage - " + config.playerName;
         Engine engine(title.c_str(), StarfallSalvage::width, StarfallSalvage::height);
         engine.gameTime().setScale(initialScale);
-        StarfallSalvageGame game(engine, std::move(config));
+        StarfallSalvageGame game(engine, std::move(config), stationAlarms);
         engine.run(game);
     } catch (const std::exception& exception) {
         std::cerr << "Starfall Salvage: " << exception.what() << '\n';
