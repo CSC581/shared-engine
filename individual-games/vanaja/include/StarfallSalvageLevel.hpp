@@ -75,6 +75,8 @@ public:
     // null when it has disappeared from the session.
     void rideShuttle(const GameObject* shuttle);
     void detachFromShuttle();
+    // Stops dead where it is: no velocity, not standing on anything.
+    void halt();
 
     // Back to `spawn`, or to (x, y), at rest.
     void respawn();
@@ -87,7 +89,6 @@ public:
 
     Input input;
     Rect spawn{};
-    int lives = 3;
     float invulnerableSeconds = 0.0F;
     bool grounded = false;
     int jumpsUsed = 0;
@@ -111,7 +112,6 @@ struct Station {
     std::vector<GameObject*> cargo;
     std::vector<GameObject*> relayPads;
     std::vector<GameObject*> gatePlates;
-    std::vector<GameObject*> gravityPanels;
     GameObject* bulkhead = nullptr;
 };
 

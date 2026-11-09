@@ -6,6 +6,7 @@
 #include "DeltaTimer.hpp"
 #include "EventManager.hpp"
 #include "SendPacer.hpp"
+#include "TimeSource.hpp"
 #include "Timeline.hpp"
 #include "World.hpp"
 
@@ -24,17 +25,11 @@
 
 namespace {
 
-class TestClock final : public TimeSource {
-public:
-    std::int64_t now() const override { return elapsed; }
-    std::int64_t elapsed = 0;
-};
-
 int checkTimeAndPacing()
 {
     constexpr std::int64_t heartbeat = 250 * kNsPerMs;
     for (const double scale : {0.5, 1.0, 2.0}) {
-        TestClock real;
+        ManualClock real;
         Timeline gameTime(real, kNsPerUs);
         Timeline networkTime(real, kNsPerUs);
         gameTime.setScale(scale);
@@ -49,7 +44,7 @@ int checkTimeAndPacing()
         EXPECT(!pacer.shouldSend());
 
         for (std::int64_t elapsed = 0; elapsed < 2 * kNsPerSec; elapsed += interval) {
-            real.elapsed += interval;
+            real.advance(interval);
             const auto delta = timer.tick();
             // Changing both loop frequency and time scale keeps each step at
             // 20 ms of game time, below the engine's 50 ms clamp.
@@ -67,7 +62,7 @@ int checkTimeAndPacing()
         const auto networkAtPause = networkTime.now();
         int pausedSends = 0;
         for (std::int64_t elapsed = 0; elapsed < 2 * kNsPerSec; elapsed += interval) {
-            real.elapsed += interval;
+            real.advance(interval);
             EXPECT(timer.tick() == 0);
             EXPECT(gameTime.now() == pausedAt);
             EXPECT(pacer.shouldSend());
@@ -84,11 +79,11 @@ int checkTimeAndPacing()
         networkTime.setScale(newScale);
         EXPECT(gameTime.now() == pausedAt);
         gameTime.unpause();
-        real.elapsed += StarfallSalvage::frameIntervalNs(newScale);
+        real.advance(StarfallSalvage::frameIntervalNs(newScale));
         EXPECT(timer.tick() == StarfallSalvage::positionSendIntervalGameTics);
         EXPECT(pacer.shouldSend());
         EXPECT(!pacer.shouldSend());
-        real.elapsed += 5 * kNsPerSec;
+        real.advance(5 * kNsPerSec);
         EXPECT(timer.tick() == 50'000);
         EXPECT(timer.lastWasClamped());
         EXPECT(pacer.shouldSend());
@@ -387,7 +382,7 @@ int checkGravity()
 // gravity panels, reviving and the server's alarms.
 int checkEvents()
 {
-    TestClock clock;
+    ManualClock clock;
     EventManager events(clock);
     World world;
     const StarfallSalvage::Station layout = StarfallSalvage::buildStation(world);
@@ -427,7 +422,7 @@ int checkEvents()
     const auto step = [&](int frames) {
         const FrameTime frame{1.0 / static_cast<double>(StarfallSalvage::normalLoopHz), 0};
         for (int i = 0; i < frames; ++i) {
-            clock.elapsed += kGameTicsPerSecond / StarfallSalvage::normalLoopHz;
+            clock.advance(kGameTicsPerSecond / StarfallSalvage::normalLoopHz);
             if (!station.down()) {
                 world.updateComponents(frame, "player");
                 astronaut.beginCollisionPass();
@@ -452,7 +447,7 @@ int checkEvents()
         events.dispatch();
     };
 
-    // The breach: a DeathEvent that respawns without costing a life.
+    // The breach: a DeathEvent that respawns at once, without going down.
     spawnAt(76.0F, 380.0F);
     step(5);
     Transform& movable = *player.get<Transform>();
@@ -460,7 +455,7 @@ int checkEvents()
     movable.y = StarfallSalvage::decks[2].y + StarfallSalvage::decks[2].height + 20.0F;
     step(150);
     EXPECT(std::fabs(body.x - astronaut.spawn.x) < 0.01F);
-    EXPECT(astronaut.lives == 3 && !station.down());
+    EXPECT(!station.down());
 
     // Touching a crate collects it once.
     const Rect crate0 = StarfallSalvage::cargo[0];
@@ -485,7 +480,7 @@ int checkEvents()
     step(120);
     EXPECT(astronaut.grounded && std::fabs(body.y + body.height - StarfallSalvage::decks[6].y) <= 0.5F);
 
-    // A drone: a life lost, then down, frozen, with a ten second beacon.
+    // A drone: down, frozen, with a ten second beacon.
     spawnAt(76.0F, 380.0F);
     step(60);
     astronaut.invulnerableSeconds = 0.0F;
@@ -495,7 +490,7 @@ int checkEvents()
     drone.setActive(true);
     step(1);
     drone.setActive(false);
-    EXPECT(station.down() && astronaut.lives == 2 && station.hasBeacon());
+    EXPECT(station.down() && station.beaconSecondsLeft() > 9.9F);
     EXPECT(station.flags().down);
     const float downX = body.x;
     step(static_cast<int>((StarfallSalvage::beaconSeconds - 0.2F) * StarfallSalvage::normalLoopHz));
@@ -510,10 +505,10 @@ int checkEvents()
     drone.setActive(true);
     placeDrone(dronePose);
     step(5);
-    EXPECT(!station.down() && astronaut.lives == 2);
+    EXPECT(!station.down());
     step(20);
     drone.setActive(false);
-    EXPECT(station.down() && astronaut.lives == 1);
+    EXPECT(station.down());
 
     // A revive from a player across the station is refused; one from beside
     // this player brings it back at the rescuer's side.
@@ -538,24 +533,17 @@ int checkEvents()
     EXPECT(station.banner().kind == StarfallSalvage::Banner::Kind::Revived && station.banner().subject == 0 &&
            station.banner().actor == 7);
 
-    // With no lives left there is no beacon: only a revive, or restarting alone.
+    // There is no limit on hits: a third one still gets the full beacon, and
+    // the beacon still calls the astronaut back.
     step(60);
     astronaut.invulnerableSeconds = 0.0F;
     drone.setActive(true);
     placeDrone(dronePose);
     step(1);
     drone.setActive(false);
-    EXPECT(station.down() && astronaut.lives == 0 && !station.hasBeacon());
-    // Restarting alone: at once with nobody to help, otherwise only after the wait.
-    EXPECT(station.canRestart(false) && !station.canRestart(true));
-    step(static_cast<int>((StarfallSalvage::beaconSeconds + 2.0F) * StarfallSalvage::normalLoopHz));
-    EXPECT(station.down() && !station.canRestart(true));
-    step(static_cast<int>((StarfallSalvage::restartWaitSeconds - StarfallSalvage::beaconSeconds) *
-                          StarfallSalvage::normalLoopHz));
-    EXPECT(station.down() && station.canRestart(true));
-    station.restartAlone();
-    events.dispatch();
-    EXPECT(!station.down() && astronaut.lives == 3);
+    EXPECT(station.down() && station.beaconSecondsLeft() > 9.9F);
+    step(static_cast<int>((StarfallSalvage::beaconSeconds + 0.2F) * StarfallSalvage::normalLoopHz));
+    EXPECT(!station.down() && std::fabs(body.x - astronaut.spawn.x) < 0.01F);
 
     // Rescuing: holding the revive chord next to a downed teammate for long
     // enough raises one ReviveEvent naming it; one not down is ignored.

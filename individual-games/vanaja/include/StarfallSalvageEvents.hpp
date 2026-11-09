@@ -18,9 +18,9 @@
 //                   player + deathzone   -> DeathEvent {cause: "breach"}
 //                   player + cargo       -> the crate is collected
 //                   player + gravitypanel-> gravity flips
-//   DeathEvent      breach: SpawnEvent at the spawn point, no life lost
-//                   drone: a life lost, then down until revived (or, with lives
-//                   left, until the beacon calls the astronaut back)
+//   DeathEvent      breach: SpawnEvent at the spawn point at once
+//                   drone: down until revived or until the beacon calls the
+//                   astronaut back
 //   SpawnEvent      the only place the astronaut is placed
 //   ReviveEvent     a teammate rescued the downed player `target`; honoured
 //                   only if the rescuer is within 2 x reviveRange of this player
@@ -71,17 +71,9 @@ public:
     // players' claims, whose data carries their CrewFlags.
     void update(float dt, bool reviveHeld, const std::vector<Claim>& teammates);
 
-    // Down with no lives left, and either no teammate able to revive it or
-    // restartWaitSeconds of game time spent waiting for one.
-    bool canRestart(bool teammateCanHelp) const;
-    // Back with full lives.
-    void restartAlone();
-
     bool down() const { return down_; }
-    // Game seconds spent down this time; 0 when not down.
-    float downSeconds() const { return down_ ? downSeconds_ : 0.0F; }
-    bool hasBeacon() const { return beacon_ > 0.0F; }
-    float beaconSecondsLeft() const { return beacon_ > 0.0F ? beacon_ : 0.0F; }
+    // Game seconds until the beacon calls a downed astronaut back; 0 when not down.
+    float beaconSecondsLeft() const { return beacon_; }
     std::uint32_t reviveTargetId() const { return reviveTarget_; }
     // 0 to 1.
     float reviveProgress() const { return reviveProgress_ / reviveSeconds; }
@@ -113,9 +105,8 @@ private:
     std::vector<EventManager::SubscriptionId> subscriptions_;
 
     bool down_ = false;
-    // Seconds until a downed astronaut calls itself back; <= 0 means never.
+    // Seconds until a downed astronaut calls itself back.
     float beacon_ = 0.0F;
-    float downSeconds_ = 0.0F;
     bool panelFlipped_ = false;
     float panelCooldown_ = 0.0F;
     std::uint32_t reviveTarget_ = 0;

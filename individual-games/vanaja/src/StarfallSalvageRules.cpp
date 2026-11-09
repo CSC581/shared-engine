@@ -1,5 +1,4 @@
 #include "StarfallSalvageRules.hpp"
-#include "Collision.hpp"
 
 #include "StarfallSalvageWorld.hpp"
 
@@ -168,20 +167,22 @@ CargoWinner chooseCargoWinner(const std::vector<Claim>& claims)
     return winner;
 }
 
+float centreDistance(const Rect& a, const Rect& b)
+{
+    return std::hypot((a.x + a.width * 0.5F) - (b.x + b.width * 0.5F),
+                      (a.y + a.height * 0.5F) - (b.y + b.height * 0.5F));
+}
+
 std::uint32_t reviveTarget(const Rect& rescuer, std::uint32_t rescuerId,
                            const std::vector<Claim>& claims)
 {
-    const float cx = rescuer.x + rescuer.width * 0.5F;
-    const float cy = rescuer.y + rescuer.height * 0.5F;
     std::uint32_t best = 0;
     float bestDistance = reviveRange;
     for (const Claim& claim : claims) {
         if (claim.playerId == 0 || claim.playerId == rescuerId || !crewFlags(claim.data).down) {
             continue;
         }
-        const float dx = claim.x + playerWidth * 0.5F - cx;
-        const float dy = claim.y + playerHeight * 0.5F - cy;
-        const float distance = std::sqrt(dx * dx + dy * dy);
+        const float distance = centreDistance(rescuer, {claim.x, claim.y, playerWidth, playerHeight});
         if (distance <= bestDistance) {
             best = claim.playerId;
             bestDistance = distance;

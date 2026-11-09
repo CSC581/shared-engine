@@ -126,11 +126,15 @@ void Astronaut::respawnAt(float x, float y)
     setFlipped(false);
     transform_->x = x;
     transform_->y = y;
+    halt();
+    jumpsUsed = 0;
+}
+
+void Astronaut::halt()
+{
     motion_->velocityX = 0.0F;
     motion_->velocityY = 0.0F;
-    grounded = false;
-    jumpsUsed = 0;
-    supportId = 0;
+    detachFromShuttle();
 }
 
 void Astronaut::setFlipped(bool flipped)
@@ -216,18 +220,29 @@ GameObject& makeFixture(World& world, const char* tag, const Rect& box, Color co
     return fixture;
 }
 
+namespace {
+
+// A fixture that raises CollisionEvents, activated only once it is complete.
+GameObject& makeTriggerFixture(World& world, const char* tag, const Rect& box, Color color, std::uint32_t layer)
+{
+    GameObject& fixture = world.create(tag);
+    fixture.add<Transform>(box.x, box.y, box.width, box.height);
+    fixture.add<Renderable>(color).layer = fixtureDrawLayer;
+    fixture.add<Collider>(Collider::Kind::Trigger, layer);
+    fixture.setActive(true);
+    return fixture;
+}
+
+} // namespace
+
 GameObject& makeCargo(World& world, const Rect& box)
 {
-    GameObject& crate = makeFixture(world, "cargo", box, cargoColor);
-    crate.add<Collider>(Collider::Kind::Trigger, pickupLayer);
-    return crate;
+    return makeTriggerFixture(world, "cargo", box, cargoColor, pickupLayer);
 }
 
 GameObject& makeGravityPanel(World& world, const Rect& box)
 {
-    GameObject& panel = makeFixture(world, "gravitypanel", box, gravityPanelColor);
-    panel.add<Collider>(Collider::Kind::Trigger, zoneLayer);
-    return panel;
+    return makeTriggerFixture(world, "gravitypanel", box, gravityPanelColor, zoneLayer);
 }
 
 GameObject& makeBulkhead(World& world)
@@ -304,7 +319,7 @@ Station buildStation(World& world)
         station.cargo.push_back(&makeCargo(world, crate));
     }
     for (const Rect& panel : gravityPanels) {
-        station.gravityPanels.push_back(&makeGravityPanel(world, panel));
+        makeGravityPanel(world, panel);
     }
     for (const Rect& pad : relayPads) {
         station.relayPads.push_back(&makeFixture(world, "relay", pad, relayIdleColor));
@@ -336,6 +351,18 @@ Event spawnEvent(const char* cause)
     spawn.priority = EventPriority::High;
     spawn.set("cause", cause);
     return spawn;
+}
+
+Event deathEvent(std::int64_t object, const char* cause)
+{
+    Event death(Events::Death);
+    death.set("object", object).set("cause", cause);
+    return death;
+}
+
+bool isAlarmKind(const std::string& kind)
+{
+    return kind == "gravity" || kind == "blackout";
 }
 
 // An alarm usually comes from another player, so its numbers are clamped rather than
@@ -398,7 +425,6 @@ void StationEvents::update(float dt, bool reviveHeld, const std::vector<Claim>& 
     if (down_) {
         reviveTarget_ = 0;
         reviveProgress_ = 0.0F;
-        downSeconds_ += dt;
         if (beacon_ > 0.0F) {
             beacon_ -= dt;
             if (beacon_ <= 0.0F) {
@@ -426,17 +452,6 @@ void StationEvents::update(float dt, bool reviveHeld, const std::vector<Claim>& 
         reviveTarget_ = 0;
         reviveProgress_ = 0.0F;
     }
-}
-
-bool StationEvents::canRestart(bool teammateCanHelp) const
-{
-    return down_ && astronaut_.lives == 0 && (!teammateCanHelp || downSeconds_ >= restartWaitSeconds);
-}
-
-void StationEvents::restartAlone()
-{
-    astronaut_.lives = 3;
-    events_.raise(spawnEvent("restart"));
 }
 
 CrewFlags StationEvents::flags() const
@@ -469,15 +484,11 @@ void StationEvents::onCollision(const Event& event)
         if (astronaut_.invulnerableSeconds > 0.0F) {
             return;
         }
-        Event death(Events::Death);
-        death.set("object", self).set("cause", "drone");
-        events_.raise(std::move(death));
+        events_.raise(deathEvent(self, "drone"));
     } else if (phase != "enter") {
         return;
     } else if (tag == "deathzone") {
-        Event death(Events::Death);
-        death.set("object", self).set("cause", "breach");
-        events_.raise(std::move(death));
+        events_.raise(deathEvent(self, "breach"));
     } else if (tag == "cargo") {
         for (std::size_t i = 0; i < station_.cargo.size(); ++i) {
             if (static_cast<std::int64_t>(station_.cargo[i]->id()) == other) {
@@ -508,17 +519,9 @@ void StationEvents::onDeath(const Event& event)
         events_.raise(spawnEvent("breach"));
         return;
     }
-    astronaut_.lives = std::max(0, astronaut_.lives - 1);
     down_ = true;
-    downSeconds_ = 0.0F;
-    // With no lives left, only a teammate can bring it back.
-    beacon_ = astronaut_.lives > 0 ? beaconSeconds : 0.0F;
-    if (Motion* motion = player_.get<Motion>()) {
-        motion->velocityX = 0.0F;
-        motion->velocityY = 0.0F;
-    }
-    astronaut_.grounded = false;
-    astronaut_.supportId = 0;
+    beacon_ = beaconSeconds;
+    astronaut_.halt();
 }
 
 void StationEvents::onSpawn(const Event& event)
@@ -560,10 +563,7 @@ void StationEvents::onRevive(const Event& event)
     if (!hooks_.findPlayer || !hooks_.findPlayer(event.origin, rescuer)) {
         return;
     }
-    const Rect here = player_.get<Transform>()->bounds();
-    const float dx = (rescuer.x + rescuer.width * 0.5F) - (here.x + here.width * 0.5F);
-    const float dy = (rescuer.y + rescuer.height * 0.5F) - (here.y + here.height * 0.5F);
-    if (std::sqrt(dx * dx + dy * dy) > reviveAcceptRange) {
+    if (centreDistance(rescuer, player_.get<Transform>()->bounds()) > reviveAcceptRange) {
         return;
     }
     show(Banner::Kind::Revived, 0, event.origin);
@@ -580,7 +580,7 @@ void StationEvents::onAlarm(const Event& event)
         return;
     }
     const std::string kind = event.getOr<std::string>("kind", "");
-    if (kind != "gravity" && kind != "blackout") {
+    if (!isAlarmKind(kind)) {
         return;
     }
     const double warning = seconds(event, "warning", 2.0, 0.0, 10.0);
@@ -591,14 +591,14 @@ void StationEvents::onAlarm(const Event& event)
     // Both edges are delayed on game time, so a paused player's alarm waits
     // for them, and a slowed one runs slower. High, like spawns: a dropped
     // end would leave the alarm on for good.
-    Event begin(AlarmBeginEvent);
-    begin.priority = EventPriority::High;
-    begin.set("kind", kind);
-    events_.raise(std::move(begin), tics(warning));
-    Event end(AlarmEndEvent);
-    end.priority = EventPriority::High;
-    end.set("kind", kind);
-    events_.raise(std::move(end), tics(warning + duration));
+    const auto raiseEdge = [&](const char* type, double delay) {
+        Event edge(type);
+        edge.priority = EventPriority::High;
+        edge.set("kind", kind);
+        events_.raise(std::move(edge), tics(delay));
+    };
+    raiseEdge(AlarmBeginEvent, warning);
+    raiseEdge(AlarmEndEvent, warning + duration);
 }
 
 void StationEvents::onAlarmEdge(const Event& event, int change)
@@ -607,7 +607,7 @@ void StationEvents::onAlarmEdge(const Event& event, int change)
         return;
     }
     const std::string kind = event.getOr<std::string>("kind", "");
-    if (kind != "gravity" && kind != "blackout") {
+    if (!isAlarmKind(kind)) {
         return;
     }
     if (change > 0 && kind == warningKind_) {

@@ -44,13 +44,11 @@ struct CrewFlags {
 };
 
 // Reviving: a teammate holds the revive chord this close to a downed
-// astronaut for this long. A downed astronaut with lives left calls itself
-// back after the beacon runs out. One with no lives left may restart alone
-// once it has waited restartWaitSeconds, so an idle teammate cannot strand it.
+// astronaut for this long. Otherwise the beacon calls the astronaut back to
+// its spawn point when it runs out, so nobody is ever stranded.
 constexpr float reviveRange = 60.0F;
 constexpr float reviveSeconds = 1.2F;
 constexpr float beaconSeconds = 10.0F;
-constexpr float restartWaitSeconds = 20.0F;
 
 // One player can claim only the pad beneath their feet, and only while holding E.
 int padUnderPlayer(const Rect& player);
@@ -68,6 +66,9 @@ CrewFlags crewFlags(const std::string& data);
 MissionStatus evaluateMission(const std::vector<Claim>& claims);
 std::uint8_t creditedCargoMask(const std::vector<Claim>& claims, std::uint32_t playerId);
 CargoWinner chooseCargoWinner(const std::vector<Claim>& claims);
+
+// Distance between the centres of two rectangles.
+float centreDistance(const Rect& a, const Rect& b);
 
 // The downed teammate nearest the rescuer's centre, within reviveRange, or 0.
 // The rescuer's own claim is skipped.

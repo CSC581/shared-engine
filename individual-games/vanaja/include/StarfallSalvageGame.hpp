@@ -79,7 +79,10 @@ private:
     bool findPlayer(std::uint32_t id, Rect& bounds);
 
     void updateSignals(const FrameJob& job, float deltaTime);
+    // This frame's entry for a remote player, or null.
+    const Multiplayer::Player* remotePlayer(std::uint32_t id) const;
     std::string remoteName(std::uint32_t id) const;
+    // Upper case; 0 or this player's own id means this player.
     std::string nameOf(std::uint32_t id) const;
 
     void renderStation(SDL_Renderer* renderer, float cameraX, const World& world, bool live) const;
@@ -112,13 +115,12 @@ private:
     // Keys held, from InputEvent; read at the start of update().
     std::unordered_set<int> heldKeys_;
     bool jumpQueued_ = false;
-    bool restartQueued_ = false;
-    bool reviveHeld_ = false;
+    bool reviveChord_ = false;
+    bool reviveArrowChord_ = false;
 
     // Replay: the last 10 s are always recorded unless a manual clip (F9) is
     // being recorded or waiting to be played.
     bool manualRecording_ = false;
-    bool manualClipReady_ = false;
     bool debriefShown_ = false;
     bool debriefActive_ = false;
     bool wasPlaying_ = false;

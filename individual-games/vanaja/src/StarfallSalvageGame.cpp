@@ -3,7 +3,6 @@
 #include "Collision.hpp"
 #include "Components.hpp"
 #include "Engine.hpp"
-#include "Input.hpp"
 #include "StarfallSalvageWorld.hpp"
 #include "TimeUnits.hpp"
 
@@ -123,6 +122,15 @@ struct AstronautLook {
     bool down = false;
     float pulse = 0.0F;
 };
+
+AstronautLook lookFor(StarfallSalvage::CrewFlags flags, float pulse)
+{
+    AstronautLook look;
+    look.flipped = flags.flipped;
+    look.down = flags.down;
+    look.pulse = pulse;
+    return look;
+}
 
 // The astronaut sprite, mirrored top to bottom while its gravity is flipped,
 // and drawn faded with a pulsing beacon while it is down.
@@ -285,9 +293,10 @@ StarfallSalvageGame::StarfallSalvageGame(Engine& engine, Multiplayer::Config con
 
     // Every key, F1's scale toggle included, arrives as an InputEvent.
     engine.setScaleToggleKey(SDL_SCANCODE_UNKNOWN);
-    // Reviving is crouch + use: S (or Down) with E.
+    // Reviving is crouch + use: S (or Down) with E. Each chord reports its
+    // own presses and releases, so they need different names.
     engine.registerChord("revive", {SDL_SCANCODE_S, SDL_SCANCODE_E});
-    engine.registerChord("revive", {SDL_SCANCODE_DOWN, SDL_SCANCODE_E});
+    engine.registerChord("revive-arrow", {SDL_SCANCODE_DOWN, SDL_SCANCODE_E});
     subscriptions_.push_back(engine.events().subscribe(Events::Input, [this](const Event& event) { onInput(event); }));
 
     // Deaths, revives and station alarms are shared with the other players
@@ -323,8 +332,11 @@ void StarfallSalvageGame::onInput(const Event& event)
     const std::string kind = event.getOr<std::string>("kind", "");
     const bool pressed = event.getOr<std::string>("state", "") == "pressed";
     if (kind == "chord") {
-        if (event.getOr<std::string>("name", "") == "revive") {
-            reviveHeld_ = pressed;
+        const std::string name = event.getOr<std::string>("name", "");
+        if (name == "revive") {
+            reviveChord_ = pressed;
+        } else if (name == "revive-arrow") {
+            reviveArrowChord_ = pressed;
         }
         return;
     }
@@ -349,9 +361,6 @@ void StarfallSalvageGame::onInput(const Event& event)
     case SDL_SCANCODE_W:
     case SDL_SCANCODE_UP:
         jumpQueued_ = true;
-        break;
-    case SDL_SCANCODE_R:
-        restartQueued_ = true;
         break;
     case SDL_SCANCODE_P:
         // During a replay the live game stays paused underneath it.
@@ -403,7 +412,6 @@ void StarfallSalvageGame::toggleManualRecording()
     if (manualRecording_) {
         raise(engine_, Events::ReplayRecordStop);
         manualRecording_ = false;
-        manualClipReady_ = true;
         return;
     }
     // A fresh recording of up to a minute: stop the rolling one, then start over.
@@ -411,7 +419,6 @@ void StarfallSalvageGame::toggleManualRecording()
     raise(engine_, Events::ReplayRecordStop);
     raise(engine_, Events::ReplayRecordStart);
     manualRecording_ = true;
-    manualClipReady_ = false;
 }
 
 void StarfallSalvageGame::toggleReplay()
@@ -424,10 +431,7 @@ void StarfallSalvageGame::toggleReplay()
         return;
     }
     // Playing ends a manual recording, which is then the clip shown.
-    if (manualRecording_) {
-        manualRecording_ = false;
-        manualClipReady_ = true;
-    }
+    manualRecording_ = false;
     Event start(Events::ReplayPlayStart);
     start.set("speed", playbackSpeed_);
     engine_.events().raise(std::move(start));
@@ -437,13 +441,12 @@ void StarfallSalvageGame::updateReplay()
 {
     const bool playing = replay_.isPlaying();
     // A playback just ended: back to always keeping the last ten seconds.
+    // Playback ends any recording, and F9 is ignored while playing, so
+    // nothing is recording here.
     if (wasPlaying_ && !playing) {
         debriefActive_ = false;
-        manualClipReady_ = false;
-        if (!manualRecording_ && !replay_.isRecording()) {
-            replay_.setRollingWindow(rollingReplayTics);
-            raise(engine_, Events::ReplayRecordStart);
-        }
+        replay_.setRollingWindow(rollingReplayTics);
+        raise(engine_, Events::ReplayRecordStart);
     }
     wasPlaying_ = playing;
 }
@@ -665,16 +668,6 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
         raise(engine_, Events::ReplayRecordStart);
     }
 
-    // With no lives left, R starts this player over when no teammate can
-    // revive it (none online, or all of them down too), or once it has
-    // waited long enough for one.
-    if (restartQueued_) {
-        restartQueued_ = false;
-        if (stationEvents_->canRestart(teammateCanHelp())) {
-            stationEvents_->restartAlone();
-        }
-    }
-
     // A closed bulkhead blocks like a deck; opening it only clears its layers.
     station_.bulkhead->get<Collider>()->layers = gateOpen_ ? 0U : StarfallSalvage::solidLayer;
 
@@ -726,8 +719,10 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     // Revive progress, the downed beacon and banner timers run on game time.
     // Reviving needs the ReviveEvent to reach the teammate, so only with the
     // bridge; otherwise this player would see a revive nobody else did.
-    stationEvents_->update(static_cast<float>(time.dtSeconds), bridge_ && reviveHeld_ && canMove && !paused_,
-                           teammateClaims());
+    std::vector<StarfallSalvage::Claim> claims = teammateClaims();
+    const bool reviveHeld = reviveChord_ || reviveArrowChord_;
+    stationEvents_->update(static_cast<float>(time.dtSeconds), bridge_ && reviveHeld && canMove && !paused_,
+                           claims);
 
     const Rect localBounds = body.bounds();
     const std::uint8_t previousCargoMask = cargoMask_;
@@ -779,7 +774,6 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
         plate->get<Renderable>()->color = gateOpen_ ? Color{81, 224, 186} : Color{247, 180, 93};
     }
 
-    std::vector<StarfallSalvage::Claim> claims = teammateClaims();
     if (ready && spawned_) {
         claims.push_back({session_->localPlayerId(), localBounds.x, localBounds.y, localData});
     }
@@ -789,26 +783,25 @@ void StarfallSalvageGame::update(const FrameTime& time, Engine& engine)
     winnerName_.clear();
     if (missionComplete_) {
         cargoWinner_ = StarfallSalvage::chooseCargoWinner(claims);
-        winnerName_ = nameOf(cargoWinner_.playerId == session_->localPlayerId() ? 0 : cargoWinner_.playerId);
-        if (winnerName_.empty()) {
-            winnerName_ = "PLAYER " + std::to_string(cargoWinner_.playerId);
-        }
+        winnerName_ = nameOf(cargoWinner_.playerId);
     }
 
     // The mission debrief: the moment the relays come online, the last ten
-    // seconds play back in slow motion, once per session. A stopped F9 clip
-    // waiting to be played means nothing is recording, so there is no footage
-    // of this moment; the debrief is skipped rather than showing that clip.
-    if (missionComplete_ && !debriefShown_ && manualClipReady_) {
-        debriefShown_ = true;
-    }
-    if (missionComplete_ && !debriefShown_ && !replay_.isPlaying() && replay_.frameCount() > 1) {
-        debriefShown_ = true;
-        debriefActive_ = true;
-        manualRecording_ = false;
-        Event debrief(Events::ReplayPlayStart);
-        debrief.set("speed", debriefSpeed);
-        engine_.events().raise(std::move(debrief));
+    // seconds play back in slow motion, once per session. Nothing is recorded
+    // during a replay or while a stopped F9 clip waits to be played, so then
+    // there is no footage of this moment and the debrief is skipped, rather
+    // than showing older frames.
+    if (missionComplete_ && !debriefShown_) {
+        if (!replay_.isRecording()) {
+            debriefShown_ = true;
+        } else if (replay_.frameCount() > 1) {
+            debriefShown_ = true;
+            debriefActive_ = true;
+            manualRecording_ = false;
+            Event debrief(Events::ReplayPlayStart);
+            debrief.set("speed", debriefSpeed);
+            engine_.events().raise(std::move(debrief));
+        }
     }
 
     // Sessions keep running during a replay, so this player is not timed out.
@@ -847,16 +840,22 @@ void StarfallSalvageGame::updateSignals(const FrameJob& job, float deltaTime)
     pulse_ = std::fmod(pulse_ + deltaTime * 0.55F, 1.0F);
 }
 
-std::string StarfallSalvageGame::remoteName(std::uint32_t id) const
+const Multiplayer::Player* StarfallSalvageGame::remotePlayer(std::uint32_t id) const
 {
     const auto player = std::find_if(remote_.begin(), remote_.end(),
                                      [id](const auto& entry) { return entry.id == id; });
-    return player == remote_.end() || player->name.empty() ? std::string("PEER") : player->name;
+    return player == remote_.end() ? nullptr : &*player;
+}
+
+std::string StarfallSalvageGame::remoteName(std::uint32_t id) const
+{
+    const Multiplayer::Player* player = remotePlayer(id);
+    return player == nullptr || player->name.empty() ? std::string("PEER") : player->name;
 }
 
 std::string StarfallSalvageGame::nameOf(std::uint32_t id) const
 {
-    return upper(id == 0 ? config_.playerName : remoteName(id));
+    return upper(id == 0 || id == session_->localPlayerId() ? config_.playerName : remoteName(id));
 }
 
 void StarfallSalvageGame::render(SDL_Renderer* renderer) const
@@ -1008,12 +1007,8 @@ void StarfallSalvageGame::renderStation(SDL_Renderer* renderer, float cameraX, c
             if (sprite.drone) {
                 drone(renderer, {sprite.x, sprite.y, 46.0F, 26.0F}, cameraX);
             } else {
-                AstronautLook look;
-                look.flipped = sprite.flipped;
-                look.down = sprite.down;
-                look.pulse = pulse_;
-                const bool self = sprite.id == session_->localPlayerId();
-                astronaut(renderer, bounds, suitFor(sprite.id), self ? nameOf(0) : nameOf(sprite.id), cameraX, look);
+                astronaut(renderer, bounds, suitFor(sprite.id), nameOf(sprite.id), cameraX,
+                          lookFor({sprite.flipped, sprite.down}, pulse_));
             }
         }
         return;
@@ -1031,26 +1026,19 @@ void StarfallSalvageGame::renderStation(SDL_Renderer* renderer, float cameraX, c
     for (const auto& object : world.objects()) {
         if (!object->isActive() || object->tag() != "remote") continue;
         const std::uint32_t id = object->get<NetworkIdentity>()->id;
-        const auto entry = std::find_if(remote_.begin(), remote_.end(),
-                                        [id](const auto& player) { return player.id == id; });
+        const Multiplayer::Player* player = remotePlayer(id);
         const StarfallSalvage::CrewFlags flags =
-            entry == remote_.end() ? StarfallSalvage::CrewFlags{} : StarfallSalvage::crewFlags(entry->data);
-        AstronautLook look;
-        look.flipped = flags.flipped;
-        look.down = flags.down;
-        look.pulse = pulse_;
-        astronaut(renderer, object->get<Transform>()->bounds(), suitFor(id), remoteName(id), cameraX, look);
+            player == nullptr ? StarfallSalvage::CrewFlags{} : StarfallSalvage::crewFlags(player->data);
+        astronaut(renderer, object->get<Transform>()->bounds(), suitFor(id), remoteName(id), cameraX,
+                  lookFor(flags, pulse_));
     }
     if (spawned_) {
-        AstronautLook look;
+        AstronautLook look = lookFor(stationEvents_->flags(), pulse_);
         look.stride = astronaut_->grounded && !paused_ && input_.axis != 0.0F
                           ? static_cast<float>(std::sin(gameSeconds_ * 16.0) * 2.5)
                           : 0.0F;
         look.airborne = !astronaut_->grounded;
         look.shielded = astronaut_->invulnerableSeconds > 0.0F;
-        look.flipped = astronaut_->flipped();
-        look.down = stationEvents_->down();
-        look.pulse = pulse_;
         astronaut(renderer, player_->get<Transform>()->bounds(), suitFor(session_->localPlayerId()),
                   config_.playerName + " (YOU)", cameraX, look);
     }
@@ -1065,6 +1053,7 @@ void StarfallSalvageGame::renderBlackout(SDL_Renderer* renderer) const
         float y;
     };
     std::vector<Light> lights;
+    lights.reserve(remote_.size() + 1 + StarfallSalvage::relayPads.size());
     const Rect body = player_->get<Transform>()->bounds();
     if (spawned_) lights.push_back({body.x + body.width * 0.5F - cameraX_, body.y + body.height * 0.5F});
     for (const auto& player : remote_) {
@@ -1075,28 +1064,35 @@ void StarfallSalvageGame::renderBlackout(SDL_Renderer* renderer) const
         lights.push_back({pad.x + pad.width * 0.5F - cameraX_, pad.y - 10.0F});
     }
 
+    // Squared distances, capped at the edge, so a square root is taken only
+    // for a tile in the soft edge; one blend mode for every tile.
     constexpr float tile = 16.0F;
     constexpr float lit = 80.0F;
     constexpr float edge = 120.0F;
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     for (float y = playTop; y < playBottom; y += tile) {
         for (float x = 0.0F; x < static_cast<float>(StarfallSalvage::width); x += tile) {
-            float nearest = 1.0e9F;
+            float nearest = edge * edge;
             for (const Light& light : lights) {
-                nearest = std::min(nearest, std::hypot(x + tile * 0.5F - light.x, y + tile * 0.5F - light.y));
+                const float dx = x + tile * 0.5F - light.x;
+                const float dy = y + tile * 0.5F - light.y;
+                nearest = std::min(nearest, dx * dx + dy * dy);
             }
-            if (nearest <= lit) continue;
-            const std::uint8_t alpha = nearest >= edge ? 240 : static_cast<std::uint8_t>(240 * (nearest - lit) / (edge - lit));
-            shade(renderer, x, y, tile, std::min(tile, playBottom - y), {3, 6, 14}, alpha);
+            if (nearest <= lit * lit) continue;
+            const float distance = std::sqrt(nearest);
+            const auto alpha = static_cast<std::uint8_t>(240.0F * std::min(1.0F, (distance - lit) / (edge - lit)));
+            const SDL_FRect box{x, y, tile, std::min(tile, playBottom - y)};
+            SDL_SetRenderDrawColor(renderer, 3, 6, 14, alpha);
+            SDL_RenderFillRect(renderer, &box);
         }
     }
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     notice(renderer, 78, "BLACKOUT: STAY NEAR YOUR CREW", {60, 20, 32}, {255, 196, 170});
 }
 
 void StarfallSalvageGame::renderCrewOverlays(SDL_Renderer* renderer) const
 {
     const Rect body = player_->get<Transform>()->bounds();
-    const float bodyX = body.x + body.width * 0.5F;
-    const float bodyY = body.y + body.height * 0.5F;
 
     // Downed teammates: a prompt when close, an arrow at the screen edge when
     // off screen.
@@ -1115,20 +1111,16 @@ void StarfallSalvageGame::renderCrewOverlays(SDL_Renderer* renderer) const
                  y - 4.0F, label, {255, 170, 150});
             continue;
         }
-        const float dx = player.x + StarfallSalvage::playerWidth * 0.5F - bodyX;
-        const float dy = player.y + StarfallSalvage::playerHeight * 0.5F - bodyY;
         if (bridge_ && spawned_ && !stationEvents_->down() &&
-            std::hypot(dx, dy) <= StarfallSalvage::reviveRange) {
+            StarfallSalvage::centreDistance(body, {player.x, player.y, StarfallSalvage::playerWidth,
+                                                   StarfallSalvage::playerHeight}) <= StarfallSalvage::reviveRange) {
             text(renderer, screenX - 20.0F, player.y - 26.0F, "HOLD S+E", {255, 230, 150});
         }
     }
 
     // How far a revive has got, over the teammate being revived.
     if (stationEvents_->reviveTargetId() != 0) {
-        const auto target = std::find_if(remote_.begin(), remote_.end(), [this](const auto& player) {
-            return player.id == stationEvents_->reviveTargetId();
-        });
-        if (target != remote_.end()) {
+        if (const Multiplayer::Player* target = remotePlayer(stationEvents_->reviveTargetId())) {
             const float x = target->x - cameraX_ - 10.0F;
             rect(renderer, x, target->y - 16.0F, 50.0F, 6.0F, {40, 30, 30});
             rect(renderer, x, target->y - 16.0F, 50.0F * stationEvents_->reviveProgress(), 6.0F, {120, 245, 170});
@@ -1178,21 +1170,11 @@ void StarfallSalvageGame::renderCrewOverlays(SDL_Renderer* renderer) const
         rect(renderer, 245, 204, 470, 78, {83, 27, 45});
         centeredText(renderer, 222, "YOU ARE DOWN", {255, 225, 228});
         char message[64];
-        if (stationEvents_->hasBeacon()) {
-            std::snprintf(message, sizeof(message), "BEACON RECALL IN %.0f S",
-                          std::ceil(static_cast<double>(stationEvents_->beaconSecondsLeft())));
-            centeredText(renderer, 242, message, {255, 210, 200});
-            if (teammateCanHelp()) {
-                centeredText(renderer, 258, "A TEAMMATE CAN REVIVE YOU SOONER (S+E)", {255, 210, 200});
-            }
-        } else if (stationEvents_->canRestart(teammateCanHelp())) {
-            centeredText(renderer, 248, "NO LIVES LEFT - PRESS R TO RESTART", {255, 210, 200});
-        } else {
-            centeredText(renderer, 242, "NO LIVES LEFT - A TEAMMATE MUST HOLD S+E BY YOU", {255, 210, 200});
-            std::snprintf(message, sizeof(message), "OR PRESS R IN %.0f S",
-                          std::ceil(static_cast<double>(StarfallSalvage::restartWaitSeconds -
-                                                        stationEvents_->downSeconds())));
-            centeredText(renderer, 258, message, {255, 210, 200});
+        std::snprintf(message, sizeof(message), "BEACON RECALL IN %.0f S",
+                      std::ceil(static_cast<double>(stationEvents_->beaconSecondsLeft())));
+        centeredText(renderer, 242, message, {255, 210, 200});
+        if (teammateCanHelp()) {
+            centeredText(renderer, 258, "A TEAMMATE CAN REVIVE YOU SOONER (S+E)", {255, 210, 200});
         }
     }
 }
@@ -1223,8 +1205,8 @@ void StarfallSalvageGame::renderHud(SDL_Renderer* renderer) const
                            static_cast<int>(relays_.occupied[2]);
     const std::size_t playerCount = remote_.size() + (session_->state() == Multiplayer::State::Ready ? 1U : 0U);
     SDL_RenderDebugTextFormat(renderer, 20, 32,
-                              "CARGO %d/4 | LIVES %d | RELAYS %d/3 | %s | %zu PLAYERS | %.1fX | %s | %s%s",
-                              recoveredCargo(cargoMask_), astronaut_->lives, relayCount,
+                              "CARGO %d/4 | RELAYS %d/3 | %s | %zu PLAYERS | %.1fX | %s | %s%s",
+                              recoveredCargo(cargoMask_), relayCount,
                               Multiplayer::modeName(session_->mode()), playerCount, currentScale_,
                               paused_ ? "PAUSED" : "LIVE", astronaut_->flipped() ? "GRAVITY FLIPPED" : "GRAVITY NORMAL",
                               manualRecording_ ? " | REC" : "");
