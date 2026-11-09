@@ -1,9 +1,10 @@
 #pragma once
 
+#include "Collision.hpp"
+#include "Color.hpp"
 #include "Multiplayer.hpp"
 #include "PokemonHuntConfig.hpp"
 #include "PokemonHuntData.hpp"
-#include "PokemonHuntStyle.hpp"
 #include "PokemonHuntWorld.hpp"
 
 #include <SDL3/SDL.h>
@@ -21,6 +22,139 @@
 // Everything the client draws, from the state it is handed. Sprite sheets are
 // one PNG per character in media/pokemon-hunt/, 8 frames, facing left.
 namespace PokemonHunt {
+
+namespace Palette {
+constexpr Uint8 opaque = 255;
+constexpr Color white{255, 255, 255};
+constexpr Color black{0, 0, 0};
+constexpr Color clear{20, 12, 34};
+constexpr Color missingArt{255, 0, 255};
+constexpr Color floor{96, 58, 44};
+constexpr Color stoneFloor{88, 92, 112};
+constexpr Color mossFloor{58, 96, 62};
+constexpr Color movingPlatform{214, 170, 64};
+
+constexpr Color nameTag{235, 235, 245};
+constexpr Color you{255, 230, 90};
+constexpr Color popupHit{255, 240, 120};
+constexpr Color popupHurt{255, 110, 110};
+constexpr Color popupTeammate{170, 200, 255};
+
+constexpr Color bossHitTint{255, 90, 90};
+constexpr Color bossChargeTint{200, 110, 255};
+constexpr Color shadowBall{90, 30, 130};
+constexpr Color psystrike{255, 120, 220};
+constexpr Color psystrikeCore{255, 230, 250};
+constexpr Uint8 psystrikeFloorAlpha = 110;
+constexpr Uint8 psystrikeAuraAlpha = 70;
+constexpr Uint8 strikeFlashAlpha = 90;
+
+constexpr Color bossLabel{240, 220, 255};
+constexpr Color bossBarBack{20, 10, 30};
+constexpr Color bossBarHealthy{190, 70, 230};
+constexpr Color bossBarLow{240, 60, 80};
+
+constexpr Color panel{10, 5, 20};
+constexpr Uint8 panelAlpha = 150;
+constexpr Color panelTitle{240, 240, 240};
+constexpr Color partyRow{230, 230, 240};
+constexpr Color modeLabel{160, 160, 180};
+constexpr Color comboLabel{220, 220, 235};
+constexpr Color comboPipOff{70, 60, 90};
+constexpr Color rules{200, 200, 215};
+constexpr Color toggleOn{140, 230, 140};
+constexpr Color toggleOff{230, 130, 130};
+
+constexpr Color controlsHelp{245, 225, 210};
+constexpr Color timeHelp{170, 220, 255};
+constexpr Color warning{255, 210, 110};
+constexpr Color faintedTitle{255, 240, 120};
+
+constexpr Color haste{255, 220, 70};
+constexpr Color hasteFrame{255, 210, 60};
+constexpr Uint8 hasteFrameAlpha = 200;
+constexpr Color frozenOverlay{80, 160, 255};
+constexpr Uint8 frozenOverlayAlpha = 90;
+constexpr Color frozenText{200, 235, 255};
+constexpr Color frozenClock{150, 210, 255};
+constexpr Uint8 pausedOverlayAlpha = 120;
+} // namespace Palette
+
+namespace Layout {
+constexpr float centerX = windowWidth * 0.5F;
+
+constexpr float subtitleScale = 1.5F;
+constexpr float headingScale = 2.0F;
+constexpr float bannerScale = 4.0F;
+constexpr float overlayScale = 5.0F;
+
+constexpr float nameTagOffsetY = 22.0F;
+
+// Mewtwo's HP bar, top centre.
+constexpr float bossBarX = 250.0F;
+constexpr float bossBarWidth = 400.0F;
+constexpr float bossBarHeight = 12.0F;
+constexpr float bossBarY = 30.0F;
+constexpr float bossBarBorder = 2.0F;
+constexpr float bossTitleY = 8.0F;
+constexpr float bossInfoY = 12.0F;
+constexpr float bossInfoWidth = 120.0F;
+// The bar turns red at or below 1/bossLowHpDivisor of full HP.
+constexpr int bossLowHpDivisor = 3;
+
+// Scoreboard, top left.
+constexpr float partyX = 8.0F;
+constexpr float partyY = 8.0F;
+constexpr float partyWidth = 224.0F;
+constexpr float partyHeaderHeight = 22.0F;
+constexpr float partyTitleX = 16.0F;
+constexpr float partyTitleY = 14.0F;
+constexpr float partyFirstRowY = 30.0F;
+constexpr float partyRowHeight = 14.0F;
+constexpr float partyDotX = 20.0F;
+constexpr float partyDotRadius = 4.0F;
+constexpr float partyNameX = 30.0F;
+constexpr float partyScoreX = 184.0F;
+
+// Time panel, top right.
+constexpr float timePanelWidth = 260.0F;
+constexpr float timePanelHeight = 100.0F;
+constexpr float timePanelMargin = 8.0F;
+constexpr float timePanelX = windowWidth - timePanelWidth - timePanelMargin;
+constexpr float timePanelY = 8.0F;
+constexpr float timePanelPadding = 8.0F;
+constexpr float timeModeY = 6.0F;
+constexpr float timeClockY = 22.0F;
+constexpr float timeComboY = 44.0F;
+constexpr float timeRulesY = 60.0F;
+constexpr float timeRulesLineHeight = 12.0F;
+constexpr float timeToggleY = 86.0F;
+constexpr float comboPipX = 56.0F;
+constexpr float comboPipSpacing = 14.0F;
+constexpr float comboPipWidth = 10.0F;
+constexpr float comboPipHeight = 8.0F;
+
+// Help lines stack up from helpBottomY.
+constexpr float helpBottomY = 512.0F;
+constexpr float helpLineSpacing = 20.0F;
+constexpr float connectionStatusY = 60.0F;
+constexpr float faintedTitleY = 170.0F;
+constexpr float faintedSubtitleY = 210.0F;
+constexpr float finisherY = 240.0F;
+constexpr float psystrikeTitleY = 110.0F;
+constexpr float psystrikeSubtitleY = 150.0F;
+constexpr float psystrikeFloorBand = 8.0F;
+constexpr float hasteTitleY = 120.0F;
+constexpr float hasteSubtitleY = 160.0F;
+constexpr float hasteFrameThickness = 4.0F;
+constexpr float frozenTitleY = 220.0F;
+constexpr float frozenSubtitleY = 270.0F;
+constexpr float pausedTitleY = 230.0F;
+constexpr float pausedSubtitleY = 280.0F;
+} // namespace Layout
+
+// SDL's debug font draws 8x8 glyphs.
+constexpr float debugGlyphSize = 8.0F;
 
 inline void setColor(SDL_Renderer* renderer, Color color, Uint8 alpha = Palette::opaque)
 {
@@ -125,7 +259,7 @@ inline const std::vector<HelpLine>& helpLines()
     static const std::vector<HelpLine> lines{
         {"",
          {{"A/D", "move"}, {"W/SPACE", "jump"}, {"J", "skill"}},
-         "stomp Mewtwo from above!",
+         "stomp Mewtwo from above, jump over Psystrike!",
          Palette::controlsHelp},
         {"TIME:",
          {{"P", "pause"}, speedKeysHint(), {"H", "haste"}, {"F", "freeze"}, {"T", "auto effects on/off"}},
@@ -329,24 +463,74 @@ inline void drawBoss(SDL_Renderer* renderer, const SpriteSheet& sprite, const Mu
     const std::uint32_t flags = boss.id - bossIdBase;
     const bool faceRight = (flags & bossFacingLeft) == 0;
     const bool charging = (flags & bossCharging) != 0;
+    const bool psystrike = (flags & bossPsystrike) != 0;
+    if (psystrike) {
+        const float pulse = realTimeBlink(now, chargeGlowPeriodMs) ? 1.0F : 0.85F;
+        setColor(renderer, Palette::psystrike, Palette::psystrikeAuraAlpha);
+        fillCircle(renderer, boss.x + boss.width * 0.5F, boss.y + boss.height * 0.5F, boss.height * 0.75F * pulse);
+    }
     Color tint = Palette::white;
     if (hitFlash) {
         tint = Palette::bossHitTint;
-    } else if (charging && realTimeBlink(now, chargeGlowPeriodMs)) {
-        tint = Palette::bossChargeTint;
+    } else if ((charging || psystrike) && realTimeBlink(now, chargeGlowPeriodMs)) {
+        tint = psystrike ? Palette::psystrike : Palette::bossChargeTint;
     }
     sprite.draw(renderer, realTimeFrame(now), boss.x + boss.width * 0.5F, boss.y + boss.height, bossSpriteScale,
                 faceRight, tint);
 }
 
-inline void drawShadowBalls(SDL_Renderer* renderer, const std::vector<Multiplayer::Platform>& world)
+inline void drawBossSprites(SDL_Renderer* renderer, const SpriteSheet& sprite,
+                            const std::vector<Multiplayer::Platform>& world, float cameraX,
+                            bool hitFlash, std::int64_t now)
+{
+    for (auto object : world) {
+        if (isBoss(object.id)) {
+            object.x -= cameraX;
+            drawBoss(renderer, sprite, object, hitFlash, now);
+        }
+    }
+}
+
+inline void drawShadowBalls(SDL_Renderer* renderer, const std::vector<Multiplayer::Platform>& world,
+                            float cameraX)
 {
     setColor(renderer, Palette::shadowBall);
     for (const Multiplayer::Platform& ball : world) {
         if (isShadowBall(ball.id)) {
-            fillCircle(renderer, ball.x + ball.width * 0.5F, ball.y + ball.height * 0.5F, ball.width * 0.5F);
+            fillCircle(renderer, ball.x - cameraX + ball.width * 0.5F, ball.y + ball.height * 0.5F, ball.width * 0.5F);
         }
     }
+}
+
+// A shockwave: a bright core inside a pink crest, `box` in screen space.
+inline void drawShockwave(SDL_Renderer* renderer, const Rect& box)
+{
+    setColor(renderer, Palette::psystrike);
+    fillRect(renderer, box.x, box.y + box.height * 0.3F, box.width, box.height * 0.7F);
+    fillRect(renderer, box.x + box.width * 0.2F, box.y, box.width * 0.6F, box.height * 0.3F);
+    setColor(renderer, Palette::psystrikeCore);
+    fillRect(renderer, box.x + box.width * 0.3F, box.y + box.height * 0.4F, box.width * 0.4F, box.height * 0.6F);
+}
+
+// The charge warning: a glowing floor and how long until the strike.
+inline void drawPsystrikeWarning(SDL_Renderer* renderer, double secondsLeft, std::int64_t now)
+{
+    using namespace Layout;
+    if (realTimeBlink(now, chargeGlowPeriodMs * 2)) {
+        setColor(renderer, Palette::psystrike, Palette::psystrikeFloorAlpha);
+        fillRect(renderer, 0.0F, groundY - psystrikeFloorBand, static_cast<float>(windowWidth), psystrikeFloorBand);
+    }
+    setColor(renderer, Palette::psystrike);
+    drawTextCentered(renderer, centerX, psystrikeTitleY, "PSYSTRIKE!", bannerScale);
+    setColor(renderer, Palette::white);
+    drawTextCentered(renderer, centerX, psystrikeSubtitleY, "JUMP or get on a platform  " + oneDecimal(secondsLeft) + "s",
+                     subtitleScale);
+}
+
+inline void drawStrikeFlash(SDL_Renderer* renderer)
+{
+    setColor(renderer, Palette::psystrikeCore, Palette::strikeFlashAlpha);
+    fillScreen(renderer);
 }
 
 inline void drawPopups(SDL_Renderer* renderer, const std::vector<Popup>& popups)
@@ -435,7 +619,8 @@ inline void drawWarning(SDL_Renderer* renderer, const std::string& text)
     drawTextCentered(renderer, Layout::centerX, Layout::connectionStatusY, text);
 }
 
-inline void drawFaintedBanner(SDL_Renderer* renderer, float respawnIn)
+// `finisher` comes from Mewtwo's DeathEvent; empty if it never arrived.
+inline void drawFaintedBanner(SDL_Renderer* renderer, float respawnIn, const std::string& finisher)
 {
     using namespace Layout;
     setColor(renderer, Palette::faintedTitle);
@@ -443,6 +628,10 @@ inline void drawFaintedBanner(SDL_Renderer* renderer, float respawnIn)
     setColor(renderer, Palette::white);
     drawTextCentered(renderer, centerX, faintedSubtitleY,
                      "it comes back somewhere in " + oneDecimal(respawnIn) + "s", subtitleScale);
+    if (!finisher.empty()) {
+        setColor(renderer, Palette::faintedTitle);
+        drawTextCentered(renderer, centerX, finisherY, "final blow: " + finisher, subtitleScale);
+    }
 }
 
 inline void drawHaste(SDL_Renderer* renderer, bool showBanner)

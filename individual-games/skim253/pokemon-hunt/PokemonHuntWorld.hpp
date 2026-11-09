@@ -11,8 +11,7 @@
 #include <string>
 #include <vector>
 
-// What client and server share. Level coordinates, y down; the camera scrolls
-// a 960x540 window across a levelWidth-wide level.
+// Shared world constants and boss snapshot encoding. Coordinates use y down.
 namespace PokemonHunt {
 
 constexpr int windowWidth = 960;
@@ -33,6 +32,11 @@ inline std::vector<Network::PlatformPath> movingPlatformPaths()
     return {across, circle};
 }
 
+// A Pokemon's box. Shared so Mewtwo can check where a hit came from.
+constexpr float pokemonSize = 40.0F;
+// A shot leaves a Pokemon this far down its body (fraction of its height).
+constexpr float shotSpawnHeightRatio = 0.45F;
+
 constexpr float bossWidth = 90.0F;
 constexpr float bossHeight = 132.0F;
 constexpr float bossWalkSpeed = 150.0F;
@@ -46,6 +50,14 @@ constexpr float shadowBallSize = 30.0F;
 constexpr float shadowBallSpeed = 340.0F;
 constexpr int bossMaxHp = 60;
 constexpr float bossRespawnSeconds = 5.0F;
+// Psystrike: Mewtwo stands still charging, then a shockwave runs along the
+// floor both ways. Jumping over it or standing on a platform dodges it.
+constexpr float psystrikeChargeSeconds = 1.2F;
+constexpr float psystrikeFirstDelaySeconds = 4.0F;
+constexpr float psystrikeCooldownSeconds = 6.0F;
+// Damage per hit kind, decided by Mewtwo (see damageFor in PokemonHuntEvents.hpp).
+constexpr int shotDamage = 1;
+constexpr int stompDamage = 3;
 
 // The boss world is a list of Multiplayer::Platform, told apart by id:
 //   bossIdBase + flags   Mewtwo (absent while fainted)
@@ -54,7 +66,8 @@ constexpr float bossRespawnSeconds = 5.0F;
 constexpr std::uint32_t bossIdBase = 1;
 constexpr std::uint32_t bossFacingLeft = 1;
 constexpr std::uint32_t bossCharging = 2;
-constexpr std::uint32_t bossIdCount = (bossFacingLeft | bossCharging) + 1;
+constexpr std::uint32_t bossPsystrike = 4;
+constexpr std::uint32_t bossIdCount = (bossFacingLeft | bossCharging | bossPsystrike) + 1;
 constexpr std::uint32_t bossStatusId = 50;
 constexpr std::uint32_t shadowBallIdBase = 100;
 
@@ -74,7 +87,7 @@ inline bool isShadowBall(std::uint32_t id)
 constexpr const char* bossPlayerName = "Mewtwo";
 constexpr const char* bossDataTag = "MEWTWO";
 
-// Shadow balls past the engine's size limit are dropped, not the message.
+// Stop before exceeding the player-data limit; trailing objects are omitted.
 inline std::string encodeBossWorld(const std::vector<Multiplayer::Platform>& world)
 {
     std::string data = bossDataTag;
@@ -91,7 +104,7 @@ inline std::string encodeBossWorld(const std::vector<Multiplayer::Platform>& wor
     return data;
 }
 
-// False unless `data` is Mewtwo's.
+// Decode object entries after the boss tag.
 inline bool decodeBossWorld(const std::string& data, std::vector<Multiplayer::Platform>& world)
 {
     std::istringstream in(data);
@@ -112,16 +125,6 @@ inline bool decodeBossWorld(const std::string& data, std::vector<Multiplayer::Pl
 constexpr Multiplayer::PlayerId bossPeerId = 99;
 constexpr int bossPeerBasePort = 7290;
 constexpr const char* defaultBossPeerEndpoint = "tcp://127.0.0.1:7290";
-
-// The running damage total from a Pokemon's data (see PokemonHuntData.hpp).
-inline bool parseDamageDealt(const std::string& data, long long& damage)
-{
-    std::istringstream in(data);
-    in.imbue(std::locale::classic());
-    long long species = 0;
-    long long score = 0;
-    return static_cast<bool>(in >> species >> score >> damage) && damage >= 0;
-}
 
 constexpr const char* defaultServerBind = "tcp://*:5600";
 constexpr const char* defaultServerEndpoint = "tcp://127.0.0.1:5600";

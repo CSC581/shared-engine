@@ -10,11 +10,10 @@
 namespace PokemonHunt {
 
 // A Pokemon's player data, all integers:
-//   "<species> <score> <damage dealt> <facing> <blinking> <shot?> <shotX> <shotY>"
+//   "<species> <score> <facing> <blinking> <shot?> <shotX> <shotY>"
 struct PokemonData {
     int species = Pikachu;
     long long score = 0;
-    long long damage = 0;
     int facing = 1;
     bool blinking = false;
     bool shot = false;
@@ -26,7 +25,7 @@ inline std::string encode(const PokemonData& d)
 {
     std::ostringstream out;
     out.imbue(std::locale::classic());
-    out << d.species << ' ' << d.score << ' ' << d.damage << ' ' << d.facing << ' ' << (d.blinking ? 1 : 0)
+    out << d.species << ' ' << d.score << ' ' << d.facing << ' ' << (d.blinking ? 1 : 0)
         << ' ' << (d.shot ? 1 : 0) << ' ' << d.shotX << ' ' << d.shotY;
     return out.str();
 }
@@ -37,7 +36,7 @@ inline bool decode(const std::string& text, PokemonData& d)
     in.imbue(std::locale::classic());
     int blinking = 0;
     int shot = 0;
-    if (!(in >> d.species >> d.score >> d.damage >> d.facing >> blinking >> shot >> d.shotX >> d.shotY)) {
+    if (!(in >> d.species >> d.score >> d.facing >> blinking >> shot >> d.shotX >> d.shotY)) {
         return false;
     }
     d.species = std::clamp(d.species, 0, SpeciesCount - 1);

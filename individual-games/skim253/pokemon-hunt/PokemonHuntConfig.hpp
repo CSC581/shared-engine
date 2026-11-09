@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PokemonHuntStyle.hpp"
+#include "Color.hpp"
 #include "PokemonHuntWorld.hpp"
 #include "TimeUnits.hpp"
 
@@ -11,7 +11,6 @@
 // Client tuning. Mewtwo's numbers are in PokemonHuntWorld.hpp, shared with the server.
 namespace PokemonHunt {
 
-constexpr float pokemonSize = 40.0F;
 constexpr float walkSpeed = 240.0F;
 constexpr float jumpSpeed = 680.0F;
 constexpr float gravity = 1400.0F;
@@ -27,19 +26,16 @@ constexpr float scrollMargin = 320.0F;
 constexpr float shotSpeed = 560.0F;
 constexpr float shotSize = 14.0F;
 constexpr double shotCooldown = 0.5;
-// Ahead of the Pokemon's centre, at this fraction of its height.
+// Ahead of the Pokemon's centre, at shotSpawnHeightRatio of its height.
 constexpr float shotSpawnOffset = 18.0F;
-constexpr float shotSpawnHeightRatio = 0.45F;
 
-constexpr int stompDamage = 3;
-constexpr int shotDamage = 1;
 constexpr int stompPoints = 100;
 constexpr int shotPoints = 20;
 constexpr int hurtPoints = 50;
 
 // Hitboxes are trimmed so transparent sprite padding cannot hit.
 struct Insets {
-    float sides; // left and right each
+    float sides; // Applied to each side.
     float top;
     float bottom;
 };
@@ -48,6 +44,19 @@ constexpr Insets shadowBallHitInsets{4.0F, 4.0F, 4.0F};
 // A stomp still counts with feet this far below Mewtwo's head last step.
 constexpr float stompTolerance = 14.0F;
 constexpr double stompInvincible = 0.3;
+
+// Psystrike's shockwave: low enough to jump over, fast enough to need timing.
+constexpr float shockwaveWidth = 28.0F;
+constexpr float shockwaveHeight = 34.0F;
+constexpr float shockwaveSpeed = 520.0F;
+constexpr int psystrikePoints = 80;
+constexpr double strikeFlashSeconds = 0.15;
+// Maximum network-delay compensation, in seconds.
+constexpr double maxShockwaveCatchUpSeconds = 0.5;
+
+// Clock sync pings to Mewtwo (real time): quick until the first answer, then slow.
+constexpr std::int64_t clockPingFastNs = kNsPerSec / 4;
+constexpr std::int64_t clockPingSlowNs = 2 * kNsPerSec;
 
 constexpr double hurtInvincible = 1.5;
 constexpr double hurtControlLock = 0.35;
@@ -60,6 +69,10 @@ constexpr double hasteScale = 2.0;
 constexpr double hasteSeconds = 5.0;
 constexpr int freezeHurtCount = 2;      // hurt this many times...
 constexpr double freezeWindowSeconds = 3.0; // ...within this long
+// Freeze holds this client's simulation but leaves game time running, so each
+// frozen frame gets its own game time and the replay shows the whole freeze.
+// A paused timeline would give every frame the same time, and the
+// ReplaySystem keeps only the last frame per time.
 constexpr double freezeSeconds = 1.5;
 constexpr std::int64_t effectBannerNs = kNsPerSec;
 

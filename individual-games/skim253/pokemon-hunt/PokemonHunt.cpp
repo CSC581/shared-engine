@@ -1,27 +1,23 @@
-// Pokemon Hunt: each client is one Pokemon fighting the server's Mewtwo.
+// Networked Pokemon boss raid; combat events require client-server text mode.
 // Design notes: docs/individual-games/skim253/pokemon-hunt-design.md
-//
-//   ./build/pokemon-hunt-server
-//   ./build/pokemon-hunt --pokemon pikachu
-//   ./build/pokemon-hunt --mode peer-to-peer --pokemon charmander
-//   ./build/pokemon-hunt --format binary --benchmark 3000
-//
-// Stomp Mewtwo: 3 damage, +100. Skill hit (J): 1 damage, +20.
-// Touching it from the side or below, or a shadow ball: -50 and knockback.
+// Run pokemon-hunt-server, then pokemon-hunt --pokemon pikachu.
 #include "Components.hpp"
 #include "Engine.hpp"
+#include "Event.hpp"
+#include "EventManager.hpp"
 #include "FrameWorkers.hpp"
 #include "Game.hpp"
-#include "Input.hpp"
 #include "Multiplayer.hpp"
+#include "NetworkEventBridge.hpp"
 #include "NetworkWorldSync.hpp"
 #include "PokemonHuntConfig.hpp"
 #include "PokemonHuntData.hpp"
 #include "PokemonHuntDraw.hpp"
+#include "PokemonHuntEvents.hpp"
 #include "PokemonHuntLevel.hpp"
 #include "PokemonHuntPrediction.hpp"
-#include "PokemonHuntStyle.hpp"
 #include "PokemonHuntWorld.hpp"
+#include "ReplaySystem.hpp"
 #include "TimeSource.hpp"
 #include "TimeUnits.hpp"
 #include "World.hpp"
@@ -29,10 +25,13 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <deque>
 #include <exception>
 #include <iostream>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -52,29 +51,43 @@ struct BenchmarkPlan {
 
 class PokemonHuntGame final : public Game {
 public:
-    PokemonHuntGame(std::unique_ptr<Multiplayer::Session> session, int kind, SDL_Renderer* renderer,
+    PokemonHuntGame(std::unique_ptr<Multiplayer::Session> session, int kind, Engine& engine,
                     const std::string& mediaDir, BenchmarkPlan benchmark)
-        : session_(std::move(session)),
+        : engine_(engine),
+          events_(engine.events()),
+          session_(std::move(session)),
           benchmark_(benchmark),
           sync_(world_, makeRemotePokemon,
                 [](World& world, const Multiplayer::Platform&) -> GameObject& { return makeMovingPlatform(world); }),
+          replay_(events_, engine.gameTime(), engine.realTime()),
           workers_({
               [this](float dt) { physicsStep(dt); },
               [this](float) { networkStep(); },
           })
     {
         local_.species = kind;
+        SDL_Renderer* renderer = engine.getRenderer();
         for (int i = 0; i < SpeciesCount; ++i) {
             pokemonSprites_[i].load(renderer, mediaDir + species[i].file);
         }
         bossSprite_.load(renderer, mediaDir + bossSpriteFile);
 
+        world_.setEventManager(&events_);
+        if (session_->supportsEvents()) {
+            bridge_ = std::make_unique<NetworkEventBridge>(events_, *session_, sharedEventTypes());
+        }
+        subscriptions_ = {
+            events_.subscribe(Events::Input, [this](const Event& event) { onInput(event); }),
+            events_.subscribe(Events::Collision, [this](const Event& event) { onCollision(event); }),
+            events_.subscribe(Events::Death, [this](const Event& event) { onDeath(event); }),
+            events_.subscribe(Events::Spawn, [this](const Event& event) { onSpawn(event); }),
+            events_.subscribe(GameEvents::Hit, [this](const Event& event) { onHit(event); }),
+            events_.subscribe(GameEvents::Psystrike, [this](const Event& event) { onPsystrike(event); }),
+            events_.subscribe(GameEvents::ClockPong, [this](const Event& event) { onClockPong(event); }),
+        };
+
         buildLevel(world_);
-        makeDeathZone(world_, [this](GameObject&, GameObject& other) {
-            if (&other == pokemon_) {
-                fallIntoPit();
-            }
-        });
+        makeDeathZone(world_);
         pokemon_ = &makePokemon(spawnPointFor(world_, kind));
         shot_ = &makeShot();
         bossHitbox_ = &makeBossHitbox();
@@ -84,18 +97,25 @@ public:
         const Transform& body = *pokemon_->get<Transform>();
         cameraX_ = clampCamera(body.x + body.width * 0.5F - windowWidth * 0.5F);
         placeCameraZones();
+        replay_.setRollingWindow(30 * kGameTicsPerSecond); // Last 30 game seconds.
+        replay_.setFrameStateHook([this] { return replayFrameState(); });
     }
 
-    void handleInput(Engine& engine) override
+    // engine.events() outlives the game, so these handlers must go first.
+    ~PokemonHuntGame() override
     {
-        handleTimeKeys(engine.gameTime(), engine.realTime().now());
-        if (Input::isKeyJustPressed(SDL_SCANCODE_ESCAPE)) {
-            engine.quit();
+        for (EventManager::SubscriptionId id : subscriptions_) {
+            events_.unsubscribe(id);
         }
-        readControls();
     }
 
-    // Never reached: the engine calls the FrameTime overload.
+    PokemonHuntGame(const PokemonHuntGame&) = delete;
+    PokemonHuntGame& operator=(const PokemonHuntGame&) = delete;
+
+    // Keys arrive as InputEvents, handled in onInput() right after this.
+    void handleInput(Engine&) override {}
+
+    // Required Game overload; Engine uses FrameTime.
     void update(float, Engine&) override {}
 
     void update(const FrameTime& time, Engine& engine) override
@@ -103,29 +123,45 @@ public:
         Timeline& gameTime = engine.gameTime();
         const float dt = static_cast<float>(time.dtSeconds);
         now_ = engine.realTime().now();
-        if (effect_ != TimeEffect::None && now_ >= effectEndsAt_) {
+        replay_.update();
+        matchReplaySpeed();
+        const bool playing = replay_.isPlaying();
+        if (!playing && effect_ != TimeEffect::None && now_ >= effectEndsAt_) {
             endEffect(gameTime);
         }
+        // Frozen or replaying: the network and remote players carry on, but
+        // this Pokemon, its shots and its timers hold still.
+        const bool simulating = !playing && effect_ != TimeEffect::Frozen;
 
         // Physics and network on their own workers; the network runs even while paused.
         controlLocked_ = controlLock_ > 0.0;
         frameTime_ = time;
-        workers_.runFrame(dt);
+        workers_.runFrame(simulating ? dt : 0.0F);
 
-        // Workers are done: the World is this thread's again.
+        // Workers have joined; bridge events dispatch after update().
+        if (bridge_) {
+            bridge_->apply();
+        }
         sync_.apply(*session_);
-        rideMovingPlatform();
+        if (!playing) {
+            rideMovingPlatform();
+        }
         mirrorBossWorld();
+        forgetOldFinisher();
         placeCameraZones();
 
-        if (dt > 0.0F) {
+        if (simulating && dt > 0.0F) {
             playFrame(time);
         }
         world_.flushDestroyed();
 
-        applyEarnedEffects(gameTime);
+        if (!playing) {
+            applyEarnedEffects(gameTime);
+        }
+        pingBossClock();
         timeBenchmark(engine.realTime().now());
         publishLocalPokemon();
+        replay_.capture(world_, cameraX_);
 
         updateTitle(engine);
         paused_ = gameTime.isPaused();
@@ -135,19 +171,20 @@ public:
     void render(SDL_Renderer* renderer) const override
     {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-        // Level coordinates throughout; sprites are shifted by the same camera.
+        if (replay_.isPlaying()) {
+            renderReplay(renderer);
+            return;
+        }
         renderWorld(renderer, world_, cameraX_, 0.0F);
 
-        std::vector<Multiplayer::Platform> bossOnScreen = bossWorld_;
-        for (Multiplayer::Platform& object : bossOnScreen) {
-            object.x -= cameraX_;
-        }
-        drawShadowBalls(renderer, bossOnScreen);
-        for (const Multiplayer::Platform& object : bossOnScreen) {
-            if (isBoss(object.id)) {
-                drawBoss(renderer, bossSprite_, object, bossFlash_ > 0.0, now_);
+        drawShadowBalls(renderer, bossWorld_, cameraX_);
+        for (const auto& object : world_.objects()) {
+            if (object->isActive() && object->tag() == "shockwave") {
+                const Transform& box = *object->get<Transform>();
+                drawShockwave(renderer, {box.x - cameraX_, box.y, box.width, box.height});
             }
         }
+        drawBossSprites(renderer, bossSprite_, bossWorld_, cameraX_, bossFlash_ > 0.0, now_);
         drawOtherPokemon(renderer);
         const Transform& body = *pokemon_->get<Transform>();
         drawPartyMember(renderer, pokemonSprites_, onScreen(local_), body.x - cameraX_, body.y,
@@ -162,44 +199,89 @@ public:
     }
 
 private:
-    // Manual time keys end any running effect first.
-    void handleTimeKeys(Timeline& gameTime, std::int64_t now)
+    void onInput(const Event& event)
     {
-        if (Input::isKeyJustPressed(SDL_SCANCODE_P)) {
-            endEffect(gameTime);
-            gameTime.togglePause();
+        if (event.get<std::string>("kind") != "key") {
+            return;
         }
-        for (const SpeedKey& speed : speedKeys) {
-            if (Input::isKeyJustPressed(speed.key)) {
-                endEffect(gameTime);
-                gameTime.setScale(speed.scale);
-            }
+        const std::int64_t key = event.get<std::int64_t>("key");
+        const bool pressed = event.get<std::string>("state") == "pressed";
+        if (key < 0 || key >= static_cast<std::int64_t>(held_.size())) {
+            return;
         }
-        const bool manuallyPaused = gameTime.isPaused() && effect_ != TimeEffect::Frozen;
-        if (Input::isKeyJustPressed(SDL_SCANCODE_H) && !manuallyPaused) {
-            startEffect(TimeEffect::Haste, gameTime, now);
-        }
-        if (Input::isKeyJustPressed(SDL_SCANCODE_F) && !manuallyPaused) {
-            startEffect(TimeEffect::Frozen, gameTime, now);
-        }
-        if (Input::isKeyJustPressed(SDL_SCANCODE_T)) {
-            autoEffects_ = !autoEffects_;
+        held_[static_cast<std::size_t>(key)] = pressed;
+        readControls();
+        if (pressed) {
+            onKeyPressed(static_cast<SDL_Scancode>(key));
         }
     }
+
+    bool held(SDL_Scancode key) const { return held_[static_cast<std::size_t>(key)]; }
 
     // Written before runFrame(), so the physics worker reads it unlocked.
     void readControls()
     {
-        axis_ = std::clamp(Input::getAxis(SDL_SCANCODE_A, SDL_SCANCODE_D) +
-                               Input::getAxis(SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT),
+        const auto axis = [this](SDL_Scancode negative, SDL_Scancode positive) {
+            return (held(positive) ? 1.0F : 0.0F) - (held(negative) ? 1.0F : 0.0F);
+        };
+        axis_ = std::clamp(axis(SDL_SCANCODE_A, SDL_SCANCODE_D) + axis(SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT),
                            -1.0F, 1.0F);
-        jumpPressed_ = Input::isAnyKeyPressed({SDL_SCANCODE_W, SDL_SCANCODE_UP, SDL_SCANCODE_SPACE});
-        skillPressed_ = skillPressed_ || Input::isKeyJustPressed(SDL_SCANCODE_J) ||
-                        Input::isKeyJustPressed(SDL_SCANCODE_X);
+        jumpPressed_ = held(SDL_SCANCODE_W) || held(SDL_SCANCODE_UP) || held(SDL_SCANCODE_SPACE);
     }
 
-    // Its Solid Collider stands it on the level and reports the fight, the
-    // death zone and scrolling.
+    bool handleReplayKey(SDL_Scancode key)
+    {
+        if (key == SDL_SCANCODE_R) {
+            events_.raise(Event{replay_.isRecording() ? Events::ReplayRecordStop : Events::ReplayRecordStart});
+        } else if (key == SDL_SCANCODE_RETURN) {
+            endEffect(engine_.gameTime());
+            skillPressed_ = false;
+            events_.raise(Event{Events::ReplayPlayStart});
+        } else if (key == SDL_SCANCODE_BACKSPACE) {
+            events_.raise(Event{Events::ReplayPlayStop});
+        } else {
+            if (replay_.isPlaying() && key == SDL_SCANCODE_P) {
+                events_.raise(Event{Events::ReplayPause});
+            }
+            return replay_.isPlaying(); // Consume gameplay keys during playback.
+        }
+        return true;
+    }
+
+    void onKeyPressed(SDL_Scancode key)
+    {
+        if (key == SDL_SCANCODE_ESCAPE) {
+            engine_.quit();
+            return;
+        }
+        if (handleReplayKey(key)) {
+            return;
+        }
+        Timeline& gameTime = engine_.gameTime();
+        const std::int64_t now = engine_.realTime().now();
+        if (key == SDL_SCANCODE_J || key == SDL_SCANCODE_X) {
+            skillPressed_ = true;
+        } else if (key == SDL_SCANCODE_P) {
+            endEffect(gameTime);
+            gameTime.togglePause();
+        } else if (key == SDL_SCANCODE_T) {
+            autoEffects_ = !autoEffects_;
+        }
+        for (const SpeedKey& speed : speedKeys) {
+            if (key == speed.key) {
+                endEffect(gameTime);
+                gameTime.setScale(speed.scale);
+            }
+        }
+        const bool manuallyPaused = gameTime.isPaused();
+        if (key == SDL_SCANCODE_H && !manuallyPaused) {
+            startEffect(TimeEffect::Haste, gameTime, now);
+        } else if (key == SDL_SCANCODE_F && !manuallyPaused) {
+            startEffect(TimeEffect::Frozen, gameTime, now);
+        }
+    }
+
+    // Stay events maintain grounding, scrolling and boss contact each frame.
     GameObject& makePokemon(const Transform& spawn)
     {
         GameObject& pokemon = world_.create("pokemon");
@@ -207,8 +289,7 @@ private:
         pokemon.add<Motion>();
         pokemon.add<Gravity>(gravity);
         pokemon.add<Behavior>([this](GameObject& self, const FrameTime&) { steer(self); });
-        Collider& collider = pokemon.add<Collider>(Collider::Kind::Solid, hurtLayer | zoneLayer | solidLayer);
-        collider.onCollide = [this](GameObject&, GameObject& other) { touch(other); };
+        pokemon.add<Collider>(Collider::Kind::Solid, hurtLayer | zoneLayer | solidLayer).raiseStayEvents = true;
         pokemon.setActive(true);
         return pokemon;
     }
@@ -218,14 +299,7 @@ private:
     {
         GameObject& boundary = world_.create(left ? "scroll-left" : "scroll-right");
         boundary.add<Transform>(0.0F, -levelHeightPadding, levelWidth, windowHeight + 2.0F * levelHeightPadding);
-        boundary.add<Collider>(Collider::Kind::Trigger, zoneLayer).onCollide = [this, left](GameObject&,
-                                                                                           GameObject& other) {
-            if (&other != pokemon_) {
-                return;
-            }
-            const Transform& body = *other.get<Transform>();
-            cameraX_ = clampCamera(left ? body.x - scrollMargin : body.x + body.width - (windowWidth - scrollMargin));
-        };
+        boundary.add<Collider>(Collider::Kind::Trigger, zoneLayer);
         boundary.setActive(true);
         return boundary;
     }
@@ -235,11 +309,7 @@ private:
     {
         GameObject& view = world_.create("view");
         view.add<Transform>(0.0F, 0.0F, static_cast<float>(windowWidth), static_cast<float>(windowHeight));
-        view.add<Collider>(Collider::Kind::Trigger, shotLayer).onExit = [this](GameObject&, GameObject& other) {
-            if (&other == shot_) {
-                shot_->setActive(false);
-            }
-        };
+        view.add<Collider>(Collider::Kind::Trigger, shotLayer);
         view.setActive(true);
         return view;
     }
@@ -249,12 +319,7 @@ private:
         GameObject& shot = world_.create("shot");
         shot.add<Transform>(0.0F, 0.0F, shotSize, shotSize);
         shot.add<Motion>();
-        Collider& collider = shot.add<Collider>(Collider::Kind::Trigger, shotLayer);
-        collider.onCollide = [this](GameObject& self, GameObject& other) {
-            if (other.tag() == "boss" && self.isActive()) {
-                hitBossWithShot(self);
-            }
-        };
+        shot.add<Collider>(Collider::Kind::Trigger, shotLayer);
         return shot;
     }
 
@@ -301,17 +366,213 @@ private:
         return data;
     }
 
-    void fallIntoPit()
+    // Runs after the collision pass, so handlers may safely move objects.
+    void onCollision(const Event& event)
     {
+        if (replay_.isPlaying()) {
+            return;
+        }
+        Contact contact;
+        if (contactOf(event, pokemon_->id(), contact)) {
+            if (contact.phase != "exit") {
+                touch(contact.other, contact.otherTag, contact.phase == "enter");
+            }
+        } else if (contactOf(event, shot_->id(), contact)) {
+            if (contact.otherTag == "boss" && contact.phase == "enter" && shot_->isActive()) {
+                hitBossWithShot();
+            } else if (contact.otherTag == "view" && contact.phase == "exit") {
+                shot_->setActive(false);
+            }
+        }
+    }
+    void onDeath(const Event& event)
+    {
+        if (replay_.isPlaying()) {
+            return;
+        }
+        if (event.origin != 0) {
+            onRemoteDeath(event);
+            return;
+        }
+        if (!isLocalAbout(event, pokemon_->id())) {
+            return;
+        }
+        const Transform& body = *pokemon_->get<Transform>();
+        addPopup(body.x + pokemonSize * 0.5F, std::min(body.y, groundY), "FELL! back to spawn", Palette::popupHurt);
         const Transform& spawn = spawnPointFor(world_, local_.species);
+        events_.raise(respawnEvent(pokemon_->id(), spawn.x, spawn.y));
+    }
+
+    // Mewtwo fainted (and who finished it), or a teammate fell in a pit.
+    void onRemoteDeath(const Event& event)
+    {
+        if (event.origin == bossPlayerId()) {
+            const auto finisher = static_cast<Multiplayer::PlayerId>(event.getOr<std::int64_t>("finisher", 0));
+            finisherName_ = playerName(finisher);
+            return;
+        }
+        GameObject* teammate = sync_.remotePlayer(event.origin);
+        if (teammate != nullptr) {
+            const Transform& body = *teammate->get<Transform>();
+            addPopup(body.x + pokemonSize * 0.5F, std::min(body.y, groundY), playerName(event.origin) + " fell!",
+                     Palette::popupHurt);
+        }
+    }
+
+    // Local spawns: respawn {object, x, y} or shockwave {kind, x, direction, late}.
+    void onSpawn(const Event& event)
+    {
+        if (replay_.isPlaying()) {
+            return;
+        }
+        if (event.origin != 0) {
+            return;
+        }
+        if (event.getOr<std::string>("kind", "") == "shockwave") {
+            makeShockwave(static_cast<float>(event.get<double>("x")), event.get<std::int64_t>("direction"),
+                          event.getOr<double>("late", 0.0));
+            return;
+        }
+        if (!isLocalAbout(event, pokemon_->id())) {
+            return;
+        }
         Transform& body = *pokemon_->get<Transform>();
-        body.x = spawn.x;
-        body.y = spawn.y;
+        body.x = static_cast<float>(event.get<double>("x"));
+        body.y = static_cast<float>(event.get<double>("y"));
         Motion& motion = *pokemon_->get<Motion>();
         motion.velocityX = 0.0F;
         motion.velocityY = 0.0F;
         riding_ = 0;
-        addPopup(body.x + pokemonSize * 0.5F, body.y, "FELL! back to spawn", Palette::popupHurt);
+    }
+
+    // Use the estimated boss clock to compensate for strike arrival delay (capped below).
+    void onPsystrike(const Event& event)
+    {
+        if (replay_.isPlaying()) {
+            return;
+        }
+        if (event.origin == 0 || event.origin != bossPlayerId()) {
+            return;
+        }
+        const double x = event.get<double>("x");
+        // Seconds since Mewtwo's `at`; negative if it is still ahead.
+        const double sinceAt = bossClock_.synced() && event.has("at")
+                                   ? static_cast<double>(engine_.realTime().now() -
+                                                         bossClock_.toLocal(event.get<std::int64_t>("at"))) /
+                                         kNsPerSec
+                                   : 0.0;
+        if (event.get<std::string>("stage") == "charge") {
+            const double seconds = std::max(0.0, event.getOr<double>("seconds", 0.0));
+            psystrikeWarning_ = bossClock_.synced() ? std::clamp(-sinceAt, 0.0, seconds) : seconds;
+            return;
+        }
+        psystrikeWarning_ = 0.0;
+        strikeFlash_ = strikeFlashSeconds;
+        const double late = std::clamp(sinceAt, 0.0, maxShockwaveCatchUpSeconds);
+        for (const std::int64_t direction : {-1, 1}) {
+            events_.raise(Event{Events::Spawn}
+                              .set("kind", "shockwave")
+                              .set("x", x)
+                              .set("direction", direction)
+                              .set("late", late));
+        }
+    }
+
+    // Ping rapidly until synced, then use the slower refresh interval.
+    void pingBossClock()
+    {
+        if (!bridge_ || bossPlayerId() == 0 || now_ < nextClockPingAt_) {
+            return;
+        }
+        events_.raise(Event{GameEvents::ClockPing}.set("sentAt", now_));
+        nextClockPingAt_ = now_ + (bossClock_.synced() ? clockPingSlowNs : clockPingFastNs);
+    }
+
+    // Pongs reach the whole party; only ours, from Mewtwo, count.
+    void onClockPong(const Event& event)
+    {
+        if (event.origin != bossPlayerId() ||
+            event.getOr<std::int64_t>("player", 0) != static_cast<std::int64_t>(session_->localPlayerId())) {
+            return;
+        }
+        bossClock_.receive(event.get<std::int64_t>("sentAt"), engine_.realTime().now(),
+                           event.get<std::int64_t>("bossTime"));
+    }
+
+    // Start `late` seconds into the wave's path to compensate for network delay.
+    GameObject& makeShockwave(float x, std::int64_t direction, double late)
+    {
+        const float speed = direction < 0 ? -shockwaveSpeed : shockwaveSpeed;
+        const float startX = x + speed * static_cast<float>(late);
+        GameObject& wave = world_.create("shockwave");
+        wave.add<Transform>(startX - shockwaveWidth * 0.5F, groundY - shockwaveHeight, shockwaveWidth,
+                            shockwaveHeight);
+        wave.add<Motion>(speed, 0.0F);
+        wave.add<Collider>(Collider::Kind::Trigger, hurtLayer);
+        wave.add<Behavior>([this](GameObject& self, const FrameTime&) {
+            const Transform& box = *self.get<Transform>();
+            if (box.x + box.width < 0.0F || box.x > levelWidth) {
+                world_.destroy(self.id());
+            }
+        });
+        wave.setActive(true);
+        return wave;
+    }
+    void onHit(const Event& event)
+    {
+        if (replay_.isPlaying()) {
+            return;
+        }
+        const auto x = static_cast<float>(event.getOr<double>("x", 0.0));
+        const auto y = static_cast<float>(event.getOr<double>("y", 0.0));
+        const std::string skill = event.getOr<std::string>("skill", "hit");
+        const std::int64_t points = event.getOr<std::int64_t>("points", 0);
+        if (event.origin != 0) {
+            addPopup(x, y, playerName(event.origin) + ": " + skill, Palette::popupTeammate);
+            return;
+        }
+        local_.score += points;
+        if (++combo_ >= hasteComboHits) {
+            combo_ = 0;
+            hasteEarned_ = true;
+        }
+        addPopup(x, y, skill + " +" + std::to_string(points), Palette::popupHit);
+    }
+    const Multiplayer::Player* bossPlayer() const
+    {
+        for (const Multiplayer::Player& player : session_->remotePlayers()) {
+            if (player.name == bossPlayerName) {
+                return &player;
+            }
+        }
+        return nullptr;
+    }
+
+    Multiplayer::PlayerId bossPlayerId() const
+    {
+        const Multiplayer::Player* boss = bossPlayer();
+        return boss != nullptr ? boss->id : 0;
+    }
+
+    // A teammate's player data; false for Mewtwo or someone who left.
+    bool teammateData(Multiplayer::PlayerId id, PokemonData& data) const
+    {
+        for (const Multiplayer::Player& player : session_->remotePlayers()) {
+            if (player.id == id) {
+                return decode(player.data, data);
+            }
+        }
+        return false;
+    }
+
+    // "YOU", a teammate's species, or "?" for someone who already left.
+    std::string playerName(Multiplayer::PlayerId id) const
+    {
+        if (id == session_->localPlayerId()) {
+            return "YOU";
+        }
+        PokemonData data;
+        return teammateData(id, data) ? species[data.species].name : "?";
     }
 
     // The engine does not carry riders: follow the platform's movement.
@@ -335,7 +596,7 @@ private:
     {
         const Transform& body = *pokemon_->get<Transform>();
         previousBottom_ = body.y + body.height;
-        if (dt > 0.0F) {
+        if (!replay_.isPlaying() && dt > 0.0F) {
             world_.updateComponents(frameTime_, "pokemon");
         }
     }
@@ -358,7 +619,8 @@ private:
     void networkStep()
     {
         session_->update();
-        refreshWorld();
+        fetchWorld();
+        readBossStatus();
     }
 
     void playFrame(const FrameTime& time)
@@ -370,7 +632,8 @@ private:
             skillPressed_ = false;
             fireShot();
         }
-        moveShot(time);
+        world_.updateComponents(time, "shot");
+        world_.updateComponents(time, "shockwave");
         onGround_ = false;
         riding_ = 0;
         world_.resolveCollisions();
@@ -382,6 +645,8 @@ private:
         invincible_ = std::max(0.0, invincible_ - dt);
         controlLock_ = std::max(0.0, controlLock_ - dt);
         bossFlash_ = std::max(0.0, bossFlash_ - dt);
+        psystrikeWarning_ = std::max(0.0, psystrikeWarning_ - dt);
+        strikeFlash_ = std::max(0.0, strikeFlash_ - dt);
         tickPopups(dt);
     }
 
@@ -414,14 +679,6 @@ private:
         shot_->get<Motion>()->velocityX = direction * shotSpeed;
         shot_->setActive(true);
         shotCooldown_ = shotCooldown;
-    }
-
-    void moveShot(const FrameTime& time)
-    {
-        if (!shot_->isActive()) {
-            return;
-        }
-        world_.updateComponents(time, "shot");
     }
 
     static Rect generateHitbox(const Multiplayer::Platform& object, const Insets& insets)
@@ -464,20 +721,37 @@ private:
             ballHitboxes_[used]->setActive(false);
         }
     }
-
-    void touch(GameObject& other)
+    void touch(ObjectId id, const std::string& tag, bool entered)
     {
-        if (other.tag() == "boss") {
-            touchBoss(*other.get<Transform>());
-        } else if (other.tag() == "shadow-ball") {
-            const Transform& ball = *other.get<Transform>();
-            getHurt(ball.x + ball.width * 0.5F);
-        } else if (other.tag() == "platform" || other.tag() == "moving-platform") {
-            const Transform& box = *other.get<Transform>();
+        if (tag == "death-zone") {
+            if (entered) {
+                events_.raise(deathEvent(pokemon_->id(), "pit"));
+            }
+            return;
+        }
+        if (tag == "scroll-left" || tag == "scroll-right") {
+            const Transform& body = *pokemon_->get<Transform>();
+            cameraX_ = clampCamera(tag == "scroll-left" ? body.x - scrollMargin
+                                                         : body.x + body.width - (windowWidth - scrollMargin));
+            return;
+        }
+        // Gone or switched off since the collision pass: nothing to touch.
+        GameObject* other = world_.find(id);
+        if (other == nullptr || !other->isActive()) {
+            return;
+        }
+        const Transform& box = *other->get<Transform>();
+        if (tag == "boss") {
+            touchBoss(box);
+        } else if (tag == "shadow-ball") {
+            getHurt(box.x + box.width * 0.5F);
+        } else if (tag == "shockwave") {
+            getHurt(box.x + box.width * 0.5F, psystrikePoints, "PSYSTRIKE");
+        } else if (tag == "platform" || tag == "moving-platform") {
             if (standsOn(*pokemon_->get<Transform>(), box)) {
                 onGround_ = true;
-                if (other.tag() == "moving-platform") {
-                    riding_ = other.id();
+                if (tag == "moving-platform") {
+                    riding_ = id;
                     ridingX_ = box.x;
                     ridingY_ = box.y;
                 }
@@ -485,11 +759,11 @@ private:
         }
     }
 
-    void hitBossWithShot(GameObject& shot)
+    void hitBossWithShot()
     {
-        shot.setActive(false);
-        const Transform& box = *shot.get<Transform>();
-        dealDamage(shotDamage, shotPoints, box.x, box.y, species[local_.species].skill);
+        shot_->setActive(false);
+        const Transform& box = *shot_->get<Transform>();
+        dealDamage(GameEvents::HitShot, shotPoints, box.x, box.y, species[local_.species].skill);
     }
 
     // Coming down onto its head is a stomp; any other contact hurts.
@@ -502,24 +776,24 @@ private:
             body.y = bossBox.y - pokemonSize;
             motion.velocityY = -stompBounce;
             invincible_ = std::max(invincible_, stompInvincible);
-            dealDamage(stompDamage, stompPoints, body.x + body.width * 0.5F, body.y, "STOMP!");
+            dealDamage(GameEvents::HitStomp, stompPoints, body.x + body.width * 0.5F, body.y, "STOMP!");
         } else {
             getHurt(bossBox.x + bossBox.width * 0.5F);
         }
     }
 
-    void dealDamage(int damage, int points, float x, float y, const std::string& label)
+    // Local scoring and network delivery share one HitEvent.
+    void dealDamage(const char* kind, int points, float x, float y, const std::string& label)
     {
-        local_.damage += damage;
-        local_.score += points;
-        if (++combo_ >= hasteComboHits) {
-            combo_ = 0;
-            hasteEarned_ = true;
-        }
-        addPopup(x, y, label + " +" + std::to_string(points), Palette::popupHit);
+        events_.raise(Event{GameEvents::Hit}
+                          .set("kind", kind)
+                          .set("points", points)
+                          .set("skill", label)
+                          .set("x", static_cast<double>(x))
+                          .set("y", static_cast<double>(y)));
     }
 
-    void getHurt(float fromX)
+    void getHurt(float fromX, int points = hurtPoints, const std::string& label = "OUCH")
     {
         if (invincible_ > 0.0) {
             return;
@@ -527,9 +801,9 @@ private:
         knockBack(fromX);
         combo_ = 0;
         countHurtTowardFreeze();
-        local_.score -= hurtPoints;
+        local_.score -= points;
         const Transform& body = *pokemon_->get<Transform>();
-        addPopup(body.x + pokemonSize * 0.5F, body.y, "OUCH -" + std::to_string(hurtPoints), Palette::popupHurt);
+        addPopup(body.x + pokemonSize * 0.5F, body.y, label + " -" + std::to_string(points), Palette::popupHurt);
     }
 
     void knockBack(float fromX)
@@ -570,8 +844,6 @@ private:
     {
         if (effect_ == TimeEffect::None) {
             savedScale_ = gameTime.scale();
-        } else if (effect_ == TimeEffect::Frozen) {
-            gameTime.unpause();
         }
         effect_ = effect;
         effectBannerUntil_ = now + effectBannerNs;
@@ -579,8 +851,8 @@ private:
             gameTime.setScale(hasteScale);
             effectEndsAt_ = now + static_cast<std::int64_t>(hasteSeconds * kNsPerSec);
         } else {
+            // Game time runs on at the normal scale; update() holds the simulation.
             gameTime.setScale(savedScale_);
-            gameTime.pause();
             effectEndsAt_ = now + static_cast<std::int64_t>(freezeSeconds * kNsPerSec);
         }
     }
@@ -590,9 +862,6 @@ private:
         if (effect_ == TimeEffect::None) {
             return;
         }
-        if (effect_ == TimeEffect::Frozen) {
-            gameTime.unpause();
-        }
         gameTime.setScale(savedScale_);
         effect_ = TimeEffect::None;
     }
@@ -600,6 +869,18 @@ private:
     double effectSecondsLeft() const
     {
         return std::max(0.0, static_cast<double>(effectEndsAt_ - now_) / static_cast<double>(kNsPerSec));
+    }
+
+    // Clear feedback when the corresponding boss state ends.
+    void forgetOldFinisher()
+    {
+        if (wasFainted_ && !bossFainted()) {
+            finisherName_.clear();
+        }
+        if (bossFainted()) {
+            psystrikeWarning_ = 0.0;
+        }
+        wasFainted_ = bossFainted();
     }
 
     void publishLocalPokemon()
@@ -614,23 +895,14 @@ private:
         session_->publishLocalPlayer(body.x, body.y, encode(local_));
     }
 
-    void refreshWorld()
-    {
-        fetchWorld();
-        readBossStatus();
-    }
-
     // The boss world from Mewtwo's player data, predicted between snapshots.
     void fetchWorld()
     {
-        bossSeen_ = false;
         std::vector<Multiplayer::Platform> received;
-        for (const Multiplayer::Player& player : session_->remotePlayers()) {
-            if (player.name == bossPlayerName && decodeBossWorld(player.data, received)) {
-                predictor_.receive(received, now_);
-                bossSeen_ = true;
-                break;
-            }
+        const Multiplayer::Player* boss = bossPlayer();
+        bossSeen_ = boss != nullptr && decodeBossWorld(boss->data, received);
+        if (bossSeen_) {
+            predictor_.receive(received, now_);
         }
         bossWorld_ = predictor_.predict(now_);
     }
@@ -659,20 +931,19 @@ private:
         return nullptr;
     }
 
+    bool remotePokemonData(const GameObject& object, PokemonData& data) const
+    {
+        const auto* identity = object.get<NetworkIdentity>();
+        return object.isActive() && object.tag() == "remote-pokemon" && identity != nullptr &&
+               teammateData(identity->id, data);
+    }
+
     // Positions from the World, looks from player data, animation on real time.
     void drawOtherPokemon(SDL_Renderer* renderer) const
     {
-        const std::vector<Multiplayer::Player>& players = session_->remotePlayers();
         for (const auto& object : world_.objects()) {
-            const auto* identity = object->get<NetworkIdentity>();
-            if (!object->isActive() || object->tag() != "remote-pokemon" || identity == nullptr) {
-                continue;
-            }
-            const auto player = std::find_if(players.begin(), players.end(), [&](const Multiplayer::Player& p) {
-                return p.id == identity->id;
-            });
             PokemonData data;
-            if (player == players.end() || !decode(player->data, data)) {
+            if (!remotePokemonData(*object, data)) {
                 continue;
             }
             const Transform& body = *object->get<Transform>();
@@ -681,8 +952,95 @@ private:
         }
     }
 
-    // Times whole frames and update() alone; drawing depends on whether the OS
-    // throttles a background window, update() does not.
+    // Frames are stamped on game time, and playback walks it at real-time
+    // pace. A stretch recorded under Haste (2x) or a speed key would replay
+    // at the wrong pace, so playback follows each frame's recorded scale and
+    // looks as fast as it did live.
+    void matchReplaySpeed()
+    {
+        if (!replay_.isPlaying()) {
+            return;
+        }
+        std::istringstream in(replay_.currentFrameState());
+        in.imbue(std::locale::classic());
+        double scale = 0.0;
+        if (in >> scale && scale > 0.0 && std::fabs(scale - replay_.speed()) > 1e-6) {
+            events_.raise(Event{Events::ReplaySpeed}.set("speed", scale));
+        }
+    }
+
+    // Custom-drawn sprites need frame state alongside the engine's Renderables.
+    // It starts with the game-time scale, which matchReplaySpeed() reads, then
+    // the time effect, so the replay shows Haste and Freeze as they looked.
+    std::string replayFrameState() const
+    {
+        std::ostringstream out;
+        out.imbue(std::locale::classic());
+        out << engine_.gameTime().scale() << ' ' << static_cast<int>(effect_) << ' ' << effectSecondsLeft() << ' '
+            << (now_ < effectBannerUntil_) << ' ' << now_ << ' ' << animationTime_ << ' ' << bossFlash_ << ' ';
+        out << std::quoted(encodeBossWorld(bossWorld_)) << ' ';
+        const auto member = [&](const Transform& body, const PokemonData& data, bool local) {
+            out << "p " << body.x - cameraX_ << ' ' << body.y << ' ' << local << ' '
+                << std::quoted(encode(onScreen(data))) << ' ';
+        };
+        member(*pokemon_->get<Transform>(), local_, true);
+        for (const auto& object : world_.objects()) {
+            PokemonData data;
+            if (remotePokemonData(*object, data)) {
+                member(*object->get<Transform>(), data, false);
+            } else if (object->isActive() && object->tag() == "shockwave") {
+                const Transform& box = *object->get<Transform>();
+                out << "w " << box.x - cameraX_ << ' ' << box.y << ' ';
+            }
+        }
+        return out.str();
+    }
+
+    void renderReplay(SDL_Renderer* renderer) const
+    {
+        renderWorld(renderer, replay_.world(), replay_.cameraX(), replay_.cameraY());
+        std::istringstream in(replay_.currentFrameState());
+        in.imbue(std::locale::classic());
+        double scale = 0.0;
+        int effect = 0;
+        double effectLeft = 0.0;
+        bool banner = false;
+        std::int64_t now = 0;
+        double animation = 0.0;
+        double flash = 0.0;
+        std::string encoded;
+        in >> scale >> effect >> effectLeft >> banner >> now >> animation >> flash >> std::quoted(encoded);
+        std::vector<Multiplayer::Platform> objects;
+        decodeBossWorld(encoded, objects);
+        drawShadowBalls(renderer, objects, replay_.cameraX());
+        drawBossSprites(renderer, bossSprite_, objects, replay_.cameraX(), flash > 0.0, now);
+        char kind;
+        float x, y;
+        while (in >> kind >> x >> y) {
+            if (kind == 'w') {
+                drawShockwave(renderer, {x, y, shockwaveWidth, shockwaveHeight});
+            } else {
+                bool local = false;
+                PokemonData data;
+                if (!(in >> local >> std::quoted(encoded)) || !decode(encoded, data)) {
+                    break;
+                }
+                drawPartyMember(renderer, pokemonSprites_, data, x, y,
+                                local ? static_cast<int>(animation * animationFps) : realTimeFrame(now),
+                                local ? "YOU" : species[data.species].name,
+                                local ? Palette::you : Palette::nameTag, now);
+            }
+        }
+        if (effect == static_cast<int>(TimeEffect::Haste)) {
+            drawHaste(renderer, banner);
+        } else if (effect == static_cast<int>(TimeEffect::Frozen)) {
+            drawFrozenOverlay(renderer, effectLeft);
+        }
+        setColor(renderer, Palette::controlsHelp);
+        drawTextCentered(renderer, Layout::centerX, 30.0F, "REPLAY   P pause   BACKSPACE stop");
+    }
+
+    // Measure whole-frame and update time separately.
     void timeBenchmark(std::int64_t updateEnd)
     {
         if (benchmark_.iterations <= 0 || benchmarkDone_) {
@@ -722,9 +1080,17 @@ private:
         drawScoreboard(renderer, scoreRows(local_, session_->remotePlayers()));
         drawTimePanel(renderer, timePanelState());
         drawHelpLines(renderer);
+        setColor(renderer, Palette::controlsHelp);
+        drawTextCentered(renderer, Layout::centerX, 78.0F,
+                         replay_.isRecording() ? "RECORDING   R stop   ENTER replay" : "R record   ENTER replay");
         drawWarning(renderer, connectionWarning(boss));
         if (bossFainted()) {
-            drawFaintedBanner(renderer, status_.respawnIn);
+            drawFaintedBanner(renderer, status_.respawnIn, finisherName_);
+        } else if (psystrikeWarning_ > 0.0) {
+            drawPsystrikeWarning(renderer, psystrikeWarning_, now_);
+        }
+        if (strikeFlash_ > 0.0) {
+            drawStrikeFlash(renderer);
         }
         if (effect_ == TimeEffect::Haste) {
             drawHaste(renderer, now_ < effectBannerUntil_);
@@ -745,6 +1111,9 @@ private:
         }
         if (!bossSeen_ || (boss == nullptr && !bossFainted())) {
             return "waiting for Mewtwo... (is pokemon-hunt-server running?)";
+        }
+        if (!bridge_) {
+            return "this mode carries no events: Mewtwo cannot be hurt (use client-server text)";
         }
         return {};
     }
@@ -768,20 +1137,28 @@ private:
         title << "Pokemon Hunt | " << species[local_.species].name << " | ";
         if (engine.gameTime().isPaused()) {
             title << "PAUSED";
+        } else if (effect_ == TimeEffect::Frozen) {
+            title << "FROZEN";
         } else {
             title << engine.gameTime().scale() << "x";
         }
         SDL_SetWindowTitle(engine.getWindow(), title.str().c_str());
     }
 
+    Engine& engine_;
+    // The engine's manager; it outlives the game.
+    EventManager& events_;
+    std::vector<EventManager::SubscriptionId> subscriptions_;
     std::unique_ptr<Multiplayer::Session> session_;
+    // After session_, so it goes first. Null for sessions without events.
+    std::unique_ptr<NetworkEventBridge> bridge_;
     BenchmarkPlan benchmark_;
     std::int64_t benchmarkStartedAt_ = 0;
     int benchmarkWarmedUp_ = 0;
     int benchmarkCounted_ = 0;
     std::int64_t benchmarkUpdateNs_ = 0;
     bool benchmarkDone_ = false;
-    // Main thread owns world_; its objects live as long as the game.
+    // World mutations are separated by the worker barrier.
     World world_;
     NetworkWorldSync sync_;
     GameObject* pokemon_ = nullptr;
@@ -790,7 +1167,6 @@ private:
     GameObject* scrollLeft_ = nullptr;
     GameObject* scrollRight_ = nullptr;
     GameObject* view_ = nullptr;
-    // Left edge of the screen in level coordinates.
     float cameraX_ = 0.0F;
     // Platform ridden (0 for none) and where it was.
     ObjectId riding_ = 0;
@@ -809,7 +1185,16 @@ private:
     double animationTime_ = 0.0;
     PokemonData local_;
 
-    // Main-thread game state.
+    // Destroy replay before sprites; recordings may borrow textures.
+    ReplaySystem replay_;
+    std::array<bool, SDL_SCANCODE_COUNT> held_{};
+    std::string finisherName_;
+    bool wasFainted_ = false;
+    // Game seconds, so a frozen or paused client's warning waits too.
+    double psystrikeWarning_ = 0.0;
+    double strikeFlash_ = 0.0;
+    BossClockSync bossClock_;
+    std::int64_t nextClockPingAt_ = 0;
     double shotCooldown_ = 0.0;
     double invincible_ = 0.0;
     double controlLock_ = 0.0;
@@ -1149,7 +1534,7 @@ int runGame(std::unique_ptr<Multiplayer::Session> session, int kind, GameClock& 
 
         gameClock.attach(engine.gameTime());
 
-        PokemonHuntGame game(std::move(session), kind, engine.getRenderer(), mediaDirectory(), benchmark);
+        PokemonHuntGame game(std::move(session), kind, engine, mediaDirectory(), benchmark);
         engine.run(game);
     } catch (const std::exception& exception) {
         std::cerr << "pokemon-hunt: " << exception.what() << '\n';
