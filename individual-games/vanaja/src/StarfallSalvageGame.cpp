@@ -1170,7 +1170,8 @@ void StarfallSalvageGame::renderCrewOverlays(SDL_Renderer* renderer) const
         rect(renderer, 245, 204, 470, 78, {83, 27, 45});
         centeredText(renderer, 222, "YOU ARE DOWN", {255, 225, 228});
         char message[64];
-        std::snprintf(message, sizeof(message), "BEACON RECALL IN %.0f S",
+        std::snprintf(message, sizeof(message), "%sBEACON RECALL IN %.0f S",
+                      astronaut_->lives == 0 ? "NO LIVES LEFT - " : "",
                       std::ceil(static_cast<double>(stationEvents_->beaconSecondsLeft())));
         centeredText(renderer, 242, message, {255, 210, 200});
         if (teammateCanHelp()) {
@@ -1205,8 +1206,8 @@ void StarfallSalvageGame::renderHud(SDL_Renderer* renderer) const
                            static_cast<int>(relays_.occupied[2]);
     const std::size_t playerCount = remote_.size() + (session_->state() == Multiplayer::State::Ready ? 1U : 0U);
     SDL_RenderDebugTextFormat(renderer, 20, 32,
-                              "CARGO %d/4 | RELAYS %d/3 | %s | %zu PLAYERS | %.1fX | %s | %s%s",
-                              recoveredCargo(cargoMask_), relayCount,
+                              "CARGO %d/4 | LIVES %d | RELAYS %d/3 | %s | %zu PLAYERS | %.1fX | %s | %s%s",
+                              recoveredCargo(cargoMask_), astronaut_->lives, relayCount,
                               Multiplayer::modeName(session_->mode()), playerCount, currentScale_,
                               paused_ ? "PAUSED" : "LIVE", astronaut_->flipped() ? "GRAVITY FLIPPED" : "GRAVITY NORMAL",
                               manualRecording_ ? " | REC" : "");

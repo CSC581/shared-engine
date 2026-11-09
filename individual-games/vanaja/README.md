@@ -23,10 +23,10 @@ named the winner.
 
 - Shuttles carry you between decks: one slides sideways, and a lift goes up
   and down.
-- Drones patrol the station (one flies in a circle). Touching one leaves you
-  **down** for up to 10 s (see co-op revive below).
+- Drones patrol the station (one flies in a circle). Touching one costs a life
+  and leaves you **down** (see co-op revive below). You have 3 lives.
 - Falling into the hull breach (the red gap in the floor) sends you straight
-  back to your spawn point.
+  back to your spawn point without losing a life.
 - The camera follows you as the station scrolls sideways.
 - Every player sees everyone else move, and progress (cargo, gate, relays) is
   shared across the network.
@@ -38,10 +38,12 @@ named the winner.
   downward. Panels on the ceiling flip you back. The crate over the hull breach
   is easiest to reach upside down.
 - **Co-op revive:** a downed astronaut floats in place with an SOS beacon,
-  and after 10 s the beacon brings them back at their spawn point. A teammate
-  standing next to them and holding `S` + `E` for about a second brings them
-  back sooner, at the rescuer's side. A revive only counts if the rescuer is
-  really next to you. Everyone sees "NOVA IS DOWN" and "SOL REVIVED NOVA".
+  which brings them back at their spawn point after 10 s, or after 20 s if
+  that hit took their last life (they then come back with all 3 lives). A
+  teammate standing next to them and holding `S` + `E` for about a second
+  brings them back sooner, at the rescuer's side. A revive only counts if the
+  rescuer is really next to you. Everyone sees "NOVA IS DOWN" and "SOL REVIVED
+  NOVA".
 - **Station alarms:** every 35 to 50 s the crew's alarm director (whoever is
   online with the lowest player id; the next one takes over if they leave)
   sets off an alarm for the

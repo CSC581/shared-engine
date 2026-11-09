@@ -447,7 +447,8 @@ int checkEvents()
         events.dispatch();
     };
 
-    // The breach: a DeathEvent that respawns at once, without going down.
+    // The breach: a DeathEvent that respawns at once, without going down or
+    // costing a life.
     spawnAt(76.0F, 380.0F);
     step(5);
     Transform& movable = *player.get<Transform>();
@@ -455,7 +456,7 @@ int checkEvents()
     movable.y = StarfallSalvage::decks[2].y + StarfallSalvage::decks[2].height + 20.0F;
     step(150);
     EXPECT(std::fabs(body.x - astronaut.spawn.x) < 0.01F);
-    EXPECT(!station.down());
+    EXPECT(astronaut.lives == 3 && !station.down());
 
     // Touching a crate collects it once.
     const Rect crate0 = StarfallSalvage::cargo[0];
@@ -480,7 +481,7 @@ int checkEvents()
     step(120);
     EXPECT(astronaut.grounded && std::fabs(body.y + body.height - StarfallSalvage::decks[6].y) <= 0.5F);
 
-    // A drone: down, frozen, with a ten second beacon.
+    // A drone: a life lost, then down, frozen, with a ten second beacon.
     spawnAt(76.0F, 380.0F);
     step(60);
     astronaut.invulnerableSeconds = 0.0F;
@@ -490,7 +491,8 @@ int checkEvents()
     drone.setActive(true);
     step(1);
     drone.setActive(false);
-    EXPECT(station.down() && station.beaconSecondsLeft() > 9.9F);
+    EXPECT(station.down() && astronaut.lives == 2 &&
+           std::fabs(station.beaconSecondsLeft() - StarfallSalvage::beaconSeconds) < 0.1F);
     EXPECT(station.flags().down);
     const float downX = body.x;
     step(static_cast<int>((StarfallSalvage::beaconSeconds - 0.2F) * StarfallSalvage::normalLoopHz));
@@ -505,10 +507,10 @@ int checkEvents()
     drone.setActive(true);
     placeDrone(dronePose);
     step(5);
-    EXPECT(!station.down());
+    EXPECT(!station.down() && astronaut.lives == 2);
     step(20);
     drone.setActive(false);
-    EXPECT(station.down());
+    EXPECT(station.down() && astronaut.lives == 1);
 
     // A revive from a player across the station is refused; one from beside
     // this player brings it back at the rescuer's side.
@@ -533,17 +535,36 @@ int checkEvents()
     EXPECT(station.banner().kind == StarfallSalvage::Banner::Kind::Revived && station.banner().subject == 0 &&
            station.banner().actor == 7);
 
-    // There is no limit on hits: a third one still gets the full beacon, and
-    // the beacon still calls the astronaut back.
+    // The last life: a longer beacon, which still calls the astronaut back,
+    // with every life restored.
     step(60);
     astronaut.invulnerableSeconds = 0.0F;
     drone.setActive(true);
     placeDrone(dronePose);
     step(1);
     drone.setActive(false);
-    EXPECT(station.down() && station.beaconSecondsLeft() > 9.9F);
+    EXPECT(station.down() && astronaut.lives == 0 &&
+           std::fabs(station.beaconSecondsLeft() - StarfallSalvage::lastLifeBeaconSeconds) < 0.1F);
     step(static_cast<int>((StarfallSalvage::beaconSeconds + 0.2F) * StarfallSalvage::normalLoopHz));
-    EXPECT(!station.down() && std::fabs(body.x - astronaut.spawn.x) < 0.01F);
+    EXPECT(station.down());
+    step(static_cast<int>((StarfallSalvage::lastLifeBeaconSeconds - StarfallSalvage::beaconSeconds) *
+                          StarfallSalvage::normalLoopHz));
+    EXPECT(!station.down() && std::fabs(body.x - astronaut.spawn.x) < 0.01F &&
+           astronaut.lives == StarfallSalvage::startingLives);
+
+    // A revive after the last life also restores every life.
+    step(60);
+    astronaut.invulnerableSeconds = 0.0F;
+    astronaut.lives = 1;
+    drone.setActive(true);
+    placeDrone(dronePose);
+    step(1);
+    drone.setActive(false);
+    EXPECT(station.down() && astronaut.lives == 0);
+    rescuerBounds.x = body.x + 30.0F;
+    rescuerBounds.y = body.y;
+    reviveFrom(7);
+    EXPECT(!station.down() && astronaut.lives == StarfallSalvage::startingLives);
 
     // Rescuing: holding the revive chord next to a downed teammate for long
     // enough raises one ReviveEvent naming it; one not down is ignored.

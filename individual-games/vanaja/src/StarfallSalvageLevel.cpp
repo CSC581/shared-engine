@@ -519,8 +519,9 @@ void StationEvents::onDeath(const Event& event)
         events_.raise(spawnEvent("breach"));
         return;
     }
+    astronaut_.lives = std::max(0, astronaut_.lives - 1);
     down_ = true;
-    beacon_ = beaconSeconds;
+    beacon_ = astronaut_.lives > 0 ? beaconSeconds : lastLifeBeaconSeconds;
     astronaut_.halt();
 }
 
@@ -538,6 +539,9 @@ void StationEvents::onSpawn(const Event& event)
     }
     down_ = false;
     beacon_ = 0.0F;
+    if (astronaut_.lives == 0) {
+        astronaut_.lives = startingLives;
+    }
     astronaut_.invulnerableSeconds = static_cast<float>(event.getOr<double>("shield", 1.0));
     applyGravity();
 }

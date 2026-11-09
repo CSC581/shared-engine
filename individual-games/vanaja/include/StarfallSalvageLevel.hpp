@@ -4,6 +4,7 @@
 #include "Color.hpp"
 #include "Components.hpp"
 #include "Multiplayer.hpp"
+#include "StarfallSalvageRules.hpp"
 #include "World.hpp"
 
 #include <cstdint>
@@ -89,6 +90,7 @@ public:
 
     Input input;
     Rect spawn{};
+    int lives = startingLives;
     float invulnerableSeconds = 0.0F;
     bool grounded = false;
     int jumpsUsed = 0;

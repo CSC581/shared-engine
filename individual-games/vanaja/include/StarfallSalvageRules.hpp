@@ -43,12 +43,16 @@ struct CrewFlags {
     bool down = false;
 };
 
-// Reviving: a teammate holds the revive chord this close to a downed
-// astronaut for this long. Otherwise the beacon calls the astronaut back to
-// its spawn point when it runs out, so nobody is ever stranded.
+// Each drone hit costs a life. Reviving: a teammate holds the revive chord
+// this close to a downed astronaut for this long. Otherwise the beacon calls
+// the astronaut back to its spawn point when it runs out, later if that hit
+// took the last life, so nobody is ever stranded. Coming back from the last
+// life restores every life.
+constexpr int startingLives = 3;
 constexpr float reviveRange = 60.0F;
 constexpr float reviveSeconds = 1.2F;
 constexpr float beaconSeconds = 10.0F;
+constexpr float lastLifeBeaconSeconds = 20.0F;
 
 // One player can claim only the pad beneath their feet, and only while holding E.
 int padUnderPlayer(const Rect& player);

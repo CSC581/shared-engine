@@ -19,9 +19,10 @@
 //                   player + cargo       -> the crate is collected
 //                   player + gravitypanel-> gravity flips
 //   DeathEvent      breach: SpawnEvent at the spawn point at once
-//                   drone: down until revived or until the beacon calls the
-//                   astronaut back
-//   SpawnEvent      the only place the astronaut is placed
+//                   drone: a life lost, then down until revived or until the
+//                   beacon calls the astronaut back (later after the last life)
+//   SpawnEvent      the only place the astronaut is placed; restores every
+//                   life if the last one was lost
 //   ReviveEvent     a teammate rescued the downed player `target`; honoured
 //                   only if the rescuer is within 2 x reviveRange of this player
 //   StationAlarmEvent (from this player or the current alarm director, the

@@ -44,7 +44,7 @@ rejected and what limitation was accepted.
 | SS-26 | *(agent)* Close the loopholes found in review: a ReviveEvent counts only if the rescuer is within 2 × `reviveRange` of the target; only the current alarm director (or this player itself) can set off an alarm; drones raise "stay" collisions so a shield that runs out inside one still ends in a hit; spawns and alarm begin/end events are `EventPriority::High` so a full queue never drops one (a lost alarm end would leave the alarm on for good) | Remote events are untrusted: the server sets `origin` honestly, but the arguments are the sender's. Rejected: trusting the target's own copy of the rescuer's claim alone, which a modified client could fake from anywhere | A rescuer who walks away between pressing and arrival (rare at 1.2 s holds) can see a revive refused |
 | SS-27 | *(agent)* Latch mission completion, and keep publishing the relay a player held while it watches a replay | The debrief pauses the player who first sees all three relays held, which let go of its relay; its release could reach the server before the others saw all three held, so they never completed. Rejected: shortening the debrief or delaying it, which only narrows the race | The completion banner stays up once reached |
 | SS-28 | *(agent)* `R` restarts a downed player with no lives whenever no teammate can help (none online, or all down), or after `restartWaitSeconds` (20 s) of game time down; manual replay clips keep their last 60 s; `Esc` and `F1` also go through InputEvent | Two downed players at 0 lives could otherwise never recover, and an idle or absent-minded teammate could strand a player for good; an F9 left running grew without limit; every control now uses the event system. Rejected: restarting at once whenever down, which would make reviving pointless. *Revised 2026-11-09 (user, on agent suggestion):* the `R` restart is removed by SS-29; the 60 s clip limit and InputEvent controls stay | A player can skip waiting for a slow rescuer after 20 s |
-| SS-29 | *(user, on agent suggestion)* Drop lives and the `R` restart: a drone hit always leaves the astronaut down until a teammate's revive or the 10 s beacon, which always runs | The old rules (lives, a beacon only with lives left, `R` when no teammate could help or after 20 s) needed a "can a teammate help" check and were hard to explain in play. A fixed beacon cannot strand anyone, so the restart cases disappear, and a revive still matters because it saves time and returns the player where the rescuer is, not at the spawn point. Rejected: keeping lives with a longer recall at 0 lives, which keeps a rule with little effect | A drone hit costs only time; the mission has no timer or game over, so hits never end a run |
+| SS-29 | *(user, on agent suggestion)* Replace the 0-lives rules and the `R` restart with one beacon rule: each drone hit still costs a life and leaves the astronaut down; the beacon recalls it after 10 s, or 20 s when that hit took the last life; coming back from the last life, by beacon or revive, restores all 3 lives | The old rules (no beacon at 0 lives, `R` when no teammate could help or after 20 s) needed a "can a teammate help" check and were hard to explain in play. A beacon that always runs cannot strand anyone, so the restart cases disappear, while the longer last-life recall keeps lives meaningful. A revive still matters: it saves time and returns the player beside the rescuer. Restoring lives on a revive too means waiting for the beacon is never better than being rescued. Rejected: dropping lives entirely (tried first, but it removed the death penalty the game had since Milestone 3); restoring the old rules | Losing every life costs 20 s, not the run; the mission has no timer or game over |
 
 ## Verification
 
@@ -54,13 +54,15 @@ rejected and what limitation was accepted.
 station:
 - flipped gravity: falling to the ceiling, standing on it, jumping downward,
   falling back, and respawning with normal gravity
-- the breach DeathEvent respawning at once, without going down
+- the breach DeathEvent respawning at once, without going down or losing a
+  life
 - a crate collected once on touch
 - a floor panel flipping gravity, walking the ceiling collecting the breach
   crate, and the ceiling panel flipping back down to the floor
 - a drone death leaving the astronaut down and frozen, the beacon recall after
-  10 s, a remote revive respawning it at the rescuer's side, and a third hit
-  still getting the full beacon (no limit on hits)
+  10 s, a remote revive respawning it at the rescuer's side, the last life
+  getting a 20 s beacon, and a beacon recall or a revive after the last life
+  restoring all 3 lives
 - holding the revive chord raising exactly one ReviveEvent for the right
   teammate, and none for a teammate who is not down or out of range
 - a remote death showing only a banner
