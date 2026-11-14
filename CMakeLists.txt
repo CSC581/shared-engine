@@ -146,6 +146,19 @@ target_link_libraries(engine PUBLIC SDL3::SDL3 engine-geometry engine-threads en
 
 enable_testing()
 
+# Milestone 5: typed pool lifetime, World ownership and existing consumers.
+add_executable(pool-allocator-tests tests/PoolAllocatorTests.cpp)
+target_include_directories(pool-allocator-tests PRIVATE include)
+add_test(NAME pool-allocator-tests COMMAND pool-allocator-tests)
+
+add_executable(world-memory-tests tests/WorldMemoryTests.cpp)
+target_link_libraries(world-memory-tests PRIVATE engine-geometry engine-threads)
+add_test(NAME world-memory-tests COMMAND world-memory-tests)
+
+add_executable(memory-integration-tests tests/MemoryIntegrationTests.cpp)
+target_link_libraries(memory-integration-tests PRIVATE engine multiplayer)
+add_test(NAME memory-integration-tests COMMAND memory-integration-tests)
+
 # The object model: attaching and requiring components, update order, deferred
 # destruction, and every Part 2 object built from components in a small level.
 # Links engine-threads to check that disjoint tags update on FrameWorkers.
