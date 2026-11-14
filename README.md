@@ -1,9 +1,9 @@
-# Shared Engine, Milestone 4: Event Management
+# Shared Engine
 
 **Team:** Harsha Vardhan Puvvadi, Seojin Kim, Vanaja Agarwal · **CSC 581**  
-**Github Link:** https://github.com/CSC581/shared-engine/tree/milestone-4
+**Github Link:** https://github.com/CSC581/shared-engine/tree/milestone-5
 
-This is our C++17 game engine. It uses SDL3 for the window, input and drawing, and ZeroMQ for networking. Each game keeps its own rules, and any networking goes through the engine. There are tests for each module. This README only covers Milestone 4. The object model, networking and network formats were done in Milestone 3 and are described in the [Milestone 3 README](https://github.com/CSC581/shared-engine/tree/milestone-3).
+This is our C++17 game engine. It uses SDL3 for the window, input and drawing, and ZeroMQ for networking. Each game keeps its own rules, and any networking goes through the engine. Milestone 5 adds optional fixed-capacity object pools, described below. The remaining sections document Milestone 4's events and replay. The object model, networking and network formats were done in Milestone 3 and are described in the [Milestone 3 README](https://github.com/CSC581/shared-engine/tree/milestone-3).
 
 ```bash
 git submodule update --init --recursive
@@ -11,7 +11,88 @@ cmake -S . -B build && cmake --build build -j 4 -- -k   # -k: keep going past th
 ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 ```
 
-## What each part asked for and how we did it
+## Milestone 5: memory allocation
+
+`PoolAllocator<T>` reserves aligned storage for a designer-selected type and
+positive object count. It constructs objects only when requested and reuses
+released slots through a preallocated free list. The allocator is SDL-free and
+supports non-default-constructible, immovable and over-aligned types.
+
+Games can opt into pooled `GameObject` storage through `World` without changing
+their factories or component model:
+
+```cpp
+#include "Components.hpp"
+#include "World.hpp"
+
+World world(256); // Exactly 256 GameObject slots; World() keeps heap allocation.
+if (GameObject* bullet = world.tryCreate("bullet")) {
+    bullet->add<Transform>(100.0F, 100.0F, 8.0F, 8.0F);
+    bullet->add<Motion>(200.0F, 0.0F);
+    bullet->add<Renderable>(Color{240, 200, 60});
+    bullet->setActive(true);
+}
+```
+
+| Operation | Behavior |
+| --------- | -------- |
+| `World(capacity)` | Reserves a fixed pool and the ownership-vector capacity up front |
+| `world.tryCreate(tag)` | Returns an inactive object, or null when the pool is full |
+| `world.create(tag)` | Returns an inactive object by reference; throws `std::bad_alloc` when full |
+| `world.destroy(id)` | Queues destruction; the object still occupies its slot |
+| `world.flushDestroyed()` | Destroys queued objects and components, then releases slots |
+| `world.objectCapacity()` | The fixed slot count, or zero for a heap-backed world |
+| `world.objects().size()` | The occupied count, including inactive objects |
+
+There is no heap fallback or automatic growth in pool mode. Other exceptions
+from allocation/construction propagate; `tryCreate` is not `noexcept`. Existing
+games continue using heap-backed worlds. `objects()` now returns
+`const World::ObjectList&`, whose `World::ObjectPtr` owners use a pool-aware
+deleter; iteration, indexing and `.get()` work as before. Surviving addresses
+and creation order stay stable, and replacements get fresh IDs.
+
+The generic allocator also works independently of `World`:
+
+```cpp
+#include "PoolAllocator.hpp"
+
+PoolAllocator<int> scores(16);
+if (int* score = scores.create(10)) {
+    scores.destroy(score);
+}
+```
+
+`size()` and `capacity()` report live objects and reserved slots. `create()`
+returns null when full and rolls back its slot if construction throws. `destroy()`
+rejects null, foreign, interior and already-free pointers with
+`std::invalid_argument`. Zero capacity is invalid; unrepresentable capacities
+throw `std::length_error`. Pool teardown destroys remaining live objects.
+
+Create/destroy on the owning thread; object destructors must not throw, and
+constructors/destructors must not re-enter the pool. `World::destroy()` remains
+safe for workers to queue requests. Raw pointers become invalid when their
+object is destroyed; the pool cannot detect an old pointer after its address
+is reused. Components, strings and containers still allocate normally, so this
+does not promise allocation-free frames or a measured speedup.
+
+Build and try the demonstration:
+
+```bash
+cmake --build build --target memory-demo pool-allocator-tests world-memory-tests memory-integration-tests -j 4
+./build/memory-demo
+ctest --test-dir build --output-on-failure -R '^(pool-allocator-tests|world-memory-tests|memory-integration-tests|memory-demo-smoke)$'
+```
+
+Space spawns 20 objects, F fills the 200-slot pool, R clears it, and Escape quits.
+Objects expire after four seconds. The HUD shows occupancy and rejected spawns.
+The CTest smoke test uses SDL's dummy/software driver to check fill, deferred
+clear, refill and expiry through the engine loop. New Milestone 5 games must
+opt into pooled worlds; this demo does not replace those game submissions.
+
+**Reference:** Course Memory lecture (pool allocation, slide 7; alignment,
+slides 8–15).
+
+## Milestone 4 requirements
 
 | Part | Milestone Requirements | What we built |
 | ---- | ---------------------- | ------------- |
@@ -32,7 +113,7 @@ The commands assume the build step above has been run.
 
 The engine's own demos also show each part: `./build/events-demo` for 1.1; `./build/network-server`, then `./build/multiplayer-demo --mode client-server` in several terminals for 1.2, where Space pings every window; and `./build/replay-demo` for 1.3.
 
-## Files for this milestone
+## Milestone 4 files
 
 ```text
 1.1 Event management

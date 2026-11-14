@@ -361,6 +361,14 @@ target_link_libraries(multiplayer-demo PRIVATE engine multiplayer)
 add_executable(events-demo sandbox/EventsDemo.cpp)
 target_link_libraries(events-demo PRIVATE engine)
 
+add_executable(memory-demo sandbox/MemoryDemo.cpp)
+target_link_libraries(memory-demo PRIVATE engine)
+add_test(NAME memory-demo-smoke COMMAND memory-demo --smoke)
+set_tests_properties(memory-demo-smoke PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software"
+    TIMEOUT 10
+)
+
 # Milestone 4 Phase 5: record, play back at 0.5x/1x/2x and return, all through
 # replay events, in a level whose camera scrolls.
 add_executable(replay-demo sandbox/ReplayDemo.cpp)
