@@ -85,13 +85,48 @@ void raiseCollision(EventManager& events, const GameObject& x, const GameObject&
 
 } // namespace
 
+World::World(std::size_t objectCapacity)
+    : objectPool_(std::make_unique<PoolAllocator<GameObject>>(objectCapacity))
+{
+    objects_.reserve(objectCapacity);
+}
+
+void World::ObjectDeleter::operator()(GameObject* object) const noexcept
+{
+    if (pool != nullptr) {
+        pool->destroy(object);
+    } else {
+        delete object;
+    }
+}
+
 GameObject& World::create(std::string tag)
 {
-    objects_.push_back(std::make_unique<GameObject>(nextId_++, std::move(tag)));
-    GameObject& object = *objects_.back();
-    object.structureVersion_ = &structureVersion_;
+    if (GameObject* object = tryCreate(std::move(tag))) {
+        return *object;
+    }
+    throw std::bad_alloc{};
+}
+
+GameObject* World::tryCreate(std::string tag)
+{
+    GameObject* object = objectPool_ != nullptr
+        ? objectPool_->create(nextId_, std::move(tag))
+        : new GameObject(nextId_, std::move(tag));
+    if (object == nullptr) {
+        return nullptr;
+    }
+    ObjectPtr owned(object, ObjectDeleter{objectPool_.get()});
+    objects_.push_back(std::move(owned));
+    object->structureVersion_ = &structureVersion_;
+    ++nextId_;
     ++structureVersion_;
     return object;
+}
+
+std::size_t World::objectCapacity() const
+{
+    return objectPool_ != nullptr ? objectPool_->capacity() : 0;
 }
 
 void World::destroy(ObjectId id)
@@ -141,7 +176,7 @@ std::vector<GameObject*> World::findAllByTag(const std::string& tag)
     return result;
 }
 
-const std::vector<std::unique_ptr<GameObject>>& World::objects() const
+const World::ObjectList& World::objects() const
 {
     return objects_;
 }
@@ -281,7 +316,7 @@ void World::flushDestroyed()
 
     objects_.erase(
         std::remove_if(objects_.begin(), objects_.end(),
-            [&doomed](const std::unique_ptr<GameObject>& object) {
+            [&doomed](const ObjectPtr& object) {
                 return std::find(doomed.begin(), doomed.end(), object->id()) != doomed.end();
             }),
         objects_.end());

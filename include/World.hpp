@@ -2,7 +2,9 @@
 
 #include "FrameTime.hpp"
 #include "GameObject.hpp"
+#include "PoolAllocator.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -35,15 +37,31 @@ class EventManager;
 // owning thread, once nothing is updating.
 class World {
 public:
+    struct ObjectDeleter {
+        PoolAllocator<GameObject>* pool = nullptr;
+        void operator()(GameObject* object) const noexcept;
+    };
+    using ObjectPtr = std::unique_ptr<GameObject, ObjectDeleter>;
+    using ObjectList = std::vector<ObjectPtr>;
+
+    // Existing worlds use the heap; a positive capacity opts into fixed slots.
     World() = default;
+    explicit World(std::size_t objectCapacity);
 
     World(const World&) = delete;
     World& operator=(const World&) = delete;
 
     // Creates an empty, inactive object. Attach its components, then call
     // setActive(true); until then no pass touches it. The reference stays valid
-    // until the object is destroyed and flushDestroyed() runs.
+    // until the object is destroyed and flushDestroyed() runs. A full pool
+    // throws std::bad_alloc; inactive objects still occupy their slots.
     GameObject& create(std::string tag = {});
+
+    // Null only when the pool is full; other exceptions propagate.
+    GameObject* tryCreate(std::string tag = {});
+
+    // Zero means heap allocation; otherwise the fixed GameObject slot count.
+    std::size_t objectCapacity() const;
 
     // Marks the object for removal at the next flushDestroyed(). Safe from any
     // thread; see above.
@@ -70,7 +88,7 @@ public:
     }
 
     // Every object, in creation order.
-    const std::vector<std::unique_ptr<GameObject>>& objects() const;
+    const ObjectList& objects() const;
 
     void update(const FrameTime& time);
 
@@ -89,8 +107,10 @@ public:
     void flushDestroyed();
 
 private:
+    // Declared before objects_ so every owner releases its slot before the pool.
+    std::unique_ptr<PoolAllocator<GameObject>> objectPool_;
     EventManager* events_ = nullptr;
-    std::vector<std::unique_ptr<GameObject>> objects_;
+    ObjectList objects_;
     // Every component of every object, sorted into update order. Rebuilt only
     // when structureVersion_ has moved past orderVersion_, that is when an
     // object was created or destroyed or a component attached, instead of
