@@ -17,6 +17,10 @@ ctest --test-dir build --output-on-failure -E 'multiplayer-tests'
 positive object count. It constructs objects only when requested and reuses
 released slots through a preallocated free list. The allocator is SDL-free and
 supports non-default-constructible, immovable and over-aligned types.
+Ordinary storage implementation lives in `src/PoolAllocator.cpp`; the header
+keeps the type-dependent template operations, following the component API's
+header/source split. Standalone pool users link `engine-memory`; `engine` and
+`engine-geometry` provide it transitively.
 
 Games can opt into pooled `GameObject` storage through `World` without changing
 their factories or component model:

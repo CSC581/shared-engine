@@ -112,6 +112,10 @@ target_include_directories(multiplayer PUBLIC include)
 # engine-geometry for NetworkWorldSync, which mirrors a session into a World.
 target_link_libraries(multiplayer PUBLIC network-core peer-core engine-geometry)
 
+# SDL-free pool storage shared by typed allocators and World.
+add_library(engine-memory STATIC src/PoolAllocator.cpp)
+target_include_directories(engine-memory PUBLIC include)
+
 # SDL-free game object model (GameObject, Component, the built-in components,
 # World) and the box geometry it collides with. No SDL on this link line, so a
 # headless server and the tests can use the same objects as the clients.
@@ -125,7 +129,7 @@ add_library(engine-geometry STATIC
 target_include_directories(engine-geometry PUBLIC include)
 
 # Components update on a FrameTime, so the clocks come with the object model.
-target_link_libraries(engine-geometry PUBLIC engine-time engine-events)
+target_link_libraries(engine-geometry PUBLIC engine-time engine-events engine-memory)
 
 # Milestone 4, 1.3: recording frames and events, and playing them back in a
 # separate World. SDL-free, so it is tested headless like the object model.
@@ -148,7 +152,7 @@ enable_testing()
 
 # Milestone 5: typed pool lifetime, World ownership and existing consumers.
 add_executable(pool-allocator-tests tests/PoolAllocatorTests.cpp)
-target_include_directories(pool-allocator-tests PRIVATE include)
+target_link_libraries(pool-allocator-tests PRIVATE engine-memory)
 add_test(NAME pool-allocator-tests COMMAND pool-allocator-tests)
 
 add_executable(world-memory-tests tests/WorldMemoryTests.cpp)
