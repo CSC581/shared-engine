@@ -66,12 +66,57 @@ int main()
     eliminate(win); CHECK(win.rules().wave() == 3); tick(win);
     CHECK(win.storage().active(Kind::Boss) == 1);
     eliminate(win); CHECK(win.rules().phase() == Phase::Won);
+    Arena expiry;
+    auto expired = expiry.storage().spawn(Kind::PlayerShot, {10, 300, 8, 12}, 0, 0, 1, Arena::Step);
+    tick(expiry); CHECK(expiry.storage().get(expired) == nullptr);
+    tick(expiry);
+    auto outside = expiry.storage().spawn(Kind::EnemyShot, {-40, 300, 8, 10}, 0, 0, 1, 2);
+    tick(expiry); CHECK(expiry.storage().get(outside) == nullptr);
+    Arena simultaneous;
+    for (int hit = 0; hit < 2; ++hit) {
+        simultaneous.storage().spawn(Kind::EnemyShot, simultaneous.storage().get(simultaneous.player())->body->bounds(), 0, 0, 1, 2);
+        tick(simultaneous);
+        for (int i = 0; i < 240; ++i) tick(simultaneous);
+    }
+    CHECK(simultaneous.rules().lives() == 1);
+    eliminate(simultaneous); tick(simultaneous);
+    eliminate(simultaneous); tick(simultaneous);
+    simultaneous.storage().spawn(Kind::EnemyShot, simultaneous.storage().get(simultaneous.player())->body->bounds(), 0, 0, 1, 2);
+    eliminate(simultaneous); CHECK(simultaneous.rules().phase() == Phase::Lost);
+    for (auto mode : {StorageMode::Heap, StorageMode::Pool, StorageMode::Reuse}) {
+        Arena consecutive(mode);
+        eliminate(consecutive); tick(consecutive); eliminate(consecutive); tick(consecutive);
+        auto& cs = consecutive.storage();
+        for (std::size_t i = 0; i < cs.slots().size(); ++i) {
+            auto* boss = cs.get(cs.handle(i));
+            if (!boss || boss->kind != Kind::Boss) continue;
+            boss->health = 2;
+            auto shot = cs.spawn(Kind::PlayerShot, boss->body->bounds(), 0, 0, 1, 2);
+            tick(consecutive); CHECK(boss->health == 1);
+            // The next pass has the same reused IDs and no missing-contact pass.
+            cs.beginStep();
+            auto next = cs.spawn(Kind::PlayerShot, boss->body->bounds(), 0, 0, 1, 2);
+            CHECK(next.slot == shot.slot && next.generation != shot.generation);
+            CHECK(cs.get(shot) == nullptr);
+            tick(consecutive); CHECK(consecutive.rules().phase() == Phase::Won);
+        }
+    }
     Arena heap(StorageMode::Heap), pool(StorageMode::Pool), reuse;
     for (int i = 0; i < 2400; ++i) {
         Controls controls{float((i / 360) % 3 - 1), true, i % 720 == 0};
         for (auto* arena : {&heap, &pool, &reuse}) arena->update({Arena::Step, 0}, controls);
         CHECK(heap.digest() == pool.digest() && heap.digest() == reuse.digest());
+        CHECK(heap.rules().score() == reuse.rules().score() && pool.rules().score() == reuse.rules().score());
+        CHECK(heap.rules().shieldCooldown() == reuse.rules().shieldCooldown());
+        CHECK(pool.rules().protectedNow() == reuse.rules().protectedNow());
+        CHECK(heap.rules().pattern() == reuse.rules().pattern());
     }
+    for (int wave = 0; wave < 3; ++wave) {
+        for (auto* arena : {&heap, &pool, &reuse}) { eliminate(*arena); tick(*arena); }
+        CHECK(heap.digest() == pool.digest() && heap.digest() == reuse.digest());
+        CHECK(heap.rules().score() == reuse.rules().score());
+    }
+    CHECK(reuse.rules().phase() == Phase::Won);
     std::cout << "Neon arena: " << failures << " failures\n";
     return failures != 0;
 }

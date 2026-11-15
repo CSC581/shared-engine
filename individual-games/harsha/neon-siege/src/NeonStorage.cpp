@@ -89,7 +89,7 @@ Handle Storage::spawn(Kind kind, Rect bounds, float vx, float vy, int health, do
         if (!slot.object) construct(i);
         slot.body->x = bounds.x; slot.body->y = bounds.y;
         slot.body->width = bounds.width; slot.body->height = bounds.height;
-        if (slot.motion) { slot.motion->velocityX = vx; slot.motion->velocityY = vy; }
+        if (slot.motion) { slot.motion->velocityX = vx; slot.motion->velocityY = vy; slot.motion->kinematic = kind == Kind::Guide; }
         if (auto* collider = slot.object->get<Collider>()) {
             collider->layers = layers(kind); collider->kind = Collider::Kind::Trigger;
         }
@@ -98,6 +98,7 @@ Handle Storage::spawn(Kind kind, Rect bounds, float vx, float vy, int health, do
             slot.render->texture = nullptr;
             slot.render->layer = kind == Kind::Particle ? 0 : (kind == Kind::Player ? 3 : 2);
         }
+        if (auto* gravity = slot.object->get<Gravity>()) gravity->acceleration = 120;
         slot.health = health; slot.age = 0; slot.lifetime = lifetime;
         slot.used = true; slot.retired = false; ++slot.generation; slot.birth = ++serial_;
         slot.object->setActive(true);
