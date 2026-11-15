@@ -43,3 +43,11 @@ foreach(neon_memory_kind IN ITEMS benchmark profile)
 endforeach()
 target_sources(neon-siege-memory-profile PRIVATE benchmarks/AllocationProbe.cpp)
 target_compile_definitions(neon-siege-memory-profile PRIVATE NEON_ALLOCATION_PROFILE)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME neon-study-validation-tests
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/collect_study.py" --self-test)
+    add_test(NAME neon-source-comparison-tests
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/compare_games.py" --self-test)
+endif()
