@@ -4,3 +4,9 @@ target_include_directories(neon-rules PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/includ
 add_executable(neon-rules-tests tests/NeonRulesTests.cpp)
 target_link_libraries(neon-rules-tests PRIVATE neon-rules)
 add_test(NAME neon-rules-tests COMMAND neon-rules-tests)
+
+add_library(neon-gameplay STATIC src/NeonStorage.cpp)
+target_link_libraries(neon-gameplay PUBLIC neon-rules engine-geometry)
+add_executable(neon-storage-tests tests/NeonStorageTests.cpp)
+target_link_libraries(neon-storage-tests PRIVATE neon-gameplay)
+add_test(NAME neon-storage-tests COMMAND neon-storage-tests)
