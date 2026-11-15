@@ -26,3 +26,20 @@ add_test(NAME neon-ui-tests COMMAND neon-ui-tests)
 add_test(NAME neon-smoke COMMAND neon-siege --smoke)
 set_tests_properties(neon-ui-tests neon-smoke PROPERTIES TIMEOUT 60
     ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software")
+
+add_executable(neon-allocation-probe-tests tests/AllocationProbeTests.cpp benchmarks/AllocationProbe.cpp)
+target_include_directories(neon-allocation-probe-tests PRIVATE benchmarks)
+add_test(NAME neon-allocation-probe-tests COMMAND neon-allocation-probe-tests)
+
+foreach(neon_memory_kind IN ITEMS benchmark profile)
+    add_executable(neon-siege-memory-${neon_memory_kind} benchmarks/NeonMemoryBenchmark.cpp)
+    target_include_directories(neon-siege-memory-${neon_memory_kind} PRIVATE "${CMAKE_SOURCE_DIR}/benchmarks")
+    target_link_libraries(neon-siege-memory-${neon_memory_kind} PRIVATE neon-gameplay)
+    add_test(NAME neon-memory-${neon_memory_kind}-quick
+        COMMAND neon-siege-memory-${neon_memory_kind} --quick
+            --runs "${CMAKE_BINARY_DIR}/neon-memory-${neon_memory_kind}-quick-runs.csv"
+            --summary "${CMAKE_BINARY_DIR}/neon-memory-${neon_memory_kind}-quick-summary.csv")
+    set_tests_properties(neon-memory-${neon_memory_kind}-quick PROPERTIES TIMEOUT 60)
+endforeach()
+target_sources(neon-siege-memory-profile PRIVATE benchmarks/AllocationProbe.cpp)
+target_compile_definitions(neon-siege-memory-profile PRIVATE NEON_ALLOCATION_PROFILE)
