@@ -18,7 +18,8 @@ public:
     Workload(Neon::StorageMode mode, std::size_t capacity, bool burst)
         : storage(mode, {{0, 0, 12, 0, capacity * 3 / 4, 0, capacity / 4}}), interval_(burst ? 2 : 30)
     {
-        hits_.reserve(capacity * 12);
+        // Separated target lanes permit at most one contact per projectile.
+        hits_.reserve(capacity);
         for (int i = 0; i < 12; ++i) storage.spawn(Neon::Kind::Enemy, {64.0F + i * 64, 160, 28, 20});
         storage.onContact = [this](Neon::Handle a, Neon::Handle b) {
             const auto* first = storage.get(a); const auto* second = storage.get(b);

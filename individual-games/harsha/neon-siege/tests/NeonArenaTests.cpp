@@ -3,6 +3,9 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
+
+static_assert(!std::is_move_constructible_v<Neon::Arena>, "Contact callbacks require stable arena ownership");
 
 namespace {
 int failures = 0;
@@ -100,6 +103,25 @@ int main()
             CHECK(cs.get(shot) == nullptr);
             tick(consecutive); CHECK(consecutive.rules().phase() == Phase::Won);
         }
+    }
+    Arena bossDamage;
+    eliminate(bossDamage); tick(bossDamage); eliminate(bossDamage); tick(bossDamage);
+    for (int hit = 0; hit < 40; ++hit) {
+        auto& bs = bossDamage.storage();
+        bs.beginStep();
+        for (std::size_t i = 0; i < bs.slots().size(); ++i) {
+            auto* boss = bs.get(bs.handle(i));
+            if (boss && boss->kind == Kind::Boss)
+                bs.spawn(Kind::PlayerShot, boss->body->bounds(), 0, 0, 1, 2);
+        }
+        tick(bossDamage);
+        CHECK(bossDamage.rules().phase() == (hit == 39 ? Phase::Won : Phase::Playing));
+    }
+    Arena reversal;
+    for (int i = 0; i < 600; ++i) tick(reversal);
+    for (std::size_t i = 0; i < reversal.storage().slots().size(); ++i) {
+        const auto* enemy = reversal.storage().get(reversal.storage().handle(i));
+        if (enemy && enemy->kind == Kind::Enemy) { CHECK(enemy->body->y >= 124); break; }
     }
     Arena heap(StorageMode::Heap), pool(StorageMode::Pool), reuse;
     for (int i = 0; i < 2400; ++i) {

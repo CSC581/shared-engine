@@ -13,6 +13,10 @@ public:
     static constexpr int Width = 960, Height = 720;
     static constexpr double Step = 1.0 / Rules::TicksPerSecond;
     explicit Arena(StorageMode mode = StorageMode::Reuse);
+    Arena(const Arena&) = delete;
+    Arena& operator=(const Arena&) = delete;
+    Arena(Arena&&) = delete;
+    Arena& operator=(Arena&&) = delete;
     void update(const FrameTime& time, Controls controls = {});
     const Rules& rules() const;
     Storage& storage();

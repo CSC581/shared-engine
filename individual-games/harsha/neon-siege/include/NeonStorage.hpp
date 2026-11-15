@@ -35,6 +35,10 @@ struct StorageStats {
 class Storage {
 public:
     explicit Storage(StorageMode mode = StorageMode::Reuse, Capacities capacities = defaultCapacities());
+    Storage(const Storage&) = delete;
+    Storage& operator=(const Storage&) = delete;
+    Storage(Storage&&) = delete;
+    Storage& operator=(Storage&&) = delete;
     Handle spawn(Kind kind, Rect bounds, float vx = 0, float vy = 0, int health = 1, double lifetime = 0);
     Slot* get(Handle handle);
     const Slot* get(Handle handle) const;

@@ -16,6 +16,8 @@ public:
     void update(const FrameTime& time, Engine& engine) override {
         game_.update(smoke_ ? FrameTime{1.0 / 60, frames_ * 16667} : time, engine);
         if (smoke_ && game_.arena().rules().phase() != Neon::Phase::Playing) {
+            if (game_.arena().rules().wave() != 3 || game_.arena().rules().score() < 300)
+                throw std::runtime_error("Neon smoke ended before clearing both formations");
             std::cout << "Neon smoke: " << (game_.arena().rules().phase() == Neon::Phase::Won ? "won" : "lost")
                       << " wave " << game_.arena().rules().wave() << " score " << game_.arena().rules().score() << '\n';
             engine.quit();

@@ -2,6 +2,9 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
+
+static_assert(!std::is_move_constructible_v<Neon::Storage>, "Callbacks require stable storage ownership");
 
 namespace {
 int failures = 0;
