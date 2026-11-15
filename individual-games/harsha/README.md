@@ -1,5 +1,8 @@
 # Apex Ascent (harsha)
 
+Milestone 5's second game is [Frostbrew Duel](frostbrew-duel/README.md), a local two-player
+penguin-alchemist artillery game using the existing engine and pooled objects.
+
 Jump King–style vertical climber on the shared engine: charge a jump, aim,
 release, and climb a tower of platforms. Optional online co-climb uses the
 shared `Multiplayer::Session` interface in either client-server or peer-to-peer
