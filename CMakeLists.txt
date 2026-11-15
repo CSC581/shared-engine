@@ -440,6 +440,7 @@ foreach(benchmark_name IN ITEMS collision component-update frame-workers codec m
 endforeach()
 
 add_subdirectory(individual-games/harsha/frostbrew-duel)
+add_subdirectory(individual-games/harsha/neon-siege)
 
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent

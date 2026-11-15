@@ -1,0 +1,6 @@
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+add_library(neon-rules STATIC src/NeonRules.cpp)
+target_include_directories(neon-rules PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+add_executable(neon-rules-tests tests/NeonRulesTests.cpp)
+target_link_libraries(neon-rules-tests PRIVATE neon-rules)
+add_test(NAME neon-rules-tests COMMAND neon-rules-tests)
