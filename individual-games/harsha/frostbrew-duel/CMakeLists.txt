@@ -16,6 +16,9 @@ add_executable(frostbrew-integration-tests tests/FrostbrewIntegrationTests.cpp)
 target_link_libraries(frostbrew-integration-tests PRIVATE frostbrew-gameplay)
 add_test(NAME frostbrew-integration-tests COMMAND frostbrew-integration-tests)
 set_tests_properties(frostbrew-integration-tests PROPERTIES TIMEOUT 60)
+add_executable(frostbrew-pool-usage-tests tests/FrostbrewPoolUsageTests.cpp)
+target_link_libraries(frostbrew-pool-usage-tests PRIVATE frostbrew-gameplay)
+add_test(NAME frostbrew-pool-usage-tests COMMAND frostbrew-pool-usage-tests)
 
 add_library(frostbrew-ui STATIC
     src/FrostbrewGame.cpp
