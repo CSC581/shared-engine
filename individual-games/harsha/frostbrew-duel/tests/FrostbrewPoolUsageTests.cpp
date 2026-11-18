@@ -49,11 +49,31 @@ void exercise(std::size_t capacity)
     CHECK(arena.poolUsage().peakObjects == usage.peakObjects);
     CHECK(arena.poolUsage().secondaryRejected == usage.secondaryRejected);
 }
+
+void particleReserveBoundary(std::size_t capacity)
+{
+    ManualClock clock;
+    EventManager events(clock);
+    Frostbrew::Arena arena(events, capacity);
+    for (int i = 0; i < 63; ++i) arena.world().create("particle");
+    CHECK(arena.fire(Frostbrew::Ingredient::Ember, Frostbrew::Ingredient::Growth));
+    auto* flask = arena.world().findByTag("flask");
+    auto* body = flask->get<Transform>();
+    body->x = 595; body->y = arena.terrain().support(595, 10);
+    arena.update(FrameTime{Frostbrew::Arena::Step, clock.now()});
+    CHECK(arena.poolUsage().secondarySpawned == 8);
+    CHECK(arena.poolUsage().particlesSpawned == (capacity == 83 ? 1U : 0U));
+    CHECK(arena.poolUsage().particleReserveSkipped == (capacity == 83 ? 0U : 12U));
+    CHECK(arena.poolUsage().particleLimitSkipped == (capacity == 83 ? 11U : 0U));
+    CHECK(arena.poolUsage().peakObjects == (capacity == 83 ? 74U : 73U));
+}
 } // namespace
 
 int main()
 {
     for (const std::size_t capacity : {2U, 3U, 128U}) exercise(capacity);
+    particleReserveBoundary(82);
+    particleReserveBoundary(83);
     std::cout << "Frostbrew pool usage: " << failures << " failures\n";
     return failures ? 1 : 0;
 }
