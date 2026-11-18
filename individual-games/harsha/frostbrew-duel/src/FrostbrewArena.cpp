@@ -61,6 +61,7 @@ void Arena::reset(std::uint32_t seed)
         penguins_[player] = object.id();
     }
     settle();
+    recordPoolUsage();
 }
 void Arena::settle()
 {
@@ -93,7 +94,10 @@ Point Arena::muzzle() const
 GameObject* Arena::spawn(Point position, Point speed, Potion potion, bool child)
 {
     auto* object = world_.tryCreate("flask");
-    if (!object) return nullptr;
+    if (!object) {
+        ++(child ? poolUsage_.secondaryRejected : poolUsage_.primaryRejected);
+        return nullptr;
+    }
     try {
         object->add<Transform>(position.x - 5, position.y - 5, 10, 10);
         object->add<Motion>(speed.x, speed.y);
@@ -104,6 +108,8 @@ GameObject* Arena::spawn(Point position, Point speed, Potion potion, bool child)
         object->add<Renderable>(colors[static_cast<unsigned>(potion)]).layer = 2;
         object->add<Projectile>(potion, child, elapsed_);
         object->setActive(true);
+        ++(child ? poolUsage_.secondarySpawned : poolUsage_.primarySpawned);
+        recordPoolUsage();
     } catch (...) {
         world_.destroy(object->id());
         world_.flushDestroyed();
@@ -193,11 +199,15 @@ void Arena::impact(const Event& event)
 void Arena::particles(Point position, Color color)
 {
     std::size_t count = world_.findAllByTag("particle").size();
-    for (int i = 0; i < 12 && count < 64; ++i, ++count) {
+    for (int i = 0; i < 12; ++i, ++count) {
+        if (count >= 64) { poolUsage_.particleLimitSkipped += 12 - i; break; }
         // Keep nine slots available for a primary flask and its children.
-        if (world_.objects().size() + 9 >= world_.objectCapacity()) break;
+        if (world_.objects().size() + 9 >= world_.objectCapacity()) {
+            poolUsage_.particleReserveSkipped += 12 - i;
+            break;
+        }
         auto* object = world_.tryCreate("particle");
-        if (!object) break;
+        if (!object) { poolUsage_.particleRejected += 12 - i; break; }
         object->add<Transform>(position.x, position.y, 3, 3);
         object->add<Motion>((i - 5.5F) * 28, -70.0F - (i % 3) * 35);
         object->add<Gravity>(gravity);
@@ -207,8 +217,22 @@ void Arena::particles(Point position, Color color)
             if (life <= 0) world_.destroy(self.id());
         });
         object->setActive(true);
+        ++poolUsage_.particlesSpawned;
+        recordPoolUsage();
     }
 }
+void Arena::recordPoolUsage()
+{
+    std::size_t projectiles = 0, particles = 0;
+    for (const auto& object : world_.objects()) {
+        projectiles += object->has<Projectile>();
+        particles += object->tag() == "particle";
+    }
+    poolUsage_.peakObjects = std::max(poolUsage_.peakObjects, world_.objects().size());
+    poolUsage_.peakProjectiles = std::max(poolUsage_.peakProjectiles, projectiles);
+    poolUsage_.peakParticles = std::max(poolUsage_.peakParticles, particles);
+}
+const PoolUsage& Arena::poolUsage() const { return poolUsage_; }
 void Arena::update(const FrameTime& time)
 {
     if (!std::isfinite(time.dtSeconds) || time.dtSeconds < 0) throw std::invalid_argument("Invalid frame time");
