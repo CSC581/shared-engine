@@ -46,6 +46,26 @@ void rejectedLaunchAndReuse()
     }
 }
 
+void defaultPoolHasHeadroom()
+{
+    for (const auto ingredient : {Ingredient::Stone, Ingredient::Growth}) {
+        Fixture f;
+        // Occupy cosmetic slots before a split to exercise the maximum live population.
+        for (int i = 0; i < 63; ++i) f.arena.world().create("particle");
+        CHECK(f.arena.fire(Ingredient::Ember, ingredient));
+        auto* body = f.arena.world().findByTag("flask")->get<Transform>();
+        body->x = 595; body->y = f.arena.terrain().support(595, 10);
+        f.tick(Arena::Step);
+        CHECK(f.arena.world().objectCapacity() == 128);
+        CHECK(f.arena.projectileCount() == 8);
+        CHECK(f.arena.world().findAllByTag("particle").size() == 64);
+        CHECK(f.arena.world().objects().size() == 74);
+        f.finish();
+        f.arena.reset();
+        CHECK(f.arena.world().objects().size() == 2);
+    }
+}
+
 void predictionAndPartitioning()
 {
     Fixture a, b;
@@ -208,7 +228,7 @@ void collisionAndCompleteMatch()
 } // namespace
 int main()
 {
-    rejectedLaunchAndReuse(); predictionAndPartitioning(); allRecipesAndRestart(); fragmentsRemainInFlight();
+    rejectedLaunchAndReuse(); defaultPoolHasHeadroom(); predictionAndPartitioning(); allRecipesAndRestart(); fragmentsRemainInFlight();
     queuePressureCannotStrandAProjectile(); fastShotsAndExpiry(); collisionAndCompleteMatch();
     std::cout << "Frostbrew integration: " << failures << " failures\n";
     return failures ? 1 : 0;

@@ -13,13 +13,6 @@
 namespace Frostbrew {
 struct Point { float x; float y; };
 
-struct PoolUsage {
-    std::size_t peakObjects = 0, peakProjectiles = 0, peakParticles = 0;
-    std::size_t primarySpawned = 0, secondarySpawned = 0, particlesSpawned = 0;
-    std::size_t primaryRejected = 0, secondaryRejected = 0;
-    std::size_t particleLimitSkipped = 0, particleReserveSkipped = 0, particleRejected = 0;
-};
-
 class Arena {
 public:
     static constexpr int Width = 1200;
@@ -46,8 +39,6 @@ public:
     Terrain& terrain();
     const Terrain& terrain() const;
     ObjectId penguin(std::size_t player) const;
-    // Cumulative since construction, including restarts; excludes the prediction World.
-    const PoolUsage& poolUsage() const;
 
 private:
     GameObject* spawn(Point position, Point velocity, Potion potion, bool child);
@@ -58,7 +49,6 @@ private:
     void impact(const Event& event);
     void particles(Point position, Color color);
     void settle();
-    void recordPoolUsage();
 
     EventManager& events_;
     World world_;
@@ -73,6 +63,5 @@ private:
     std::uint64_t shot_ = 0;
     double accumulator_ = 0;
     double elapsed_ = 0;
-    PoolUsage poolUsage_;
 };
 } // namespace Frostbrew

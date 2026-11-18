@@ -110,40 +110,21 @@ networking and platformer scope make the games different sizes.
 Initial potion balance and controls still need human playtesting. This is the
 second game; CSC581's additional third-game requirement is separate.
 
-## Pool sizing study
+## Pool capacity
 
-```bash
-cmake --build build --target frostbrew-pool-study frostbrew-pool-usage-tests -j 4
-./build/frostbrew-pool-study --output build/frostbrew-pool-study.csv
-ctest --test-dir build --output-on-failure -R '^frostbrew-pool-'
-```
+The 128-slot live World uses a conservative budget: two penguins, one primary
+flask, eight fragments/seeds and 64 particles total 75 slots. The primary flask
+is actually flushed before its children spawn, so this deliberately overcounts
+by one. Even adding nine free slots for the cosmetic spawn reservation gives
+84, below 128. Terrain does not consume object slots. Trajectory prediction uses
+a separate one-slot World.
 
-The headless study runs 72 conditions: twelve capacities, three seeds and two
-workloads. Each varied-recipe sequence attempts 36 shots, cycling all six recipes
-and restarting after game over. Each forced-impact sequence attempts 16 Bloom
-shots, moving flasks to the terrain to synchronize real impacts and overlap
-particles across turns. This artificial stress fixture is separate from ordinary
-play. Both workloads use the actual arena, component updates and impact handlers.
+The integration tests fill 63 cosmetic slots and split each of Shatter and Bloom
+at the default capacity. They check that all eight children and the final
+particle fit (74 occupied slots), that the shot resolves, and that restart
+returns occupancy to two. Existing tests cover all recipes, primary-shot failure
+and child exhaustion in deliberately tiny pools.
 
-`Arena::poolUsage()` counts successful spawns, full-pool rejections and particles
-skipped by either the 64-particle limit or the nine-slot gameplay reserve. Peaks
-are sampled after each successful spawn, include inactive/pending-destroy objects,
-and persist across restarts. The separate prediction pool is excluded.
-
-The local run reached 74 occupied slots. Capacities 83, 96 and 128 matched gameplay
-and particle-state digests in every workload/seed pair, with no gameplay rejection
-or reserve-induced particle suppression. Capacity 82 preserved gameplay but
-suppressed 27 requested particles across the six sequences. The reservation rule
-therefore matters even when physical occupancy is below capacity. The 64-particle
-limit also skips effects at capacity 128, independently of pool exhaustion.
-
-On this build `sizeof(GameObject)` is 104 bytes. Raw slot reservations are 13,312
-bytes at capacity 128 and 9,984 at 96, a 3,328-byte (25%) reduction. These are
-calculated slot bytes, excluding allocator metadata, the ownership vector,
-components, textures and other allocations. There are no timing or RSS claims.
-
-Capacity 96 is a candidate with 22 slots above the observed peak. The playable
-default remains 128 pending a tuning decision. These deterministic workloads and
-digest checks do not replace human sessions or prove every future content change
-fits the same budget. The study fails on unresolved shots, violated object bounds
-or divergence from 128 at capacities of at least 83.
+This establishes headroom for the current bounded game rules, rather than a
+measured optimal capacity or a cap on total game memory. Revisit the budget if
+projectile, particle or player limits change.
