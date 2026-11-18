@@ -10,10 +10,34 @@ namespace {
 int failures = 0;
 #define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " << #x << '\n'; ++failures; } } while (false)
 template<class F> void invalid(F f) { bool caught = false; try { f(); } catch (const std::invalid_argument&) { caught = true; } CHECK(caught); }
+
+void defaultBudgetFits()
+{
+    using namespace Neon;
+    const Capacities expected{{1, 1, 18, 1, 24, 128, 64}};
+    CHECK(defaultCapacities() == expected);
+    Storage storage;
+    CHECK(storage.capacity() == 237 && storage.world().objectCapacity() == 237);
+    // Fill cosmetics first so later gameplay spawns also verify category isolation.
+    for (const auto kind : {Kind::Particle, Kind::Player, Kind::Guide, Kind::Enemy,
+                            Kind::Boss, Kind::PlayerShot, Kind::EnemyShot}) {
+        for (std::size_t i = 0; i < expected[static_cast<std::size_t>(kind)]; ++i)
+            CHECK(storage.get(storage.spawn(kind, {0, 0, 1, 1})) != nullptr);
+        CHECK(storage.get(storage.spawn(kind, {0, 0, 1, 1})) == nullptr);
+    }
+    CHECK(storage.stats().accepted == 237 && storage.stats().rejected == kindCount);
+    CHECK(storage.stats().active == 237 && storage.world().objects().size() == 237);
+    for (std::size_t i = 0; i < storage.capacity(); ++i) storage.retire(storage.handle(i));
+    storage.beginStep();
+    CHECK(storage.stats().active == 0 && storage.world().objects().size() == 237);
+    CHECK(storage.get(storage.spawn(Kind::PlayerShot, {0, 0, 1, 1})) != nullptr);
+    CHECK(storage.stats().objectsConstructed == 237);
+}
 }
 int main()
 {
     using namespace Neon;
+    defaultBudgetFits();
     CHECK(defaultCapacities()[static_cast<std::size_t>(Kind::PlayerShot)] == 24);
     invalid([] { Storage s(static_cast<StorageMode>(9)); });
     Capacities caps{}; caps[4] = 1; caps[6] = 1;
