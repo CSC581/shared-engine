@@ -1,0 +1,20 @@
+# Garden Defense: design decisions
+
+Garden Defense is a single-player Space Invaders game on the shared engine,
+built for Milestone 5. This document records the game-specific decisions;
+shared-engine decisions live in the engine's own decision record.
+
+Each entry says who made the decision (*user* or *agent*), why, what was
+rejected and what limitation was accepted.
+
+| ID | Decision | Rationale and rejected alternatives | Accepted limitation |
+| --- | --- | --- | --- |
+| GD-01 | *(user)* A Space Invaders game with its own theme (pests marching on a garden), single player, with a second wave and no networking | Section 3 asks for a game that is not a platformer; a theme unrelated to Starfall keeps the two games distinct. Rejected: Starfall's space theme, and networking, which the milestone does not ask for | Shares no art with Starfall, so less game code carries over between them |
+| GD-02 | *(agent)* Put the gameplay in an SDL-free `Match` class that owns the pooled `World` and handles Collision, Death and Spawn events, with the SDL game class doing only input and drawing | The same split as Starfall's `StationEvents`, so the whole chain (collision, death, respawn, waves) is tested headless with a hand-stepped clock. Rejected: handlers in the SDL class, testable only with a window | — |
+| GD-03 | *(agent)* One pooled `World` of 160 slots holds every object. Gameplay objects use `create()`; splats and petals use `tryCreate()` and only while more than `gameplayReserve` (46) slots are free | The reserve is the most gameplay objects that can exist at once (32 pests, the can, the fence, 3 drops, 8 seeds and a ladybug), so a burst of cosmetics can never make a drop or a new wave fail to spawn. Rejected: letting cosmetics fill the pool, which would make `create()` throw for a gameplay object; a second pool for cosmetics, which the engine's `World` does not support | Cosmetics are skipped near the limit; `F3` shows how many |
+| GD-04 | *(agent)* The wave-cleared petal burst asks for more petals (120) than the cosmetic budget | Makes the pool limit visible during normal play, which is evidence for Section 1. Rejected: a debug key that fills the pool, which shows the limit only on request | Some petals are always skipped |
+| GD-05 | *(user)* The chord is Left + Right, which opens an umbrella | Both keys already move the can; held together they cancel out, so the chord cannot clash with movement, and blocking seeds is a new behaviour. *(agent)* A + D is a second chord with its own name, because the engine reports each chord separately (the lesson from Starfall's revive chords) | The umbrella has a 6 s cooldown, shown on the HUD, so it cannot be held open |
+| GD-06 | *(agent)* The formation moves by changing pest Transforms directly each frame, through a pure `marchStep()` function; drops, seeds and splats use `Motion` | The march is step-based (sideways, then a fixed step down at an edge), which a velocity does not express well, and a pure function is easy to test. A paused frame returns no movement, so the formation cannot step down twice at an edge | Pests have no `Motion` |
+| GD-07 | *(agent)* An object that is hit is deactivated at once in the CollisionEvent handler; its DeathEvent finds it by id and removes it | Several CollisionEvents about one object can arrive in a frame (a drop overlapping two pests, two drops hitting one pest). Deactivating stops the second from counting. Destroyed objects stay findable until the next `flushDestroyed()`, so the DeathEvent still sees the pest | — |
+| GD-08 | *(agent)* Respawns and the next wave are SpawnEvents raised with a delay on game time, tagged with the match generation | Delays on the game timeline wait while paused, with no extra checks. `restart()` increments the generation, so a respawn queued before a restart is ignored | — |
+| GD-09 | *(agent)* The loop is paced at 125 Hz in `handleInput`, on a fixed schedule as in Starfall | `Engine::run` has no frame cap; 8 ms is a whole number of nanoseconds, so frames do not drift | — |
