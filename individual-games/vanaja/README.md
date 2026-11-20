@@ -4,6 +4,20 @@ Starfall Salvage is a co-op platformer for three players, set on a damaged
 space station. It runs on our team engine and uses the engine's event system
 and networking.
 
+## Other games in this folder
+
+| Game | Milestone | What it is |
+| --- | --- | --- |
+| Starfall Salvage (this page) | 2 to 4 | Co-op platformer; its code is in `include/`, `src/` and `tests/` here |
+| [Garden Defense](garden-defense/README.md) | 5, Section 3 | Space Invaders: pests march on a garden |
+| [Pirate Cannons](pirate-cannons/README.md) | 5, Section 4 | Gorillas: artillery against a computer ship |
+
+Both Milestone 5 games keep every object in a pooled `World` and use an input
+chord. They share a small library in `common/`: a lifetime component for
+short-lived cosmetic objects, the check that keeps pool slots free for
+gameplay, frame pacing, drawing helpers and the `F3` pool counter. Starfall
+does not use it.
+
 ## The mission
 
 The station's relay array is offline, and the crew has to bring it back:

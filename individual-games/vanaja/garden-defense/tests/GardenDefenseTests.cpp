@@ -36,10 +36,10 @@ struct Harness {
     Harness() { events.dispatch(); }
 
     // `quiet` removes the seeds the pests drop, so a test is not decided by
-    // where they happen to fall.
-    void step(double seconds, bool quiet = true)
+    // where they happen to fall. `frame` is each frame's length in ns.
+    void step(double seconds, bool quiet = true, std::int64_t frame = frameNs)
     {
-        const auto frames = static_cast<int>(std::lround(seconds * static_cast<double>(loopHz)));
+        const auto frames = static_cast<int>(std::lround(seconds * kNsPerSec / static_cast<double>(frame)));
         for (int i = 0; i < frames; ++i) {
             if (quiet) {
                 for (const auto& object : match.world().objects()) {
@@ -50,7 +50,7 @@ struct Harness {
                 }
             }
             const std::int64_t before = gameTime.now();
-            real.advance(frameNs);
+            real.advance(frame);
             const std::int64_t after = gameTime.now();
             match.update(FrameTime{static_cast<double>(after - before) / kGameTicsPerSecond, after});
             events.dispatch();
@@ -81,6 +81,15 @@ struct Harness {
             }
         }
         events.dispatch();
+    }
+
+    int count(const char* tag) const
+    {
+        int total = 0;
+        for (const auto& object : match.world().objects()) {
+            total += object->isActive() && object->tag() == tag ? 1 : 0;
+        }
+        return total;
     }
 
     std::vector<Transform*> pests()
@@ -119,6 +128,10 @@ int checkRules()
     EXPECT(marchSpeed(1, total, 1) > marchSpeed(total / 2, total, 1));
     EXPECT(marchSpeed(total, total, 2) > marchSpeed(total, total, 1));
     EXPECT(seedInterval(2, 0.5F) < seedInterval(1, 0.5F));
+
+    // A chord counts only when its keys went down within the window.
+    EXPECT(Arcade::pressedTogether({10.0, 10.15}));
+    EXPECT(!Arcade::pressedTogether({10.0, 10.3}));
     return 0;
 }
 
@@ -168,6 +181,35 @@ int checkSprayScores()
     EXPECT(h.match.score() >= pointsForRow(rows - 1) && h.match.score() <= pointsForRow(0));
     EXPECT(h.match.score() % 10 == 0);
     EXPECT(h.match.pestsAlive() == rows * columns - 1);
+    return 0;
+}
+
+int checkSprayScoresOnce()
+{
+    Harness h;
+    const ObjectId pest = h.match.world().findByTag("pest")->id();
+    // The same pest twice, and the can, which cannot be sprayed.
+    for (const ObjectId id : {pest, pest, h.match.can().id()}) {
+        h.events.raise(Event(Events::Death).set("object", id).set("cause", "sprayed"));
+    }
+    h.events.dispatch();
+    EXPECT(h.match.score() == pointsForRow(0));
+    EXPECT(h.match.pestsAlive() == rows * columns - 1);
+    EXPECT(h.match.canUp());
+    return 0;
+}
+
+int checkLadybugLeaves()
+{
+    Harness h;
+    for (int i = 0; i < 31 * loopHz && h.count("ladybug") == 0; ++i) {
+        h.step(1.0 / loopHz);
+    }
+    EXPECT(h.count("ladybug") == 1);
+    // Uneven frames, as on a real machine: it is removed past the far edge
+    // rather than turned back by its path.
+    h.step(8.0, true, 8'600'000);
+    EXPECT(h.count("ladybug") == 0);
     return 0;
 }
 
@@ -298,7 +340,7 @@ int checkRestartDropsStaleSpawn()
 int main()
 {
     const int failures = checkRules() + checkStart() + checkMarchAndPause() + checkSprayScores() +
-                         checkDropLimit() + checkSeedCostsLifeAndRespawns() + checkUmbrella() +
+                         checkSprayScoresOnce() + checkLadybugLeaves() + checkDropLimit() + checkSeedCostsLifeAndRespawns() + checkUmbrella() +
                          checkWavesAndPool() + checkOverrun() + checkRestartDropsStaleSpawn();
     if (failures != 0) {
         std::cerr << failures << " Garden Defense check(s) failed\n";

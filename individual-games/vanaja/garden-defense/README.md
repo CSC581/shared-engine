@@ -13,7 +13,7 @@ watering can before they reach the fence.
 - The lowest pest in each column drops seeds. A seed that hits the can costs
   one of your 3 lives. The can comes back after a second and blinks while it
   is briefly protected.
-- Hold Left and Right together to open an umbrella that blocks seeds for 1.5
+- Press Left and Right together to open an umbrella that blocks seeds for 1.5
   seconds. It then needs 6 seconds to recharge.
 - A ladybug crosses the top of the screen every 20 to 30 seconds. Spraying
   it is worth 150 points.
@@ -39,7 +39,7 @@ cmake --build build --target garden-defense garden-defense-tests -j 4
 | --- | --- |
 | `Left` / `Right` or `A` / `D` | Move the can |
 | `Space` | Spray a water drop |
-| `Left` + `Right` (or `A` + `D`) | Open the umbrella |
+| `Left` + `Right` (or `A` + `D`), pressed together | Open the umbrella |
 | `P` | Pause or resume |
 | `F3` | Show or hide the pool counter |
 | `R` | Play again after a win or a loss |
@@ -51,7 +51,7 @@ cmake --build build --target garden-defense garden-defense-tests -j 4
 | Requirement | Where it is met |
 | --- | --- |
 | Section 1: memory pool | Every object in a match comes from one pooled `World` of 160 slots (`World world_{objectCapacity}` in `GardenDefenseMatch.hpp`). Gameplay objects always fit; splats and petals use `tryCreate()` and are skipped near the limit. `F3` shows the pool's use and the skipped count |
-| Section 2: input chord | `Left` + `Right` (and `A` + `D`) are registered with `engine.registerChord`. Alone, each key moves the can; together they would cancel out, so the chord opens the umbrella instead |
+| Section 2: input chord | `Left` + `Right` (and `A` + `D`) are registered with `engine.registerChord`. Alone, each key moves the can; together they would cancel out, so the chord opens the umbrella instead. Both keys must go down within 0.2 s, so turning around does not open it |
 | Section 3: a second game that is not a platformer | One level of Space Invaders with a second wave: rows of pests that move across and down, and a can that moves and fires |
 
 ## Engine features used
@@ -63,6 +63,10 @@ cmake --build build --target garden-defense garden-defense-tests -j 4
   `SpawnEvent`s raised with a delay on game time, so they wait while the game
   is paused.
 - Input events and chords, the game timeline for pause, and `renderWorld()`.
+
+The lifetime component for cosmetic objects, the pool reserve check, frame
+pacing, the drawing helpers and the `F3` pool counter come from `../common/`,
+which both Milestone 5 games share.
 
 The gameplay is in `GardenDefense::Match`, which has no SDL code, so the tests
 run without a window. Design notes are in

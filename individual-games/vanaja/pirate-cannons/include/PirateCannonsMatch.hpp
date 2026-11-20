@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ArcadeParts.hpp"
 #include "Color.hpp"
 #include "Components.hpp"
 #include "EventManager.hpp"
@@ -29,19 +30,6 @@ public:
 
     Side shooter;
     bool chain;
-};
-
-// Removes its object after `seconds` of game time. Splinters, splashes and
-// feathers use it.
-class Lifetime : public Component {
-public:
-    Lifetime(World& world, float seconds) : world_(world), remaining_(seconds) {}
-
-    void update(const FrameTime& time) override;
-
-private:
-    World& world_;
-    float remaining_;
 };
 
 // One match of Pirate Cannons, you against the computer: a pooled World and
@@ -111,6 +99,8 @@ private:
     void onDeath(const Event& event);
     void onSpawn(const Event& event);
     void launch(Side shooter, Shot shot, bool chain);
+    // `chain` splits at the peak; `color` stays the chain colour for the pieces.
+    void makeBall(Side shooter, float x, float y, Velocity velocity, bool chain, Color color);
     void splitChainShots();
     void cullStray();
     void endTurn();
@@ -118,6 +108,7 @@ private:
     void releaseGulls();
     void show(Outcome outcome);
     void burst(float x, float y, Color color, int count, float speed, float seconds);
+    // One cosmetic bit, or false (and counted) when only the reserve is left.
     bool spawnBit(float x, float y, float velocityX, float velocityY, Color color, float seconds);
     void remove(GameObject& object);
     float roll() { return unit_(rng_); }

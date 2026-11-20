@@ -28,15 +28,6 @@ std::int64_t ticsFor(float seconds)
 
 } // namespace
 
-void Lifetime::update(const FrameTime& time)
-{
-    remaining_ -= static_cast<float>(time.dtSeconds);
-    if (remaining_ <= 0.0F && owner().isActive()) {
-        owner().setActive(false);
-        world_.destroy(owner().id());
-    }
-}
-
 Match::Match(EventManager& events, std::uint32_t seed)
     : events_(events), rng_(seed)
 {
@@ -212,9 +203,15 @@ void Match::onDeath(const Event& event)
     const std::string cause = event.getOr<std::string>("cause", "");
 
     if (cause == "sprayed") {
+        // Only pests and the ladybug can be sprayed, and each scores once:
+        // its tag changes, so a repeated DeathEvent finds nothing to score.
+        if (object->tag() != "pest" && object->tag() != "ladybug") {
+            return;
+        }
         const Pest* pest = object->get<Pest>();
         score_ += pest != nullptr ? pointsForRow(pest->row) : ladybugPoints;
         scatter(*object->get<Transform>(), pest != nullptr ? pestColor(pest->row) : ladybugColor, splatsPerPest);
+        object->setTag("sprayed");
         remove(*object);
         // Several pests can fall in one frame; only the first to empty the
         // formation clears the wave.
@@ -382,13 +379,14 @@ void Match::sendLadybug(float dt)
     ladybugTimer_ = ladybugIntervalMin + (ladybugIntervalMax - ladybugIntervalMin) * roll();
     const float offLeft = -ladybugWidth - 10.0F;
     const float offRight = width + 10.0F;
-    const float start = ladybugLeftward_ ? offRight : offLeft;
-    ladybugEndX_ = ladybugLeftward_ ? offLeft : offRight;
+    // Alternate sides: this one heads the other way from the last.
     ladybugLeftward_ = !ladybugLeftward_;
+    const float start = ladybugLeftward_ ? offRight : offLeft;
+    const float end = ladybugLeftward_ ? offLeft : offRight;
 
     GameObject& ladybug = world_.create("ladybug");
     ladybug.add<Transform>(start, ladybugY, ladybugWidth, ladybugHeight);
-    ladybug.add<PathMover>(PathMover::Linear{start, ladybugY, ladybugEndX_, ladybugY}, ladybugSpeed);
+    ladybug.add<PathMover>(PathMover::Linear{start, ladybugY, end, ladybugY}, ladybugSpeed);
     ladybug.add<Collider>(Collider::Kind::Trigger, sprayLayer);
     ladybug.setActive(true);
 }
@@ -401,10 +399,12 @@ void Match::cullStray()
         }
         const Transform& transform = *object->get<Transform>();
         const std::string& tag = object->tag();
-        // PathMover stops exactly on the end of its path before turning back.
+        // The ladybug's path ends 10 px past the screen edge, so it is
+        // removed once fully off screen, before PathMover can turn it back.
+        const bool ladybugGone = ladybugLeftward_ ? transform.x + transform.width <= 0.0F
+                                                  : transform.x >= static_cast<float>(width);
         if ((tag == "drop" && transform.y + transform.height < 0.0F) ||
-            (tag == "seed" && transform.y > static_cast<float>(height)) ||
-            (tag == "ladybug" && std::abs(transform.x - ladybugEndX_) < 0.5F)) {
+            (tag == "seed" && transform.y > static_cast<float>(height)) || (tag == "ladybug" && ladybugGone)) {
             remove(*object);
         }
     }
@@ -433,8 +433,8 @@ void Match::bloom()
         const float angle = twoPi * roll();
         const float speed = 80.0F + 220.0F * roll();
         const Color color = petalColors[static_cast<std::size_t>(i) % petalColors.size()];
-        if (!spawnBit(width * 0.5F, height * 0.45F, std::cos(angle) * speed, std::sin(angle) * speed - 120.0F, color,
-                      bloomSeconds * (0.6F + 0.4F * roll()))) {
+        if (!spawnBit(width * 0.5F, height * 0.45F, std::cos(angle) * speed, std::sin(angle) * speed - 120.0F,
+                      color, bloomSeconds * (0.6F + 0.4F * roll()))) {
             skipped_ += static_cast<std::uint64_t>(bloomPetals - i - 1);
             return;
         }
@@ -443,7 +443,7 @@ void Match::bloom()
 
 bool Match::spawnBit(float x, float y, float velocityX, float velocityY, Color color, float seconds)
 {
-    GameObject* bit = world_.objects().size() + gameplayReserve < objectCapacity ? world_.tryCreate("splat") : nullptr;
+    GameObject* bit = Arcade::cosmeticRoom(world_, gameplayReserve) ? world_.tryCreate("splat") : nullptr;
     if (bit == nullptr) {
         ++skipped_;
         return false;
@@ -452,7 +452,7 @@ bool Match::spawnBit(float x, float y, float velocityX, float velocityY, Color c
     bit->add<Motion>(velocityX, velocityY);
     bit->add<Gravity>(420.0F);
     bit->add<Renderable>(color).layer = 4;
-    bit->add<Lifetime>(world_, seconds);
+    bit->add<Arcade::Lifetime>(world_, seconds);
     bit->setActive(true);
     return true;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ArcadeParts.hpp"
 #include "Color.hpp"
 #include "Components.hpp"
 #include "EventManager.hpp"
@@ -21,18 +22,6 @@ public:
 
     int row;
     int column;
-};
-
-// Removes its object after `seconds` of game time. Splats and petals use it.
-class Lifetime : public Component {
-public:
-    Lifetime(World& world, float seconds) : world_(world), remaining_(seconds) {}
-
-    void update(const FrameTime& time) override;
-
-private:
-    World& world_;
-    float remaining_;
 };
 
 // One match of Garden Defense: a pooled World and the gameplay as handlers
@@ -144,8 +133,8 @@ private:
     bool marchFrame_ = false;
     float seedTimer_ = seedIntervalMax;
     float ladybugTimer_ = ladybugIntervalMin;
-    bool ladybugLeftward_ = false;
-    float ladybugEndX_ = 0.0F;
+    // The way the current (or last) ladybug heads.
+    bool ladybugLeftward_ = true;
     float shield_ = 0.0F;
     float umbrella_ = 0.0F;
     float cooldown_ = 0.0F;

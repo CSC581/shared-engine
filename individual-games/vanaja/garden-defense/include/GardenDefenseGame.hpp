@@ -1,11 +1,13 @@
 #pragma once
 
+#include "ArcadeParts.hpp"
 #include "EventManager.hpp"
 #include "FrameTime.hpp"
 #include "Game.hpp"
 #include "GardenDefenseMatch.hpp"
 
 #include <cstdint>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -30,19 +32,21 @@ public:
 private:
     void onInput(const Event& event);
     bool held(int scancode) const;
+    // Real seconds when the key last went down; 0 if never.
+    double pressedAt(int scancode) const;
     void drawGarden(SDL_Renderer* renderer) const;
     void drawPests(SDL_Renderer* renderer) const;
     void drawCan(SDL_Renderer* renderer) const;
     void drawHud(SDL_Renderer* renderer) const;
-    void drawPool(SDL_Renderer* renderer) const;
 
     Engine& engine_;
     GardenDefense::Match match_;
     std::vector<EventManager::SubscriptionId> subscriptions_;
     std::unordered_set<int> heldKeys_;
+    std::unordered_map<int, double> pressedAt_;
     bool paused_ = false;
     bool showPool_ = false;
     // Real time, for blinking that keeps going while paused.
     double realSeconds_ = 0.0;
-    std::int64_t nextLoopStartNs_ = 0;
+    Arcade::FramePacer pacer_{GardenDefense::loopHz};
 };

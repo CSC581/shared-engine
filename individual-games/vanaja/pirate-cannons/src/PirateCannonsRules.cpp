@@ -97,9 +97,4 @@ float rollWind(float unit)
     return maxWind * (2.0F * std::clamp(unit, 0.0F, 1.0F) - 1.0F);
 }
 
-bool plainShotAllowed(bool leftHeld, bool rightHeld)
-{
-    return !(leftHeld && rightHeld);
-}
-
 } // namespace PirateCannons

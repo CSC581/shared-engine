@@ -129,8 +129,4 @@ float aimError(int misses);
 // Wind for a turn; `unit` in [0, 1) picks within +-maxWind.
 float rollWind(float unit);
 
-// Space fires a plain shot unless Left and Right are both held: then it
-// completes the chain-shot chord instead.
-bool plainShotAllowed(bool leftHeld, bool rightHeld);
-
 } // namespace PirateCannons

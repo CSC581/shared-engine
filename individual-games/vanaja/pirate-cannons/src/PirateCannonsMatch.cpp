@@ -42,15 +42,6 @@ constexpr GullPath gullPaths[gulls] = {
 
 } // namespace
 
-void Lifetime::update(const FrameTime& time)
-{
-    remaining_ -= static_cast<float>(time.dtSeconds);
-    if (remaining_ <= 0.0F && owner().isActive()) {
-        owner().setActive(false);
-        world_.destroy(owner().id());
-    }
-}
-
 Match::Match(EventManager& events, std::uint32_t seed)
     : events_(events), rng_(seed)
 {
@@ -296,9 +287,16 @@ void Match::onSpawn(const Event& event)
 
 void Match::launch(Side shooter, Shot shot, bool chain)
 {
-    const Velocity velocity = launchVelocity(shot, shooter);
+    makeBall(shooter, muzzleX(shooter), muzzleY(), launchVelocity(shot, shooter), chain,
+             chain ? chainBallColor : ballColor);
+    state_ = State::Flying;
+    shotHit_ = false;
+}
+
+void Match::makeBall(Side shooter, float x, float y, Velocity velocity, bool chain, Color color)
+{
     GameObject& ball = world_.create("ball");
-    ball.add<Transform>(muzzleX(shooter), muzzleY(), ballSize, ballSize);
+    ball.add<Transform>(x, y, ballSize, ballSize);
     Motion& motion = ball.add<Motion>(velocity.x, velocity.y);
     ball.add<Gravity>(gravity);
     // Wind first each frame, then Gravity, then Motion: the order simulate()
@@ -307,11 +305,9 @@ void Match::launch(Side shooter, Shot shot, bool chain)
         motion.velocityX += wind_ * static_cast<float>(time.dtSeconds);
     });
     ball.add<Collider>(Collider::Kind::Trigger, ballLayers);
-    ball.add<Renderable>(chain ? chainBallColor : ballColor).layer = 5;
+    ball.add<Renderable>(color).layer = 5;
     ball.add<Cannonball>(shooter, chain);
     ball.setActive(true);
-    state_ = State::Flying;
-    shotHit_ = false;
 }
 
 // A chain-shot ball splits into three once it starts to come down.
@@ -330,17 +326,7 @@ void Match::splitChainShots()
         const Side shooter = original->get<Cannonball>()->shooter;
         remove(*original);
         for (const float factor : {1.0F - chainSpread, 1.0F, 1.0F + chainSpread}) {
-            GameObject& ball = world_.create("ball");
-            ball.add<Transform>(at.x, at.y, ballSize, ballSize);
-            Motion& split = ball.add<Motion>(motion.velocityX * factor, motion.velocityY);
-            ball.add<Gravity>(gravity);
-            ball.add<Behavior>([this, &split](GameObject&, const FrameTime& time) {
-                split.velocityX += wind_ * static_cast<float>(time.dtSeconds);
-            });
-            ball.add<Collider>(Collider::Kind::Trigger, ballLayers);
-            ball.add<Renderable>(chainBallColor).layer = 5;
-            ball.add<Cannonball>(shooter, false);
-            ball.setActive(true);
+            makeBall(shooter, at.x, at.y, {motion.velocityX * factor, motion.velocityY}, false, chainBallColor);
         }
     }
 }
@@ -428,7 +414,7 @@ void Match::burst(float x, float y, Color color, int count, float speed, float s
 
 bool Match::spawnBit(float x, float y, float velocityX, float velocityY, Color color, float seconds)
 {
-    GameObject* bit = world_.objects().size() + gameplayReserve < objectCapacity ? world_.tryCreate("bit") : nullptr;
+    GameObject* bit = Arcade::cosmeticRoom(world_, gameplayReserve) ? world_.tryCreate("bit") : nullptr;
     if (bit == nullptr) {
         ++skipped_;
         return false;
@@ -437,7 +423,7 @@ bool Match::spawnBit(float x, float y, float velocityX, float velocityY, Color c
     bit->add<Motion>(velocityX, velocityY);
     bit->add<Gravity>(gravity);
     bit->add<Renderable>(color).layer = 6;
-    bit->add<Lifetime>(world_, seconds);
+    bit->add<Arcade::Lifetime>(world_, seconds);
     bit->setActive(true);
     return true;
 }

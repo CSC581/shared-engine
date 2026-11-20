@@ -1,5 +1,6 @@
 #include "PirateCannonsGame.hpp"
 
+#include "ArcadeDraw.hpp"
 #include "Components.hpp"
 #include "Engine.hpp"
 #include "PirateCannonsRules.hpp"
@@ -8,11 +9,9 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
-#include <thread>
 
 namespace {
 
@@ -35,41 +34,20 @@ constexpr Color ready{130, 220, 120};
 constexpr Color alert{240, 110, 90};
 constexpr float degrees = 3.14159265F / 180.0F;
 
-void rect(SDL_Renderer* renderer, float x, float y, float w, float h, Color color)
-{
-    const SDL_FRect box{x, y, w, h};
-    SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, 255);
-    SDL_RenderFillRect(renderer, &box);
-}
+using Arcade::rect;
+using Arcade::shade;
+using Arcade::text;
 
-// Translucent fill; restores the renderer's opaque drawing afterwards.
-void shade(SDL_Renderer* renderer, float x, float y, float w, float h, Color color, std::uint8_t alpha)
-{
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    const SDL_FRect box{x, y, w, h};
-    SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, alpha);
-    SDL_RenderFillRect(renderer, &box);
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-}
+constexpr float screenWidth = static_cast<float>(width);
 
-void text(SDL_Renderer* renderer, float x, float y, const std::string& message, Color color)
-{
-    SDL_SetRenderDrawColor(renderer, color.red, color.green, color.blue, 255);
-    SDL_RenderDebugText(renderer, x, y, message.c_str());
-}
-
-// Debug text is 8 px per character.
 void centeredText(SDL_Renderer* renderer, float y, const std::string& message, Color color)
 {
-    text(renderer, (static_cast<float>(width) - 8.0F * static_cast<float>(message.size())) * 0.5F, y, message, color);
+    Arcade::centeredText(renderer, screenWidth, y, message, color);
 }
 
-// A boxed message across the middle of the screen.
 void notice(SDL_Renderer* renderer, float y, const std::string& message, Color box, Color color)
 {
-    const float boxWidth = 8.0F * static_cast<float>(message.size()) + 28.0F;
-    rect(renderer, (static_cast<float>(width) - boxWidth) * 0.5F, y, boxWidth, 22.0F, box);
-    centeredText(renderer, y + 7.0F, message, color);
+    Arcade::notice(renderer, screenWidth, y, message, box, color);
 }
 
 const char* outcomeText(Match::Outcome outcome)
@@ -97,8 +75,8 @@ PirateCannonsGame::PirateCannonsGame(Engine& engine, std::uint32_t seed)
     : engine_(engine), match_(engine.events(), seed)
 {
     engine.setClearColor(sky);
-    // Left and Right alone set the power and Space fires; all three together
-    // fire the chain shot instead.
+    // Left and Right alone set the power and Space fires; all three pressed
+    // together fire the chain shot instead.
     engine.registerChord("chain-shot", {SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_SPACE});
     subscriptions_.push_back(engine.events().subscribe(Events::Input, [this](const Event& event) { onInput(event); }));
 }
@@ -115,6 +93,12 @@ bool PirateCannonsGame::held(int scancode) const
     return heldKeys_.count(scancode) != 0;
 }
 
+double PirateCannonsGame::pressedAt(int scancode) const
+{
+    const auto it = pressedAt_.find(scancode);
+    return it == pressedAt_.end() ? 0.0 : it->second;
+}
+
 void PirateCannonsGame::onInput(const Event& event)
 {
     if (event.origin != 0) {
@@ -123,7 +107,12 @@ void PirateCannonsGame::onInput(const Event& event)
     const std::string kind = event.getOr<std::string>("kind", "");
     const bool pressed = event.getOr<std::string>("state", "") == "pressed";
     if (kind == "chord") {
-        if (pressed && !paused_ && event.getOr<std::string>("name", "") == "chain-shot") {
+        // Key events come before chord events in a frame, so all three press
+        // times are recorded. A Space still held from the last shot is not
+        // part of a chord.
+        if (pressed && !paused_ && event.getOr<std::string>("name", "") == "chain-shot" &&
+            Arcade::pressedTogether({pressedAt(SDL_SCANCODE_LEFT), pressedAt(SDL_SCANCODE_RIGHT),
+                                     pressedAt(SDL_SCANCODE_SPACE)})) {
             match_.fire(true);
         }
         return;
@@ -137,6 +126,7 @@ void PirateCannonsGame::onInput(const Event& event)
         return;
     }
     heldKeys_.insert(key);
+    pressedAt_[key] = static_cast<double>(engine_.realTime().now()) / static_cast<double>(kNsPerSec);
 
     switch (key) {
     case SDL_SCANCODE_ESCAPE:
@@ -150,11 +140,7 @@ void PirateCannonsGame::onInput(const Event& event)
         showPool_ = !showPool_;
         break;
     case SDL_SCANCODE_SPACE:
-        // Key events arrive before the chord's, so with Left and Right held
-        // this Space belongs to the chain shot.
-        if (!paused_ && plainShotAllowed(held(SDL_SCANCODE_LEFT), held(SDL_SCANCODE_RIGHT))) {
-            match_.fire(false);
-        }
+        spaceQueued_ = !paused_;
         break;
     case SDL_SCANCODE_R:
         if (!paused_ && match_.state() == Match::State::MatchOver) {
@@ -168,17 +154,8 @@ void PirateCannonsGame::onInput(const Event& event)
 
 void PirateCannonsGame::handleInput(Engine& engine)
 {
-    // Input arrives as InputEvents (onInput). This only paces the loop, which
-    // Engine::run does not cap: frames follow a fixed schedule, and one that
-    // falls more than an interval behind restarts it.
-    const std::int64_t interval = kNsPerSec / loopHz;
-    const std::int64_t now = engine.realTime().now();
-    if (nextLoopStartNs_ == 0 || now - nextLoopStartNs_ > interval) {
-        nextLoopStartNs_ = now;
-    } else if (now < nextLoopStartNs_) {
-        std::this_thread::sleep_for(std::chrono::nanoseconds(nextLoopStartNs_ - now));
-    }
-    nextLoopStartNs_ += interval;
+    // Input arrives as InputEvents (onInput); this only paces the loop.
+    pacer_.wait(engine.realTime());
 }
 
 void PirateCannonsGame::update(float deltaTime, Engine& engine)
@@ -193,6 +170,12 @@ void PirateCannonsGame::update(const FrameTime& time, Engine& engine)
     const float angleAxis = (held(SDL_SCANCODE_UP) ? 1.0F : 0.0F) - (held(SDL_SCANCODE_DOWN) ? 1.0F : 0.0F);
     const float powerAxis = (held(SDL_SCANCODE_RIGHT) ? 1.0F : 0.0F) - (held(SDL_SCANCODE_LEFT) ? 1.0F : 0.0F);
     match_.adjustAim(angleAxis, powerAxis, static_cast<float>(time.dtSeconds));
+    // A chain shot fired this frame has already taken the turn, so this
+    // plain shot is then refused.
+    if (spaceQueued_) {
+        match_.fire(false);
+        spaceQueued_ = false;
+    }
     match_.update(time);
 }
 
@@ -209,7 +192,7 @@ void PirateCannonsGame::render(SDL_Renderer* renderer) const
     drawAim(renderer);
     drawHud(renderer);
     if (showPool_) {
-        drawPool(renderer);
+        Arcade::poolCounter(renderer, 16.0F, 40.0F, match_.world(), gameplayReserve, match_.cosmeticsSkipped());
     }
 }
 
@@ -395,31 +378,4 @@ void PirateCannonsGame::drawHud(SDL_Renderer* renderer) const
         shade(renderer, 0.0F, 30.0F, static_cast<float>(width), static_cast<float>(height) - 30.0F, ink, 140);
         notice(renderer, 260.0F, "PAUSED - PRESS P TO RESUME", {30, 45, 70}, cream);
     }
-}
-
-// The pool counter: how full the World's fixed slots are, the slots kept for
-// gameplay, and how many cosmetic bits were skipped near the limit.
-void PirateCannonsGame::drawPool(SDL_Renderer* renderer) const
-{
-    const World& world = match_.world();
-    const float x = 16.0F;
-    const float y = 40.0F;
-    shade(renderer, x - 6.0F, y - 6.0F, 252.0F, 66.0F, ink, 200);
-    char line[64];
-    std::snprintf(line, sizeof line, "POOL %zu / %zu OBJECTS", world.objects().size(), world.objectCapacity());
-    text(renderer, x, y, line, cream);
-    std::snprintf(line, sizeof line, "GAMEPLAY RESERVE %zu", gameplayReserve);
-    text(renderer, x, y + 12.0F, line, dim);
-    std::snprintf(line, sizeof line, "COSMETICS SKIPPED %llu",
-                  static_cast<unsigned long long>(match_.cosmeticsSkipped()));
-    text(renderer, x, y + 24.0F, line, match_.cosmeticsSkipped() > 0 ? alert : dim);
-
-    const float barWidth = 240.0F;
-    const float used = static_cast<float>(world.objects().size()) / static_cast<float>(world.objectCapacity());
-    rect(renderer, x, y + 38.0F, barWidth, 8.0F, {50, 60, 70});
-    rect(renderer, x, y + 38.0F, barWidth * std::min(used, 1.0F), 8.0F, used > 0.9F ? alert : ready);
-    // Cosmetics stop at this mark; the slots beyond it are kept for gameplay.
-    const float reserveMark =
-        static_cast<float>(objectCapacity - gameplayReserve) / static_cast<float>(objectCapacity);
-    rect(renderer, x + barWidth * reserveMark, y + 35.0F, 2.0F, 14.0F, cream);
 }

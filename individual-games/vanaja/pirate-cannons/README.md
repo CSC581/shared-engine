@@ -38,7 +38,7 @@ cmake --build build --target pirate-cannons pirate-cannons-tests -j 4
 | `Up` / `Down` | Raise or lower the cannon |
 | `Left` / `Right` | Less or more power |
 | `Space` | Fire |
-| `Left` + `Right` + `Space` | Fire a chain shot (twice per match) |
+| `Left` + `Right` + `Space`, pressed together | Fire a chain shot (twice per match) |
 | `P` | Pause or resume |
 | `F3` | Show or hide the pool counter |
 | `R` | Play again after the match |
@@ -50,7 +50,7 @@ cmake --build build --target pirate-cannons pirate-cannons-tests -j 4
 | Requirement | Where it is met |
 | --- | --- |
 | Section 1: memory pool | Every object in a match comes from one pooled `World` of 96 slots (`World world_{objectCapacity}` in `PirateCannonsMatch.hpp`). Ships, the island, gulls and cannonballs always fit; splinters, splashes and feathers use `tryCreate()` and are skipped near the limit. `F3` shows the pool's use and the skipped count |
-| Section 2: input chord | `Left` + `Right` + `Space` is registered with `engine.registerChord`. Alone, `Left` and `Right` change the power and `Space` fires; together they fire the chain shot |
+| Section 2: input chord | `Left` + `Right` + `Space` is registered with `engine.registerChord`. Alone, `Left` and `Right` change the power and `Space` fires; pressed together (all within 0.2 s) they fire the chain shot |
 | Section 4: another game that is not a platformer | Gorillas: two ships in turn-based artillery, with wind, obstacles and a computer opponent |
 
 ## Engine features used
@@ -63,6 +63,10 @@ cmake --build build --target pirate-cannons pirate-cannons-tests -j 4
   `SpawnEvent` raised with a delay on game time, so it waits while the game is
   paused.
 - Input events and chords, the game timeline for pause, and `renderWorld()`.
+
+The lifetime component for cosmetic objects, the pool reserve check, frame
+pacing, the drawing helpers and the `F3` pool counter come from `../common/`,
+which both Milestone 5 games share.
 
 The gameplay and the computer's aim are in `PirateCannons::Match` and
 `PirateCannonsRules`, which have no SDL code, so the tests run without a

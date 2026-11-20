@@ -140,8 +140,9 @@ int checkRules()
     EXPECT(aimError(1) < aimError(0));
     EXPECT(aimError(100) == cpuMinError);
     EXPECT(rollWind(0.0F) == -maxWind && rollWind(1.0F) == maxWind);
-    EXPECT(plainShotAllowed(true, false) && plainShotAllowed(false, false));
-    EXPECT(!plainShotAllowed(true, true));
+    // The chain-shot chord counts only when all three keys went down together.
+    EXPECT(Arcade::pressedTogether({5.0, 5.05, 5.18}));
+    EXPECT(!Arcade::pressedTogether({1.0, 5.0, 5.05}));
     return 0;
 }
 
@@ -237,8 +238,15 @@ int checkChainShot()
     EXPECT(h.match.fire(true));
     EXPECT(h.match.chainShotsLeft() == chainShotsPerMatch - 1);
     EXPECT(h.match.ballsInFlight() == 1);
-    // Splits in three once it starts to come down.
+    const Color chainColor = h.match.world().findByTag("ball")->get<Renderable>()->color;
+    // Splits in three once it starts to come down, keeping the chain colour.
     EXPECT(h.stepUntil([&] { return h.match.ballsInFlight() == 3; }, 3.0));
+    for (const auto& object : h.match.world().objects()) {
+        if (object->isActive() && object->tag() == "ball") {
+            const Color color = object->get<Renderable>()->color;
+            EXPECT(color.red == chainColor.red && color.green == chainColor.green && color.blue == chainColor.blue);
+        }
+    }
     EXPECT(h.stepUntil([&] { return h.match.state() == Match::State::Aiming; }));
 
     EXPECT(h.match.fire(true));

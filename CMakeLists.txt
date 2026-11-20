@@ -529,6 +529,14 @@ add_executable(starfall-salvage-tests
 target_link_libraries(starfall-salvage-tests PRIVATE starfall-salvage-rules multiplayer)
 add_test(NAME starfall-salvage-tests COMMAND starfall-salvage-tests)
 
+# What Vanaja's Milestone 5 games share: SDL-free parts (a lifetime component,
+# the cosmetic pool check and frame pacing, header-only) and drawing helpers.
+add_library(vanaja-arcade STATIC
+    individual-games/vanaja/common/src/ArcadeDraw.cpp
+)
+target_include_directories(vanaja-arcade PUBLIC individual-games/vanaja/common/include)
+target_link_libraries(vanaja-arcade PUBLIC engine)
+
 # Garden Defense, a Space Invaders game for Milestone 5. Its match runs in a
 # pooled World, so the rules library is SDL-free and tested headless.
 add_library(garden-defense-rules STATIC
@@ -537,6 +545,7 @@ add_library(garden-defense-rules STATIC
 )
 target_include_directories(garden-defense-rules PUBLIC
     individual-games/vanaja/garden-defense/include
+    individual-games/vanaja/common/include
 )
 target_link_libraries(garden-defense-rules PUBLIC engine-geometry)
 
@@ -544,7 +553,7 @@ add_executable(garden-defense
     individual-games/vanaja/garden-defense/src/gardenDefense.cpp
     individual-games/vanaja/garden-defense/src/GardenDefenseGame.cpp
 )
-target_link_libraries(garden-defense PRIVATE engine garden-defense-rules)
+target_link_libraries(garden-defense PRIVATE vanaja-arcade garden-defense-rules)
 
 add_executable(garden-defense-tests
     individual-games/vanaja/garden-defense/tests/GardenDefenseTests.cpp
@@ -560,6 +569,7 @@ add_library(pirate-cannons-rules STATIC
 )
 target_include_directories(pirate-cannons-rules PUBLIC
     individual-games/vanaja/pirate-cannons/include
+    individual-games/vanaja/common/include
 )
 target_link_libraries(pirate-cannons-rules PUBLIC engine-geometry)
 
@@ -567,7 +577,7 @@ add_executable(pirate-cannons
     individual-games/vanaja/pirate-cannons/src/pirateCannons.cpp
     individual-games/vanaja/pirate-cannons/src/PirateCannonsGame.cpp
 )
-target_link_libraries(pirate-cannons PRIVATE engine pirate-cannons-rules)
+target_link_libraries(pirate-cannons PRIVATE vanaja-arcade pirate-cannons-rules)
 
 add_executable(pirate-cannons-tests
     individual-games/vanaja/pirate-cannons/tests/PirateCannonsTests.cpp
