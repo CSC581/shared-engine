@@ -19,13 +19,15 @@ cmake --build build --target neon-siege -j 4
 | --- | --- |
 | A / D or Left / Right | Move horizontally |
 | Space, held | Fire |
-| A + D or Left + Right | Shield for 0.35 seconds; three-second cooldown |
+| A + D or Left + Right, pressed together | Shield for one second; three-second cooldown |
 | P | Pause / resume |
 | R | Restart with fresh lives, timers and objects |
 | Escape | Quit |
 
 The shield uses movement keys that already act independently. Both directions
-cancel movement. Holding the chord does not activate another shield when its
+cancel movement. Both keys must go down within 100 ms of each other, so holding
+one direction and then pressing the other turns the ship instead of wasting the
+shield. Holding the chord does not activate another shield when its
 cooldown finishes: release and press it again. Damage grants one second of
 invulnerability. Pause and focus loss clear held input.
 
