@@ -30,7 +30,8 @@ public:
     void aim(float angle, float power);
     float angle() const;
     float power() const;
-    std::vector<Point> preview();
+    // Predicted flight for at most `steps` fixed steps, stopping early at a hit.
+    std::vector<Point> preview(int steps = 1920);
     std::size_t projectileCount() const;
     std::uint64_t shot() const;
     const Match& match() const;

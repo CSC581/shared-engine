@@ -244,7 +244,7 @@ void Arena::update(const FrameTime& time)
         }
     }
 }
-std::vector<Point> Arena::preview()
+std::vector<Point> Arena::preview(int steps)
 {
     auto* prediction = previewWorld_.findByTag("prediction");
     auto* body = prediction->get<Transform>();
@@ -254,7 +254,7 @@ std::vector<Point> Arena::preview()
     const auto speed = velocity();
     motion->velocityX = speed.x; motion->velocityY = speed.y;
     std::vector<Point> path{previous};
-    for (int i = 0; i < 1920; ++i) {
+    for (int i = 0; i < steps; ++i) {
         previewWorld_.updateComponents(FrameTime{Step, static_cast<std::int64_t>((i + 1) * Step * 1000000)});
         Point current{body->x + 5, body->y + 5}, hit{}; bool ground = false;
         if (trace(previous, current, 5, hit, ground)) { path.push_back(hit); break; }

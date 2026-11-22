@@ -72,6 +72,9 @@ void predictionAndPartitioning()
     a.arena.aim(55, 600); b.arena.aim(55, 600);
     const auto predicted = a.arena.preview();
     CHECK(predicted.size() > 20);
+    const auto shortPath = a.arena.preview(120);
+    CHECK(shortPath.size() == 121);
+    CHECK(std::abs(shortPath.back().x - predicted[120].x) < 0.001F);
     CHECK(a.arena.world().objects().size() == 2);
     CHECK(a.arena.fire(Ingredient::Ember, Ingredient::Ember));
     CHECK(b.arena.fire(Ingredient::Ember, Ingredient::Ember));

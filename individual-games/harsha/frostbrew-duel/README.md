@@ -21,7 +21,7 @@ Assets resolve beside the executable, so launching from another directory works.
 | Tab | Change the highlighted ingredient slot |
 | Up / Down | Raise / lower firing angle |
 | Left / Right | Lower / raise throwing power |
-| Up + Down | Hold focus to see the predicted trajectory; angle adjustment stops |
+| Up + Down | Hold focus to see the first half second of the throw; angle adjustment stops |
 | Space | Throw the mixture; the turn waits for all fragments or seeds |
 | B | Open / close the active player's recipe book |
 | P | Pause / continue |

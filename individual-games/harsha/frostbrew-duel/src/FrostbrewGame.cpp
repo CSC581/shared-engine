@@ -121,7 +121,9 @@ void DuelGame::update(const FrameTime& time, Engine&)
             focus_ = false;
             prediction_.clear();
         }
-        if (focus_) prediction_ = arena_.preview();
+        // Half a second of flight (120 steps at 240 Hz) shows the launch, not the
+        // landing, so aiming stays a skill.
+        if (focus_) prediction_ = arena_.preview(120);
     }
     fire_ = false;
     const auto before = arena_.match().player();
