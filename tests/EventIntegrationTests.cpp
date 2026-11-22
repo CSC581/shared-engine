@@ -5,6 +5,8 @@
 #include "Timeline.hpp"
 #include "World.hpp"
 
+#include <SDL3/SDL_timer.h>
+
 #include <array>
 #include <cstdint>
 #include <iostream>
@@ -82,6 +84,38 @@ void chords()
     keys[SDL_SCANCODE_LSHIFT] = false;
     frame();
     CHECK((states == std::vector<std::string>{"pressed", "released"}));
+    Input::setKeyboardStateSource(nullptr, 0);
+}
+
+void chordWindow()
+{
+    ManualClock clock;
+    EventManager events(clock);
+    std::array<bool, SDL_SCANCODE_COUNT> keys{};
+    const std::vector<InputChord> registered{{"shield", {SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT}, 100}};
+    std::vector<std::string> states;
+    events.subscribe(Events::Input, [&](const Event& event) {
+        if (event.get<std::string>("kind") == "chord") states.push_back(event.get<std::string>("state"));
+    });
+    Input::setKeyboardStateSource(keys.data(), static_cast<int>(keys.size()));
+    const auto frame = [&] {
+        Input::update();
+        Input::raiseEvents(events, registered);
+        events.dispatch();
+    };
+    frame();
+    // Pressed on consecutive frames, well inside the window: a chord.
+    keys[SDL_SCANCODE_LEFT] = true; frame();
+    keys[SDL_SCANCODE_RIGHT] = true; frame();
+    keys[SDL_SCANCODE_RIGHT] = false; frame();
+    CHECK((states == std::vector<std::string>{"pressed", "released"}));
+    // Left held, Right pressed later: no chord, and no unmatched release.
+    states.clear();
+    SDL_Delay(150);
+    keys[SDL_SCANCODE_RIGHT] = true; frame();
+    keys[SDL_SCANCODE_RIGHT] = false; frame();
+    CHECK(states.empty());
+    keys.fill(false); frame();
     Input::setKeyboardStateSource(nullptr, 0);
 }
 
@@ -235,6 +269,7 @@ int main()
 {
     inputTransitions();
     chords();
+    chordWindow();
     collisionPhases();
     deathRespawnChain();
     spawnWhileManyCollide();

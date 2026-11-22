@@ -78,8 +78,10 @@ public:
     EventManager& events();
 
     // Raise InputEvent kind="chord" for `name` when every key is held, and
-    // again when the chord breaks. Throws for an empty name or no keys.
-    void registerChord(std::string name, std::vector<SDL_Scancode> keys);
+    // again when the chord breaks. With windowMs > 0 the keys must also go down
+    // within that many real milliseconds of each other. Throws for an empty
+    // name or no keys.
+    void registerChord(std::string name, std::vector<SDL_Scancode> keys, std::uint64_t windowMs = 0);
 
     // Real time, never paused and never scaled. Anchor a timeline here for
     // anything that must keep running while the game is frozen -- a menu
