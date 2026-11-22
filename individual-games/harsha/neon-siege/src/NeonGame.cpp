@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <string>
 
 namespace Neon {
@@ -22,7 +23,14 @@ void SiegeGame::input(const Event& event)
     const bool pressed = event.getOr<std::string>("state", "") == "pressed";
     if (kind == "chord") {
         const auto name = event.getOr<std::string>("name", "");
-        if (pressed && !engine_.gameTime().isPaused() && (name == "neon.shield.arrows" || name == "neon.shield.letters"))
+        const bool arrows = name == "neon.shield.arrows";
+        if (!arrows && name != "neon.shield.letters") return;
+        const auto first = arrows ? SDL_SCANCODE_LEFT : SDL_SCANCODE_A;
+        const auto second = arrows ? SDL_SCANCODE_RIGHT : SDL_SCANCODE_D;
+        // Key events arrive before the chord, so both press times are current here.
+        // Rolling from one direction to the other is a turn, not a shield.
+        constexpr std::int64_t windowUs = 100000;
+        if (pressed && !engine_.gameTime().isPaused() && std::abs(pressedAt_[first] - pressedAt_[second]) <= windowUs)
             shield_ = true;
         return;
     }
@@ -32,6 +40,7 @@ void SiegeGame::input(const Event& event)
     const bool repeated = held_[key] == pressed;
     held_[key] = pressed;
     if (!pressed || repeated) return;
+    pressedAt_[key] = event.timestamp;
     if (key == SDL_SCANCODE_ESCAPE) engine_.quit();
     else if (key == SDL_SCANCODE_P) {
         if (engine_.gameTime().isPaused()) engine_.gameTime().unpause(); else engine_.gameTime().pause();

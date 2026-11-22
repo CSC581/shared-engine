@@ -7,6 +7,8 @@ enum class Pattern { Straight, Spread, Spiral };
 class Rules {
 public:
     static constexpr int TicksPerSecond = 240;
+    static constexpr int ShieldTicks = TicksPerSecond;            // one second
+    static constexpr int ShieldCooldown = 3 * TicksPerSecond;
     void tick();
     bool attemptShot();
     bool shield();

@@ -19,7 +19,7 @@ bool Rules::attemptShot()
 bool Rules::shield()
 {
     if (phase_ != Phase::Playing || shieldCooldown_ > 0) return false;
-    shieldTicks_ = 84; shieldCooldown_ = 720;
+    shieldTicks_ = ShieldTicks; shieldCooldown_ = ShieldCooldown;
     return true;
 }
 bool Rules::damage()

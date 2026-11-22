@@ -27,6 +27,7 @@ private:
     std::unique_ptr<Arena> arena_;
     EventManager::SubscriptionId subscription_ = 0;
     std::array<bool, SDL_SCANCODE_COUNT> held_{};
+    std::array<std::int64_t, SDL_SCANCODE_COUNT> pressedAt_{}; // game-time µs of the last press
     bool shield_ = false, autoplay_ = false;
 };
 } // namespace Neon

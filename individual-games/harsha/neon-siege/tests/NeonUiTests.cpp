@@ -37,6 +37,12 @@ int main()
         keys[SDL_SCANCODE_R] = true; frame(); CHECK(!engine.gameTime().isPaused());
         CHECK(game.arena().rules().wave() == 1 && game.arena().rules().lives() == 3);
         keys.fill(false); frame();
+        // Holding Left, then pressing Right later, is a turn and must not shield.
+        keys[SDL_SCANCODE_LEFT] = true; frame();
+        SDL_Delay(150);
+        keys[SDL_SCANCODE_RIGHT] = true; frame();
+        CHECK(game.arena().rules().shieldTicks() == 0);
+        keys.fill(false); frame();
         keys[SDL_SCANCODE_D] = true; frame();
         keys[SDL_SCANCODE_A] = true; frame(); CHECK(game.arena().rules().shieldTicks() > 0);
         SDL_Event lost{}; lost.type = SDL_EVENT_WINDOW_FOCUS_LOST; game.onEvent(lost);

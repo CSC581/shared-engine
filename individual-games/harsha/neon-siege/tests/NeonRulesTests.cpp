@@ -15,12 +15,12 @@ int main()
     ticks(rules, 35); CHECK(!rules.attemptShot());
     ticks(rules, 1); CHECK(rules.attemptShot());
     CHECK(rules.shield()); CHECK(!rules.shield()); CHECK(!rules.damage());
-    ticks(rules, 83); CHECK(rules.protectedNow());
+    ticks(rules, Rules::ShieldTicks - 1); CHECK(rules.protectedNow());
     ticks(rules, 1); CHECK(!rules.protectedNow()); CHECK(rules.damage());
     CHECK(rules.lives() == 2); CHECK(!rules.damage());
     ticks(rules, 239); CHECK(!rules.damage());
     ticks(rules, 1); CHECK(rules.damage()); CHECK(rules.lives() == 1);
-    ticks(rules, 395); CHECK(!rules.shield());
+    ticks(rules, Rules::ShieldCooldown - Rules::ShieldTicks - 240 - 1); CHECK(!rules.shield());
     ticks(rules, 1); CHECK(rules.shield());
     rules.clearWave(); CHECK(rules.wave() == 2);
     rules.clearWave(); CHECK(rules.wave() == 3);
