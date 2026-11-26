@@ -229,10 +229,41 @@ void collisionAndCompleteMatch()
     CHECK(f.arena.match().phase() == Phase::Aim);
 }
 } // namespace
+void walkingStaysInTerritory()
+{
+    Fixture f;
+    const auto body = [&f](std::size_t player) { return f.arena.world().find(f.arena.penguin(player))->get<Transform>(); };
+    const auto grounded = [&f](const Transform* b) { return b->y == f.arena.terrain().support(b->x, b->width) - b->height; };
+    // The allowance caps a long walk and is spent by it.
+    CHECK(f.arena.walk(-1000) == -Arena::Stride);
+    CHECK(body(0)->x == 60 && f.arena.stride() == 0 && grounded(body(0)));
+    CHECK(f.arena.walk(10) == 0);
+    bool threw = false;
+    try { f.arena.walk(std::numeric_limits<float>::quiet_NaN()); } catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+    // The barrier stops player 0 short of the middle, even with allowance left.
+    f.arena.reset();
+    body(0)->x = 500;
+    CHECK(f.arena.walk(100) == 64);
+    CHECK(body(0)->x + body(0)->width == Arena::Barrier - 4 && f.arena.stride() == Arena::Stride - 64);
+    // No walking while a flask flies; the next player starts with a full allowance.
+    CHECK(f.arena.fire(Ingredient::Ember, Ingredient::Ember));
+    CHECK(f.arena.walk(-10) == 0);
+    f.finish();
+    CHECK(f.arena.match().player() == 1 && f.arena.stride() == Arena::Stride);
+    body(1)->x = 650;
+    CHECK(f.arena.walk(-100) == -46);
+    CHECK(body(1)->x == Arena::Barrier + 4 && grounded(body(1)));
+    // Restart puts penguins back and refills the allowance.
+    f.arena.reset();
+    CHECK(body(0)->x == 180 && body(1)->x == 988 && f.arena.stride() == Arena::Stride);
+}
+
 int main()
 {
     rejectedLaunchAndReuse(); defaultPoolHasHeadroom(); predictionAndPartitioning(); allRecipesAndRestart(); fragmentsRemainInFlight();
     queuePressureCannotStrandAProjectile(); fastShotsAndExpiry(); collisionAndCompleteMatch();
+    walkingStaysInTerritory();
     std::cout << "Frostbrew integration: " << failures << " failures\n";
     return failures ? 1 : 0;
 }

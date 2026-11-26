@@ -18,6 +18,8 @@ public:
     static constexpr int Width = 1200;
     static constexpr int Height = 800;
     static constexpr double Step = 1.0 / 240.0;
+    static constexpr float Barrier = 600;   // centre of the wall between the territories
+    static constexpr float Stride = 120;    // walking allowance per turn
 
     explicit Arena(EventManager& events, std::size_t capacity = 128, std::uint32_t seed = 42);
     ~Arena();
@@ -28,6 +30,9 @@ public:
     void update(const FrameTime& time);
     void reset(std::uint32_t seed = 42);
     void aim(float angle, float power);
+    // Walks the aiming penguin within its territory and this turn's allowance; returns the distance moved.
+    float walk(float dx);
+    float stride() const;
     float angle() const;
     float power() const;
     // Predicted flight for at most `steps` fixed steps, stopping early at a hit.
@@ -62,6 +67,7 @@ private:
     EventManager::SubscriptionId impactSubscription_ = 0;
     std::uint64_t generation_ = 0;
     std::uint64_t shot_ = 0;
+    float stride_ = Stride;
     double accumulator_ = 0;
     double elapsed_ = 0;
 };

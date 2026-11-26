@@ -2,8 +2,9 @@
 
 Two penguin alchemists share one keyboard, mixing and throwing potions across
 a changing snowfield. Reduce the opponent's 100 health to zero. Projectiles can
-hurt either player; a double knockout is a draw. Penguins stay at fixed horizontal
-positions, but terrain growth lifts them and excavation lowers them.
+hurt either player; a double knockout is a draw. On its turn, before throwing,
+a penguin can walk up to 120 px inside its own half; a wall in the middle stops
+it, but flasks fly over. Terrain growth lifts penguins and excavation lowers them.
 
 ## Build and play
 
@@ -19,6 +20,7 @@ Assets resolve beside the executable, so launching from another directory works.
 | --- | --- |
 | 1 / 2 / 3 | Place Ember / Stone / Growth in the highlighted ingredient slot, then select the other slot |
 | Tab | Change the highlighted ingredient slot |
+| A / D | Walk left / right during your turn (120 px per turn, own half only) |
 | Up / Down | Raise / lower firing angle |
 | Left / Right | Lower / raise throwing power |
 | Up + Down | Hold focus to see the first half second of the throw; angle adjustment stops |

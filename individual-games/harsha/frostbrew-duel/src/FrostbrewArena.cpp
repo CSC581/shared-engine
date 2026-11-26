@@ -50,6 +50,7 @@ void Arena::reset(std::uint32_t seed)
     world_.flushDestroyed();
     match_.reset();
     angles_.fill(45); powers_.fill(600);
+    stride_ = Stride;
     accumulator_ = 0;
     elapsed_ = 0;
     terrain_.generate(seed);
@@ -76,6 +77,23 @@ void Arena::aim(float angle, float power)
     angles_[match_.player()] = std::clamp(angle, 5.0F, 85.0F);
     powers_[match_.player()] = std::clamp(power, 200.0F, 700.0F);
 }
+float Arena::walk(float dx)
+{
+    if (!std::isfinite(dx)) throw std::invalid_argument("Invalid walk");
+    if (match_.phase() != Phase::Aim) return 0;
+    const auto player = match_.player();
+    auto* body = world_.find(penguins_[player])->get<Transform>();
+    constexpr float edge = 16, wall = 4;
+    const float low = player == 0 ? edge : Barrier + wall;
+    const float high = player == 0 ? Barrier - wall - body->width : Width - edge - body->width;
+    const float target = std::clamp(body->x + std::clamp(dx, -stride_, stride_), low, high);
+    const float moved = target - body->x;
+    body->x = target;
+    stride_ -= std::abs(moved);
+    settle();
+    return moved;
+}
+float Arena::stride() const { return stride_; }
 float Arena::angle() const { return angles_[match_.player()]; }
 float Arena::power() const { return powers_[match_.player()]; }
 Point Arena::velocity() const
@@ -118,6 +136,7 @@ bool Arena::fire(Ingredient first, Ingredient second)
     auto* object = spawn(muzzle(), velocity(), potion, false);
     if (!object) return false;
     ++shot_;
+    stride_ = Stride;  // the next turn starts with a full allowance
     accumulator_ = 0;
     return match_.beginShot(potion, true);
 }

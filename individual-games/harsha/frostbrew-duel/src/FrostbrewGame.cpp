@@ -115,6 +115,7 @@ void DuelGame::update(const FrameTime& time, Engine&)
         const float angle = arena_.angle() + (focus_ ? 0.0F : float(held_[SDL_SCANCODE_UP] - held_[SDL_SCANCODE_DOWN]) * dt * 35);
         const float power = arena_.power() + float(held_[SDL_SCANCODE_RIGHT] - held_[SDL_SCANCODE_LEFT]) * dt * 180;
         arena_.aim(angle, power);
+        arena_.walk(float(held_[SDL_SCANCODE_D] - held_[SDL_SCANCODE_A]) * dt * 90);
         if (fire_) {
             rejected_ = !arena_.fire(ingredients_[0], ingredients_[1]);
             if (!rejected_) throwing_[arena_.match().player()] = 0.3;

@@ -1,4 +1,5 @@
 #include "FrostbrewGame.hpp"
+#include "Components.hpp"
 #include "Engine.hpp"
 #include "Input.hpp"
 
@@ -53,6 +54,10 @@ int main()
             CHECK(!engine.gameTime().isPaused());
             CHECK(game.arena().match().phase() == Frostbrew::Phase::Aim);
             CHECK(game.arena().world().objects().size() == 2);
+            keys.fill(false); keys[SDL_SCANCODE_D] = true; frame();
+            const auto* walker = game.arena().world().find(game.arena().penguin(0))->get<Transform>();
+            CHECK(walker->x > 180 && game.arena().stride() < Frostbrew::Arena::Stride);
+            keys[SDL_SCANCODE_D] = false; frame();
             SDL_Event lost{}; lost.type = SDL_EVENT_WINDOW_FOCUS_LOST;
             game.onEvent(lost); CHECK(!game.focused());
             game.render(engine.getRenderer());

@@ -82,6 +82,9 @@ void DuelGame::hud(SDL_Renderer* renderer) const
     SDL_RenderDebugTextFormat(renderer, 420, 60, "PLAYER %zu  /  %s", arena_.match().player() + 1,
         arena_.match().phase() == Phase::Resolving ? "POTION IN FLIGHT" : "BREW AND AIM");
     SDL_RenderDebugTextFormat(renderer, 420, 80, "ANGLE %.0f   POWER %.0f", arena_.angle(), arena_.power());
+    SDL_RenderDebugText(renderer, 650, 80, "WALK");
+    fill(renderer, 690, 80, 120, 8, {45, 55, 73});
+    fill(renderer, 690, 80, arena_.stride(), 8, playerColors[arena_.match().player()]);
     for (std::size_t slot = 0; slot < 2; ++slot) {
         const float x = 24 + slot * 190.0F;
         const auto ingredient = static_cast<unsigned>(ingredients_[slot]);
@@ -98,7 +101,7 @@ void DuelGame::hud(SDL_Renderer* renderer) const
     fill(renderer, 0, 738, 1200, 62, {14, 22, 39});
     color(renderer, {190, 210, 225});
     SDL_RenderDebugText(renderer, 24, 752, "1 EMBER   2 STONE   3 GROWTH   TAB: CHANGE SLOT   SPACE: THROW   B: RECIPES");
-    SDL_RenderDebugText(renderer, 24, 772, "UP/DOWN: ANGLE   LEFT/RIGHT: POWER   UP+DOWN: FOCUS   P: PAUSE   R: RESTART   ESC: QUIT");
+    SDL_RenderDebugText(renderer, 24, 772, "A/D: WALK   UP/DOWN: ANGLE   LEFT/RIGHT: POWER   UP+DOWN: FOCUS   P: PAUSE   R: RESTART   ESC: QUIT");
 
     if (book_) {
         fill(renderer, 310, 185, 580, 350, {24, 36, 53});
@@ -146,6 +149,9 @@ void DuelGame::render(SDL_Renderer* renderer) const
         color(renderer, {150, 190, 205}); SDL_RenderLine(renderer, static_cast<float>(x), y + 4, static_cast<float>(x), y + 12);
         color(renderer, {225, 241, 242}); SDL_RenderLine(renderer, static_cast<float>(x), y, static_cast<float>(x), y + 4);
     }
+    // Dashed wall: penguins cannot cross it, but flasks fly over it.
+    const float ground = arena_.terrain().heights()[static_cast<std::size_t>(Arena::Barrier)];
+    for (float y = 150; y < ground; y += 16) fill(renderer, Arena::Barrier - 2, y, 4, std::min(10.0F, ground - y), {120, 160, 190});
     renderWorld(renderer, arena_.world());
     for (const auto& object : arena_.world().objects()) if (object->tag() == "flask" && object->isActive()) {
         const auto* body = object->get<Transform>();
