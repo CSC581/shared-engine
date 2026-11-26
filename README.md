@@ -167,7 +167,7 @@ Subscribing, unsubscribing and dispatching happen on the main thread. A game who
 | Event | Raised by | Values |
 | ----- | --------- | ------ |
 | `InputEvent` | The engine, when a key changes | `kind = "key"`, `key` (scancode), `state` (`"pressed"` or `"released"`) |
-| `InputEvent` (chord) | The engine, after `engine.registerChord(name, keys)`, when all the keys are held and again when one is let go | `kind = "chord"`, `name`, `state` |
+| `InputEvent` (chord) | The engine, after `engine.registerChord(name, keys, windowMs = 0)`, when all the keys are held and again when one is let go. With a window, the keys must also go down within that many real milliseconds of each other | `kind = "chord"`, `name`, `state` |
 | `CollisionEvent` | `World`, after `world.setEventManager(&engine.events())` | `a`, `b` (object ids, smaller first), `tagA`, `tagB`, `phase` (`"enter"`, `"stay"` or `"exit"`), `trigger`. `"stay"` only fires if one of the colliders sets `raiseStayEvents = true` |
 | `DeathEvent` | The game | `object`, `cause` |
 | `SpawnEvent` | The game | Respawn: `object`, `x`, `y`. Create: `kind`, `x`, `y`, and optionally `request`; the creator answers with `SpawnedEvent{request, object}` |

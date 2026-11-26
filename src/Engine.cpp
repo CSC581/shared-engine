@@ -125,12 +125,12 @@ EventManager& Engine::events()
     return events_;
 }
 
-void Engine::registerChord(std::string name, std::vector<SDL_Scancode> keys)
+void Engine::registerChord(std::string name, std::vector<SDL_Scancode> keys, std::uint64_t windowMs)
 {
     if (name.empty() || keys.empty()) {
         throw std::invalid_argument("A chord needs a name and at least one key");
     }
-    chords_.push_back({std::move(name), std::move(keys)});
+    chords_.push_back({std::move(name), std::move(keys), windowMs});
 }
 
 const TimeSource& Engine::realTime() const

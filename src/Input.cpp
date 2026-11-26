@@ -3,11 +3,13 @@
 #include "EventManager.hpp"
 
 #include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_timer.h>
 
 #include <algorithm>
 
 std::array<bool, Input::keyCount> Input::currentKeys_{};
 std::array<bool, Input::keyCount> Input::previousKeys_{};
+std::array<std::uint64_t, Input::keyCount> Input::pressedAtMs_{};
 const bool* Input::stateSource_ = nullptr;
 int Input::stateSourceKeyCount_ = 0;
 
@@ -33,6 +35,12 @@ void Input::update()
         std::copy(keyboardState, keyboardState + copyCount, currentKeys_.begin());
     }
 
+    const std::uint64_t now = SDL_GetTicks();
+    for (int key = 0; key < keyCount; ++key) {
+        if (currentKeys_[key] && !previousKeys_[key]) {
+            pressedAtMs_[key] = now;
+        }
+    }
 }
 
 void Input::raiseEvents(EventManager& events, const std::vector<InputChord>& chords)
@@ -56,6 +64,15 @@ void Input::raiseEvents(EventManager& events, const std::vector<InputChord>& cho
         const bool held = heldIn(currentKeys_);
         if (held == heldIn(previousKeys_)) {
             continue;
+        }
+        // Press times only change on a press, so the release of a chord that
+        // was too slow is skipped too and every "released" follows a "pressed".
+        if (chord.windowMs != 0) {
+            const auto [first, last] = std::minmax_element(chord.keys.begin(), chord.keys.end(),
+                [](SDL_Scancode a, SDL_Scancode b) { return pressedAtMs_[a] < pressedAtMs_[b]; });
+            if (pressedAtMs_[*last] - pressedAtMs_[*first] > chord.windowMs) {
+                continue;
+            }
         }
         Event event{Events::Input};
         event.set("kind", "chord")

@@ -3,6 +3,7 @@
 #include <SDL3/SDL_scancode.h>
 
 #include <array>
+#include <cstdint>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -13,6 +14,10 @@ class EventManager;
 struct InputChord {
     std::string name;
     std::vector<SDL_Scancode> keys;
+    // 0 accepts any timing. Otherwise every key must have gone down within
+    // this many real milliseconds of the others, so holding one key and
+    // pressing the rest later is not the chord.
+    std::uint64_t windowMs = 0;
 };
 
 // Keyboard input for games built on the engine.
@@ -55,6 +60,7 @@ private:
 
     static std::array<bool, keyCount> currentKeys_;
     static std::array<bool, keyCount> previousKeys_;
+    static std::array<std::uint64_t, keyCount> pressedAtMs_;
     static const bool* stateSource_;
     static int stateSourceKeyCount_;
 };
