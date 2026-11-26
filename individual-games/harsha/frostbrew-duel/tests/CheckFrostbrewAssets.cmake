@@ -1,0 +1,35 @@
+if(NOT DEFINED GAME OR NOT DEFINED ART OR NOT DEFINED WORK)
+    message(FATAL_ERROR "GAME, ART and WORK are required")
+endif()
+file(REMOVE_RECURSE "${WORK}")
+file(MAKE_DIRECTORY "${WORK}/bin" "${WORK}/elsewhere")
+get_filename_component(game_name "${GAME}" NAME)
+file(COPY "${GAME}" DESTINATION "${WORK}/bin")
+set(executable "${WORK}/bin/${game_name}")
+
+function(run_game expected)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env
+        SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software
+        "${executable}" --screenshot "${WORK}/scene.png"
+        WORKING_DIRECTORY "${WORK}/elsewhere"
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 15)
+    if(expected STREQUAL "success")
+        if(NOT result EQUAL 0 OR NOT EXISTS "${WORK}/scene.png")
+            message(FATAL_ERROR "Executable-relative assets failed: ${result} ${error}")
+        endif()
+    elseif(result EQUAL 0 OR NOT error MATCHES "${expected}")
+        message(FATAL_ERROR "Expected ${expected}, got ${result}: ${output} ${error}")
+    endif()
+endfunction()
+
+run_game("Cannot load")
+file(COPY "${ART}/" DESTINATION "${WORK}/bin/media/frostbrew-duel")
+file(WRITE "${WORK}/bin/media/frostbrew-duel/Idle.png" "not a png")
+run_game("Cannot load")
+file(COPY "${ART}/Idle.png" DESTINATION "${WORK}/bin/media/frostbrew-duel")
+file(REMOVE "${WORK}/bin/media/frostbrew-duel/Hurt.png")
+run_game("Cannot load")
+file(COPY "${ART}/Hurt.png" DESTINATION "${WORK}/bin/media/frostbrew-duel")
+run_game("success")
+configure_file("${WORK}/scene.png" "${WORK}/bin/media/frostbrew-duel/Idle.png" COPYONLY)
+run_game("Invalid 64px penguin sheet")

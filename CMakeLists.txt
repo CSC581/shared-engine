@@ -439,6 +439,8 @@ foreach(benchmark_name IN ITEMS collision component-update frame-workers codec m
     set_tests_properties(${benchmark_name}-benchmark-quick PROPERTIES TIMEOUT 60)
 endforeach()
 
+add_subdirectory(individual-games/harsha/frostbrew-duel)
+
 # Apex Ascent executable (gameplay + game-local animation module).
 add_executable(apex-ascent
     individual-games/harsha/src/apexAscent.cpp
