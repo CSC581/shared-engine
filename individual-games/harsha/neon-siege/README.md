@@ -29,7 +29,8 @@ cancel movement. Both keys must go down within 100 ms of each other, so holding
 one direction and then pressing the other turns the ship instead of wasting the
 shield. Holding the chord does not activate another shield when its
 cooldown finishes: release and press it again. Damage grants one second of
-invulnerability. Pause and focus loss clear held input.
+invulnerability, shown as a blinking red outline; an active shield is a
+steady cyan double outline. Pause and focus loss clear held input.
 
 Ships, stars, HUD and effects use SDL primitives, with no asset downloads.
 Gameplay updates at 240 fixed steps/second using engine motion and timing.

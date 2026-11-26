@@ -42,10 +42,18 @@ void SiegeGame::render(SDL_Renderer* renderer) const
     }
     const auto* player = arena_->storage().get(arena_->player());
     if (arena_->rules().protectedNow() && player) {
-        SDL_SetRenderDrawColor(renderer, 90, 240, 255, 255);
         const auto& b = *player->body;
-        SDL_FRect shield{b.x - 9, b.y - 10, b.width + 18, b.height + 20};
-        SDL_RenderRect(renderer, &shield);
+        SDL_FRect outer{b.x - 9, b.y - 10, b.width + 18, b.height + 20};
+        if (arena_->rules().shieldTicks() > 0) {
+            // Shield: steady cyan double outline.
+            SDL_FRect inner{outer.x + 3, outer.y + 3, outer.w - 6, outer.h - 6};
+            SDL_SetRenderDrawColor(renderer, 90, 240, 255, 255);
+            SDL_RenderRect(renderer, &outer); SDL_RenderRect(renderer, &inner);
+        } else if (engine_.gameTime().now() / 100000 % 2 == 0) {
+            // Hit recovery: red outline blinking every 0.1 s of game time.
+            SDL_SetRenderDrawColor(renderer, 255, 70, 90, 255);
+            SDL_RenderRect(renderer, &outer);
+        }
     }
     SDL_SetRenderDrawColor(renderer, 50, 115, 140, 255);
     SDL_RenderLine(renderer, 16, 620, 944, 620);
