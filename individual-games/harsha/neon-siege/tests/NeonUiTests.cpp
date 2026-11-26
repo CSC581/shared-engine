@@ -16,8 +16,8 @@ int main()
     {
         Engine engine("Neon UI tests", Neon::Arena::Width, Neon::Arena::Height);
         Neon::SiegeGame game(engine);
-        const std::vector<InputChord> chords{{"neon.shield.arrows", {SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT}},
-                                             {"neon.shield.letters", {SDL_SCANCODE_A, SDL_SCANCODE_D}}};
+        const std::vector<InputChord> chords{{"neon.shield.arrows", {SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT}, Neon::SiegeGame::ShieldWindowMs},
+                                             {"neon.shield.letters", {SDL_SCANCODE_A, SDL_SCANCODE_D}, Neon::SiegeGame::ShieldWindowMs}};
         const auto frame = [&] {
             Input::update(); Input::raiseEvents(engine.events(), chords); engine.events().dispatch();
             game.update({1.0 / 60, 0}, engine);

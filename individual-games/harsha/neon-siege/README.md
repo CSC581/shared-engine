@@ -25,9 +25,9 @@ cmake --build build --target neon-siege -j 4
 | Escape | Quit |
 
 The shield uses movement keys that already act independently. Both directions
-cancel movement. Both keys must go down within 100 ms of each other, so holding
-one direction and then pressing the other turns the ship instead of wasting the
-shield. Holding the chord does not activate another shield when its
+cancel movement. Both keys must go down within 100 ms of each other (the
+engine's chord window, in real time), so holding one direction and then pressing
+the other only stops the ship instead of wasting the shield. Holding the chord does not activate another shield when its
 cooldown finishes: release and press it again. Damage grants one second of
 invulnerability, shown as a blinking red outline; an active shield is a
 steady cyan double outline. Pause and focus loss clear held input.

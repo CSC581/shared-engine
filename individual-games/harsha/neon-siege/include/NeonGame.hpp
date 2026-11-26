@@ -5,12 +5,14 @@
 #include "EventManager.hpp"
 #include <SDL3/SDL_scancode.h>
 #include <array>
+#include <cstdint>
 #include <memory>
 
 class Engine;
 namespace Neon {
 class SiegeGame final : public Game {
 public:
+    static constexpr std::uint64_t ShieldWindowMs = 100;  // both shield keys must go down this close together
     explicit SiegeGame(Engine& engine);
     ~SiegeGame() override;
     void onEvent(const SDL_Event& event) override;
@@ -27,7 +29,6 @@ private:
     std::unique_ptr<Arena> arena_;
     EventManager::SubscriptionId subscription_ = 0;
     std::array<bool, SDL_SCANCODE_COUNT> held_{};
-    std::array<std::int64_t, SDL_SCANCODE_COUNT> pressedAt_{}; // game-time µs of the last press
     bool shield_ = false, autoplay_ = false;
 };
 } // namespace Neon
